@@ -1,0 +1,631 @@
+name: E2E Tests
+
+on:
+  workflow_dispatch:
+    inputs:
+      ref:
+        description: 'Branch/tag of agent to test'
+        required: true
+        default: 'main'
+      run_id:
+        description: 'Agent CI run ID for artifact download'
+        required: true
+      sha:
+        description: 'Commit SHA for status reporting (optional)'
+        required: false
+  repository_dispatch:
+    types: [run-e2e]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: e2e-${{ github.event.client_payload.sha || inputs.sha || github.run_id }}
+  cancel-in-progress: true
+
+jobs:
+  # ===========================================================================
+  # RESOLVE: Normalize inputs from workflow_dispatch vs repository_dispatch
+  # ===========================================================================
+
+  resolve:
+    name: Resolve Inputs
+    runs-on: ubuntu-24.04
+    outputs:
+      ref: ${{ steps.resolve.outputs.ref }}
+      run_id: ${{ steps.resolve.outputs.run_id }}
+      sha: ${{ steps.resolve.outputs.sha }}
+    steps:
+      - name: Resolve dispatch parameters
+        id: resolve
+        run: |
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            echo "ref=${{ inputs.ref }}" >> "$GITHUB_OUTPUT"
+            echo "run_id=${{ inputs.run_id }}" >> "$GITHUB_OUTPUT"
+            echo "sha=${{ inputs.sha }}" >> "$GITHUB_OUTPUT"
+          else
+            echo "ref=${{ github.event.client_payload.ref }}" >> "$GITHUB_OUTPUT"
+            echo "run_id=${{ github.event.client_payload.run_id }}" >> "$GITHUB_OUTPUT"
+            echo "sha=${{ github.event.client_payload.sha }}" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Display resolved parameters
+        run: |
+          echo "Agent ref:    ${{ steps.resolve.outputs.ref }}"
+          echo "Agent run ID: ${{ steps.resolve.outputs.run_id }}"
+          echo "Agent SHA:    ${{ steps.resolve.outputs.sha }}"
+
+  # ===========================================================================
+  # E2E DOCKER (amd64)
+  # ===========================================================================
+
+  e2e-docker:
+    name: E2E Docker ${{ matrix.name }}
+    needs: [resolve]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: debian-glibc
+            dockerfile: Dockerfile.debian-script
+            artifact: supervizio-linux-amd64
+            description: "Debian with glibc (systemd)"
+          - name: alpine-musl
+            dockerfile: Dockerfile.alpine-script
+            artifact: supervizio-linux-amd64-musl
+            description: "Alpine with musl (OpenRC)"
+          - name: scratch
+            dockerfile: Dockerfile.scratch
+            artifact: supervizio-linux-amd64-musl
+            description: "Scratch (static binary, no OS)"
+    steps:
+      - name: Report status (pending)
+        if: needs.resolve.outputs.sha != ''
+        env:
+          GH_TOKEN: ${{ secrets.AGENT_REPO_TOKEN }}
+        run: |
+          curl -sf -X POST \
+            -H "Authorization: Bearer $GH_TOKEN" \
+            -H "Accept: application/vnd.github+json" \
+            "https://api.github.com/repos/supervizio/agent/statuses/${{ needs.resolve.outputs.sha }}" \
+            -d '{"state":"pending","context":"e2e/docker/${{ matrix.name }}","description":"Running...","target_url":"${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"}'
+
+      - name: Checkout agent code
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+        with:
+          repository: supervizio/agent
+          ref: ${{ needs.resolve.outputs.ref }}
+          token: ${{ secrets.AGENT_REPO_TOKEN }}
+
+      - name: Download binary (cross-repo)
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          name: ${{ matrix.artifact }}
+          path: bin
+          github-token: ${{ secrets.AGENT_REPO_TOKEN }}
+          repository: supervizio/agent
+          run-id: ${{ needs.resolve.outputs.run_id }}
+
+      - name: Prepare binary
+        run: |
+          ls -la bin/
+          chmod +x bin/${{ matrix.artifact }}
+          # Dockerfile.scratch expects bin/supervizio, others expect bin/supervizio-linux-amd64
+          if [ "${{ matrix.dockerfile }}" = "Dockerfile.scratch" ]; then
+            mv bin/${{ matrix.artifact }} bin/supervizio
+          elif [ "${{ matrix.artifact }}" != "supervizio-linux-amd64" ]; then
+            mv bin/${{ matrix.artifact }} bin/supervizio-linux-amd64
+          fi
+          file bin/supervizio* | head -5
+
+      - name: Build container
+        run: |
+          docker build -f e2e/${{ matrix.dockerfile }} -t supervizio-e2e:${{ matrix.name }}-amd64 .
+
+      - name: Test container startup
+        run: |
+          docker run --rm supervizio-e2e:${{ matrix.name }}-amd64
+
+      - name: Validate probe metrics
+        if: matrix.dockerfile != 'Dockerfile.scratch'
+        run: |
+          docker run --rm --entrypoint sh supervizio-e2e:${{ matrix.name }}-amd64 -c "
+            set -e
+            echo '=== System Info ==='
+            uname -a
+            cat /etc/os-release 2>/dev/null || true
+
+            echo ''
+            echo '=== Running --probe ==='
+            OUTPUT=\$(/usr/local/bin/supervizio --probe 2>&1) || {
+              echo 'ERROR: --probe failed'
+              echo \"Output: \$OUTPUT\"
+              exit 1
+            }
+
+            echo 'Raw JSON:'
+            echo \"\$OUTPUT\"
+
+            echo ''
+            echo '=== Validation ==='
+            echo \"\$OUTPUT\" | jq -e '.timestamp' > /dev/null && echo 'OK timestamp'
+            echo \"\$OUTPUT\" | jq -e '.os.platform' > /dev/null && echo 'OK platform'
+            echo \"\$OUTPUT\" | jq -r '.cpu.cores // \"null\"' | xargs -I {} echo 'cpu.cores = {}'
+
+            echo \"\$OUTPUT\" | jq -e '.timestamp and .os.platform and .cpu.cores > 0' && \\
+              echo 'OK Probe validation passed: ${{ matrix.description }}'
+          "
+
+      - name: Test scratch container (no shell)
+        if: matrix.dockerfile == 'Dockerfile.scratch'
+        run: |
+          echo "=== Testing scratch container (static binary, no OS) ==="
+
+          echo "--- Test --version ---"
+          docker run --rm supervizio-e2e:scratch-amd64 --version
+          echo "OK --version works"
+
+          echo ""
+          echo "--- Test --probe ---"
+          OUTPUT=$(docker run --rm supervizio-e2e:scratch-amd64 --probe 2>&1) || {
+            echo "ERROR: --probe failed"
+            echo "Output: $OUTPUT"
+            exit 1
+          }
+          echo "Probe output:"
+          echo "$OUTPUT"
+
+          echo ""
+          echo "--- Validate JSON ---"
+          echo "$OUTPUT" | jq -e '.timestamp' > /dev/null && echo "OK timestamp present"
+          echo "$OUTPUT" | jq -e '.os.platform' > /dev/null && echo "OK platform present"
+          echo "$OUTPUT" | jq -e '.cpu.cores > 0' > /dev/null && echo "OK cpu.cores > 0"
+          echo "$OUTPUT" | jq -e '.memory.total_bytes > 0' > /dev/null && echo "OK memory.total_bytes > 0"
+
+          echo ""
+          echo "OK Scratch container tests passed"
+
+      - name: Report status (result)
+        if: always() && needs.resolve.outputs.sha != ''
+        env:
+          GH_TOKEN: ${{ secrets.AGENT_REPO_TOKEN }}
+        run: |
+          STATE="success"
+          DESC="Passed"
+          if [ "${{ job.status }}" != "success" ]; then
+            STATE="failure"
+            DESC="Failed"
+          fi
+          curl -sf -X POST \
+            -H "Authorization: Bearer $GH_TOKEN" \
+            -H "Accept: application/vnd.github+json" \
+            "https://api.github.com/repos/supervizio/agent/statuses/${{ needs.resolve.outputs.sha }}" \
+            -d "{\"state\":\"$STATE\",\"context\":\"e2e/docker/${{ matrix.name }}\",\"description\":\"$DESC\",\"target_url\":\"${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}\"}"
+
+  # ===========================================================================
+  # E2E DOCKER ARM64
+  # ===========================================================================
+
+  e2e-docker-arm64:
+    name: E2E Docker arm64 ${{ matrix.name }}
+    needs: [resolve]
+    runs-on: ubuntu-24.04-arm
+    timeout-minutes: 10
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: debian-glibc
+            dockerfile: Dockerfile.debian-script
+            artifact: supervizio-linux-arm64
+            binary_name: supervizio-linux-amd64
+            description: "Debian ARM64 with glibc (systemd)"
+          - name: alpine-musl
+            dockerfile: Dockerfile.alpine-script
+            artifact: supervizio-linux-arm64-musl
+            binary_name: supervizio-linux-amd64
+            description: "Alpine ARM64 with musl (OpenRC)"
+          - name: scratch
+            dockerfile: Dockerfile.scratch
+            artifact: supervizio-linux-arm64-musl
+            binary_name: supervizio
+            description: "Scratch ARM64 (static binary, no OS)"
+    steps:
+      - name: Report status (pending)
+        if: needs.resolve.outputs.sha != ''
+        env:
+          GH_TOKEN: ${{ secrets.AGENT_REPO_TOKEN }}
+        run: |
+          curl -sf -X POST \
+            -H "Authorization: Bearer $GH_TOKEN" \
+            -H "Accept: application/vnd.github+json" \
+            "https://api.github.com/repos/supervizio/agent/statuses/${{ needs.resolve.outputs.sha }}" \
+            -d '{"state":"pending","context":"e2e/docker-arm64/${{ matrix.name }}","description":"Running...","target_url":"${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"}'
+
+      - name: Checkout agent code
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+        with:
+          repository: supervizio/agent
+          ref: ${{ needs.resolve.outputs.ref }}
+          token: ${{ secrets.AGENT_REPO_TOKEN }}
+
+      - name: Download binary (cross-repo)
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          name: ${{ matrix.artifact }}
+          path: bin
+          github-token: ${{ secrets.AGENT_REPO_TOKEN }}
+          repository: supervizio/agent
+          run-id: ${{ needs.resolve.outputs.run_id }}
+
+      - name: Prepare binary
+        run: |
+          ls -la bin/
+          chmod +x bin/${{ matrix.artifact }}
+          # Dockerfiles expect amd64 binary names — rename arm64 to match
+          mv bin/${{ matrix.artifact }} bin/${{ matrix.binary_name }}
+          file bin/${{ matrix.binary_name }}
+
+      - name: Build container
+        run: |
+          docker build -f e2e/${{ matrix.dockerfile }} -t supervizio-e2e:${{ matrix.name }}-arm64 .
+
+      - name: Test container startup
+        run: |
+          docker run --rm supervizio-e2e:${{ matrix.name }}-arm64
+
+      - name: Validate probe metrics
+        if: matrix.dockerfile != 'Dockerfile.scratch'
+        run: |
+          docker run --rm --entrypoint sh supervizio-e2e:${{ matrix.name }}-arm64 -c "
+            set -e
+            echo '=== System Info ==='
+            uname -a
+            cat /etc/os-release 2>/dev/null || true
+
+            echo ''
+            echo '=== Running --probe ==='
+            OUTPUT=\$(/usr/local/bin/supervizio --probe 2>&1) || {
+              echo 'ERROR: --probe failed'
+              echo \"Output: \$OUTPUT\"
+              exit 1
+            }
+
+            echo 'Raw JSON:'
+            echo \"\$OUTPUT\"
+
+            echo ''
+            echo '=== Validation ==='
+            echo \"\$OUTPUT\" | jq -e '.timestamp' > /dev/null && echo 'OK timestamp'
+            echo \"\$OUTPUT\" | jq -e '.os.platform' > /dev/null && echo 'OK platform'
+            echo \"\$OUTPUT\" | jq -r '.cpu.cores // \"null\"' | xargs -I {} echo 'cpu.cores = {}'
+
+            echo \"\$OUTPUT\" | jq -e '.timestamp and .os.platform and .cpu.cores > 0' && \\
+              echo 'OK Probe validation passed: ${{ matrix.description }}'
+          "
+
+      - name: Test scratch container (no shell)
+        if: matrix.dockerfile == 'Dockerfile.scratch'
+        run: |
+          echo "=== Testing scratch container (static binary, no OS) ==="
+
+          echo "--- Test --version ---"
+          docker run --rm supervizio-e2e:scratch-arm64 --version
+          echo "OK --version works"
+
+          echo ""
+          echo "--- Test --probe ---"
+          OUTPUT=$(docker run --rm supervizio-e2e:scratch-arm64 --probe 2>&1) || {
+            echo "ERROR: --probe failed"
+            echo "Output: $OUTPUT"
+            exit 1
+          }
+          echo "Probe output:"
+          echo "$OUTPUT"
+
+          echo ""
+          echo "--- Validate JSON ---"
+          echo "$OUTPUT" | jq -e '.timestamp' > /dev/null && echo "OK timestamp present"
+          echo "$OUTPUT" | jq -e '.os.platform' > /dev/null && echo "OK platform present"
+          echo "$OUTPUT" | jq -e '.cpu.cores > 0' > /dev/null && echo "OK cpu.cores > 0"
+          echo "$OUTPUT" | jq -e '.memory.total_bytes > 0' > /dev/null && echo "OK memory.total_bytes > 0"
+
+          echo ""
+          echo "OK Scratch ARM64 container tests passed"
+
+      - name: Report status (result)
+        if: always() && needs.resolve.outputs.sha != ''
+        env:
+          GH_TOKEN: ${{ secrets.AGENT_REPO_TOKEN }}
+        run: |
+          STATE="success"
+          DESC="Passed"
+          if [ "${{ job.status }}" != "success" ]; then
+            STATE="failure"
+            DESC="Failed"
+          fi
+          curl -sf -X POST \
+            -H "Authorization: Bearer $GH_TOKEN" \
+            -H "Accept: application/vnd.github+json" \
+            "https://api.github.com/repos/supervizio/agent/statuses/${{ needs.resolve.outputs.sha }}" \
+            -d "{\"state\":\"$STATE\",\"context\":\"e2e/docker-arm64/${{ matrix.name }}\",\"description\":\"$DESC\",\"target_url\":\"${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}\"}"
+
+  # ===========================================================================
+  # E2E macOS (Intel)
+  # ===========================================================================
+
+  e2e-macos:
+    name: E2E macOS x86_64
+    needs: [resolve]
+    runs-on: macos-15-intel
+    timeout-minutes: 10
+    steps:
+      - name: Report status (pending)
+        if: needs.resolve.outputs.sha != ''
+        env:
+          GH_TOKEN: ${{ secrets.AGENT_REPO_TOKEN }}
+        run: |
+          curl -sf -X POST \
+            -H "Authorization: Bearer $GH_TOKEN" \
+            -H "Accept: application/vnd.github+json" \
+            "https://api.github.com/repos/supervizio/agent/statuses/${{ needs.resolve.outputs.sha }}" \
+            -d '{"state":"pending","context":"e2e/macos-x86_64","description":"Running...","target_url":"${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"}'
+
+      - name: Checkout agent code
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+        with:
+          repository: supervizio/agent
+          ref: ${{ needs.resolve.outputs.ref }}
+          token: ${{ secrets.AGENT_REPO_TOKEN }}
+
+      - name: Download binary (cross-repo)
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          name: supervizio-darwin-amd64
+          path: bin
+          github-token: ${{ secrets.AGENT_REPO_TOKEN }}
+          repository: supervizio/agent
+          run-id: ${{ needs.resolve.outputs.run_id }}
+
+      - name: Prepare binary
+        run: |
+          chmod +x bin/supervizio-darwin-amd64
+          file bin/supervizio-darwin-amd64
+
+      - name: Run macOS E2E test
+        run: |
+          set -euo pipefail
+          export PATH="$PWD/bin:$PATH"
+          mv bin/supervizio-darwin-amd64 bin/supervizio
+          chmod +x bin/supervizio
+
+          echo "=== System Info ==="
+          uname -a
+          sysctl hw.ncpu || true
+          sw_vers || true
+
+          echo ""
+          echo "=== Test version ==="
+          bin/supervizio --version
+
+          echo ""
+          echo "=== Test probe ==="
+          OUTPUT=$(bin/supervizio --probe 2>&1) || {
+            echo "ERROR: --probe command failed with exit code $?"
+            echo "Output: $OUTPUT"
+            exit 1
+          }
+
+          echo "Raw JSON output:"
+          echo "$OUTPUT"
+
+          echo ""
+          echo "=== Validate JSON structure ==="
+          echo "$OUTPUT" | jq -e 'type == "object"' > /dev/null || {
+            echo "ERROR: Output is not valid JSON object"
+            exit 1
+          }
+
+          echo "Checking required fields..."
+          echo "$OUTPUT" | jq -e '.timestamp' > /dev/null && echo "OK timestamp present"
+          echo "$OUTPUT" | jq -e '.os.platform' > /dev/null && echo "OK platform present"
+          echo "$OUTPUT" | jq -e '.cpu' > /dev/null && echo "OK cpu present" || echo "FAIL cpu MISSING"
+          echo "$OUTPUT" | jq -r '.cpu.cores // "null"' | xargs -I {} echo "  cpu.cores = {}"
+
+          echo ""
+          echo "=== Final validation ==="
+          echo "$OUTPUT" | jq -e '.timestamp and .os.platform and .cpu.cores > 0' && \
+            echo "OK Probe validation passed on macOS x86_64"
+
+      - name: Report status (result)
+        if: always() && needs.resolve.outputs.sha != ''
+        env:
+          GH_TOKEN: ${{ secrets.AGENT_REPO_TOKEN }}
+        run: |
+          STATE="success"
+          DESC="Passed"
+          if [ "${{ job.status }}" != "success" ]; then
+            STATE="failure"
+            DESC="Failed"
+          fi
+          curl -sf -X POST \
+            -H "Authorization: Bearer $GH_TOKEN" \
+            -H "Accept: application/vnd.github+json" \
+            "https://api.github.com/repos/supervizio/agent/statuses/${{ needs.resolve.outputs.sha }}" \
+            -d "{\"state\":\"$STATE\",\"context\":\"e2e/macos-x86_64\",\"description\":\"$DESC\",\"target_url\":\"${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}\"}"
+
+  # ===========================================================================
+  # E2E macOS ARM64 (Apple Silicon)
+  # ===========================================================================
+
+  e2e-macos-arm64:
+    name: E2E macOS ARM64
+    needs: [resolve]
+    runs-on: macos-15
+    timeout-minutes: 10
+    steps:
+      - name: Report status (pending)
+        if: needs.resolve.outputs.sha != ''
+        env:
+          GH_TOKEN: ${{ secrets.AGENT_REPO_TOKEN }}
+        run: |
+          curl -sf -X POST \
+            -H "Authorization: Bearer $GH_TOKEN" \
+            -H "Accept: application/vnd.github+json" \
+            "https://api.github.com/repos/supervizio/agent/statuses/${{ needs.resolve.outputs.sha }}" \
+            -d '{"state":"pending","context":"e2e/macos-arm64","description":"Running...","target_url":"${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"}'
+
+      - name: Checkout agent code
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+        with:
+          repository: supervizio/agent
+          ref: ${{ needs.resolve.outputs.ref }}
+          token: ${{ secrets.AGENT_REPO_TOKEN }}
+
+      - name: Download binary (cross-repo)
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          name: supervizio-darwin-arm64
+          path: bin
+          github-token: ${{ secrets.AGENT_REPO_TOKEN }}
+          repository: supervizio/agent
+          run-id: ${{ needs.resolve.outputs.run_id }}
+
+      - name: Prepare binary
+        run: |
+          chmod +x bin/supervizio-darwin-arm64
+          file bin/supervizio-darwin-arm64
+
+      - name: Run macOS ARM64 E2E test
+        run: |
+          set -euo pipefail
+          export PATH="$PWD/bin:$PATH"
+          mv bin/supervizio-darwin-arm64 bin/supervizio
+          chmod +x bin/supervizio
+
+          echo "=== System Info ==="
+          uname -a
+          sysctl hw.ncpu || true
+          sw_vers || true
+
+          echo ""
+          echo "=== Test version ==="
+          bin/supervizio --version
+
+          echo ""
+          echo "=== Test probe ==="
+          OUTPUT=$(bin/supervizio --probe 2>&1) || {
+            echo "ERROR: --probe command failed with exit code $?"
+            echo "Output: $OUTPUT"
+            exit 1
+          }
+
+          echo "Raw JSON output:"
+          echo "$OUTPUT"
+
+          echo ""
+          echo "=== Validate JSON structure ==="
+          echo "$OUTPUT" | jq -e 'type == "object"' > /dev/null || {
+            echo "ERROR: Output is not valid JSON object"
+            exit 1
+          }
+
+          echo "Checking required fields..."
+          echo "$OUTPUT" | jq -e '.timestamp' > /dev/null && echo "OK timestamp present"
+          echo "$OUTPUT" | jq -e '.os.platform' > /dev/null && echo "OK platform present"
+          echo "$OUTPUT" | jq -e '.cpu' > /dev/null && echo "OK cpu present" || echo "FAIL cpu MISSING"
+          echo "$OUTPUT" | jq -r '.cpu.cores // "null"' | xargs -I {} echo "  cpu.cores = {}"
+
+          echo ""
+          echo "=== Final validation ==="
+          echo "$OUTPUT" | jq -e '.timestamp and .os.platform and .cpu.cores > 0' && \
+            echo "OK Probe validation passed on macOS ARM64"
+
+      - name: Report status (result)
+        if: always() && needs.resolve.outputs.sha != ''
+        env:
+          GH_TOKEN: ${{ secrets.AGENT_REPO_TOKEN }}
+        run: |
+          STATE="success"
+          DESC="Passed"
+          if [ "${{ job.status }}" != "success" ]; then
+            STATE="failure"
+            DESC="Failed"
+          fi
+          curl -sf -X POST \
+            -H "Authorization: Bearer $GH_TOKEN" \
+            -H "Accept: application/vnd.github+json" \
+            "https://api.github.com/repos/supervizio/agent/statuses/${{ needs.resolve.outputs.sha }}" \
+            -d "{\"state\":\"$STATE\",\"context\":\"e2e/macos-arm64\",\"description\":\"$DESC\",\"target_url\":\"${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}\"}"
+
+  # ===========================================================================
+  # REPORT: Aggregate results and post final commit status
+  # ===========================================================================
+
+  report:
+    name: Report Results
+    needs: [resolve, e2e-docker, e2e-docker-arm64, e2e-macos, e2e-macos-arm64]
+    if: always()
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Aggregate results
+        run: |
+          echo "=== E2E Results ==="
+          echo "e2e-docker:       ${{ needs.e2e-docker.result }}"
+          echo "e2e-docker-arm64: ${{ needs.e2e-docker-arm64.result }}"
+          echo "e2e-macos:        ${{ needs.e2e-macos.result }}"
+          echo "e2e-macos-arm64:  ${{ needs.e2e-macos-arm64.result }}"
+
+      - name: Report final status
+        if: needs.resolve.outputs.sha != ''
+        env:
+          GH_TOKEN: ${{ secrets.AGENT_REPO_TOKEN }}
+        run: |
+          RESULTS=("${{ needs.e2e-docker.result }}" "${{ needs.e2e-docker-arm64.result }}" \
+                   "${{ needs.e2e-macos.result }}" "${{ needs.e2e-macos-arm64.result }}")
+          STATE="success"
+          DESC="All E2E tests passed"
+          for r in "${RESULTS[@]}"; do
+            if [ "$r" = "failure" ]; then
+              STATE="failure"
+              DESC="E2E tests failed"
+              break
+            fi
+          done
+          curl -sf -X POST \
+            -H "Authorization: Bearer $GH_TOKEN" \
+            -H "Accept: application/vnd.github+json" \
+            "https://api.github.com/repos/supervizio/agent/statuses/${{ needs.resolve.outputs.sha }}" \
+            -d "{\"state\":\"$STATE\",\"context\":\"e2e/runner-template\",\"description\":\"$DESC\",\"target_url\":\"${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}\"}"
+
+      - name: Summary
+        if: always()
+        run: |
+          {
+            echo "## E2E Test Results (runner-template)"
+            echo ""
+            echo "| Job | Result |"
+            echo "|-----|--------|"
+            echo "| Docker amd64 | \`${{ needs.e2e-docker.result }}\` |"
+            echo "| Docker arm64 | \`${{ needs.e2e-docker-arm64.result }}\` |"
+            echo "| macOS x86_64 | \`${{ needs.e2e-macos.result }}\` |"
+            echo "| macOS ARM64 | \`${{ needs.e2e-macos-arm64.result }}\` |"
+            echo ""
+            echo "**Agent ref:** \`${{ needs.resolve.outputs.ref }}\`"
+            echo "**Agent SHA:** \`${{ needs.resolve.outputs.sha }}\`"
+            echo "**Agent run:** \`${{ needs.resolve.outputs.run_id }}\`"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Fail if any E2E failed
+        run: |
+          RESULTS=("${{ needs.e2e-docker.result }}" "${{ needs.e2e-docker-arm64.result }}" \
+                   "${{ needs.e2e-macos.result }}" "${{ needs.e2e-macos-arm64.result }}")
+          for r in "${RESULTS[@]}"; do
+            if [ "$r" = "failure" ]; then
+              echo "FAILED: At least one E2E job failed"
+              exit 1
+            fi
+          done
+          echo "SUCCESS: All E2E tests passed"
