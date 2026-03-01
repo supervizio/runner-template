@@ -83,9 +83,11 @@ jobs:
     steps:
       - name: Report status (pending)
         if: needs.resolve.outputs.sha != ''
+        continue-on-error: true
         env:
           GH_TOKEN: ${{ secrets.AGENT_REPO_TOKEN }}
         run: |
+          [ -z "$GH_TOKEN" ] && { echo "AGENT_REPO_TOKEN not set, skipping"; exit 0; }
           curl -sf -X POST \
             -H "Authorization: Bearer $GH_TOKEN" \
             -H "Accept: application/vnd.github+json" \
@@ -112,7 +114,6 @@ jobs:
         run: |
           ls -la bin/
           chmod +x bin/${{ matrix.artifact }}
-          # Dockerfile.scratch expects bin/supervizio, others expect bin/supervizio-linux-amd64
           if [ "${{ matrix.dockerfile }}" = "Dockerfile.scratch" ]; then
             mv bin/${{ matrix.artifact }} bin/supervizio
           elif [ "${{ matrix.artifact }}" != "supervizio-linux-amd64" ]; then
@@ -189,9 +190,11 @@ jobs:
 
       - name: Report status (result)
         if: always() && needs.resolve.outputs.sha != ''
+        continue-on-error: true
         env:
           GH_TOKEN: ${{ secrets.AGENT_REPO_TOKEN }}
         run: |
+          [ -z "$GH_TOKEN" ] && { echo "AGENT_REPO_TOKEN not set, skipping"; exit 0; }
           STATE="success"
           DESC="Passed"
           if [ "${{ job.status }}" != "success" ]; then
@@ -235,9 +238,11 @@ jobs:
     steps:
       - name: Report status (pending)
         if: needs.resolve.outputs.sha != ''
+        continue-on-error: true
         env:
           GH_TOKEN: ${{ secrets.AGENT_REPO_TOKEN }}
         run: |
+          [ -z "$GH_TOKEN" ] && { echo "AGENT_REPO_TOKEN not set, skipping"; exit 0; }
           curl -sf -X POST \
             -H "Authorization: Bearer $GH_TOKEN" \
             -H "Accept: application/vnd.github+json" \
@@ -264,7 +269,6 @@ jobs:
         run: |
           ls -la bin/
           chmod +x bin/${{ matrix.artifact }}
-          # Dockerfiles expect amd64 binary names — rename arm64 to match
           mv bin/${{ matrix.artifact }} bin/${{ matrix.binary_name }}
           file bin/${{ matrix.binary_name }}
 
@@ -337,9 +341,11 @@ jobs:
 
       - name: Report status (result)
         if: always() && needs.resolve.outputs.sha != ''
+        continue-on-error: true
         env:
           GH_TOKEN: ${{ secrets.AGENT_REPO_TOKEN }}
         run: |
+          [ -z "$GH_TOKEN" ] && { echo "AGENT_REPO_TOKEN not set, skipping"; exit 0; }
           STATE="success"
           DESC="Passed"
           if [ "${{ job.status }}" != "success" ]; then
@@ -364,9 +370,11 @@ jobs:
     steps:
       - name: Report status (pending)
         if: needs.resolve.outputs.sha != ''
+        continue-on-error: true
         env:
           GH_TOKEN: ${{ secrets.AGENT_REPO_TOKEN }}
         run: |
+          [ -z "$GH_TOKEN" ] && { echo "AGENT_REPO_TOKEN not set, skipping"; exit 0; }
           curl -sf -X POST \
             -H "Authorization: Bearer $GH_TOKEN" \
             -H "Accept: application/vnd.github+json" \
@@ -441,9 +449,11 @@ jobs:
 
       - name: Report status (result)
         if: always() && needs.resolve.outputs.sha != ''
+        continue-on-error: true
         env:
           GH_TOKEN: ${{ secrets.AGENT_REPO_TOKEN }}
         run: |
+          [ -z "$GH_TOKEN" ] && { echo "AGENT_REPO_TOKEN not set, skipping"; exit 0; }
           STATE="success"
           DESC="Passed"
           if [ "${{ job.status }}" != "success" ]; then
@@ -468,9 +478,11 @@ jobs:
     steps:
       - name: Report status (pending)
         if: needs.resolve.outputs.sha != ''
+        continue-on-error: true
         env:
           GH_TOKEN: ${{ secrets.AGENT_REPO_TOKEN }}
         run: |
+          [ -z "$GH_TOKEN" ] && { echo "AGENT_REPO_TOKEN not set, skipping"; exit 0; }
           curl -sf -X POST \
             -H "Authorization: Bearer $GH_TOKEN" \
             -H "Accept: application/vnd.github+json" \
@@ -545,9 +557,11 @@ jobs:
 
       - name: Report status (result)
         if: always() && needs.resolve.outputs.sha != ''
+        continue-on-error: true
         env:
           GH_TOKEN: ${{ secrets.AGENT_REPO_TOKEN }}
         run: |
+          [ -z "$GH_TOKEN" ] && { echo "AGENT_REPO_TOKEN not set, skipping"; exit 0; }
           STATE="success"
           DESC="Passed"
           if [ "${{ job.status }}" != "success" ]; then
@@ -580,9 +594,11 @@ jobs:
 
       - name: Report final status
         if: needs.resolve.outputs.sha != ''
+        continue-on-error: true
         env:
           GH_TOKEN: ${{ secrets.AGENT_REPO_TOKEN }}
         run: |
+          [ -z "$GH_TOKEN" ] && { echo "AGENT_REPO_TOKEN not set, skipping"; exit 0; }
           RESULTS=("${{ needs.e2e-docker.result }}" "${{ needs.e2e-docker-arm64.result }}" \
                    "${{ needs.e2e-macos.result }}" "${{ needs.e2e-macos-arm64.result }}")
           STATE="success"
