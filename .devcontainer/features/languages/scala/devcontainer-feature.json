@@ -1,0 +1,8 @@
+{
+  "id": "scala",
+  "version": "1.0.0",
+  "name": "Scala Development Environment",
+  "description": "Installs Scala, sbt, and Coursier for Scala development",
+  "options": {},
+  "installsAfter": ["java"]
+}

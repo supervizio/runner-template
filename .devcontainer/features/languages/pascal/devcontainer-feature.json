@@ -1,0 +1,8 @@
+{
+  "id": "pascal",
+  "version": "1.0.0",
+  "name": "Pascal Development Environment",
+  "description": "Installs Free Pascal compiler and base units",
+  "options": {},
+  "installsAfter": []
+}

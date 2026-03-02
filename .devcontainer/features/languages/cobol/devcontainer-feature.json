@@ -1,0 +1,8 @@
+{
+  "id": "cobol",
+  "version": "1.0.0",
+  "name": "COBOL Development Environment",
+  "description": "Installs GnuCOBOL compiler and development tools",
+  "options": {},
+  "installsAfter": []
+}

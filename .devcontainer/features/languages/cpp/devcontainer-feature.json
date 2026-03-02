@@ -1,0 +1,8 @@
+{
+  "id": "cpp",
+  "version": "1.0.0",
+  "name": "C/C++ Development Environment",
+  "description": "Installs GCC, Clang, CMake, and common C/C++ development tools",
+  "options": {},
+  "installsAfter": []
+}
