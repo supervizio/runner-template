@@ -1,0 +1,48 @@
+name: Release
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - '.devcontainer/images/**'
+      - '.devcontainer/features/**'
+      - '.devcontainer/hooks/**'
+      - '.github/workflows/release.yml'
+  workflow_dispatch:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  release:
+    # Only run on the original template repository, not on forks/copies
+    if: github.repository == 'kodflow/devcontainer-template'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+
+      - name: Generate assets archive
+        run: |
+          .devcontainer/scripts/generate-assets-archive.sh --output claude-assets.tar.gz
+
+      - name: Create or update release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          TAG="v$(date -u +'%Y.%m.%d')-${GITHUB_SHA::7}"
+
+          # Delete existing 'latest' release if it exists (keep only one)
+          gh release delete latest --yes 2>/dev/null || true
+          git push origin :refs/tags/latest 2>/dev/null || true
+
+          # Create new release tagged 'latest' + dated tag
+          gh release create "$TAG" \
+            claude-assets.tar.gz \
+            --title "Release $TAG" \
+            --notes "Auto-generated from commit ${GITHUB_SHA::7} on $(date -u +'%Y-%m-%d %H:%M UTC')" \
+            --latest

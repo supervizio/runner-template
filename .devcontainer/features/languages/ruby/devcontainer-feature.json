@@ -1,0 +1,8 @@
+{
+  "id": "ruby",
+  "version": "1.0.0",
+  "name": "Ruby Development Environment",
+  "description": "Installs Ruby via rbenv, bundler, and common development tools",
+  "options": {},
+  "installsAfter": []
+}

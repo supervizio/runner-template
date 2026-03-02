@@ -1,0 +1,8 @@
+{
+  "id": "ada",
+  "version": "1.0.0",
+  "name": "Ada Development Environment",
+  "description": "Installs GNAT, GPRbuild, and Alire package manager",
+  "options": {},
+  "installsAfter": []
+}

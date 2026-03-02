@@ -1,0 +1,13 @@
+{
+  "id": "dart-flutter",
+  "version": "1.0.0",
+  "name": "Dart/Flutter Development Environment",
+  "description": "Installs Dart SDK and Flutter framework",
+  "options": {},
+  "installsAfter": [],
+  "containerEnv": {
+    "FLUTTER_ROOT": "/home/vscode/.cache/flutter",
+    "PUB_CACHE": "/home/vscode/.cache/pub-cache",
+    "PATH": "/home/vscode/.cache/flutter/bin:/home/vscode/.cache/pub-cache/bin:${PATH}"
+  }
+}
