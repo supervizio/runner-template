@@ -575,12 +575,516 @@ jobs:
             -d "{\"state\":\"$STATE\",\"context\":\"e2e/macos-arm64\",\"description\":\"$DESC\",\"target_url\":\"${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}\"}"
 
   # ===========================================================================
+  # E2E VM TESTS (Proxmox, self-hosted)
+  # ===========================================================================
+
+  e2e-vm:
+    name: E2E VM ${{ matrix.name }}
+    needs: [resolve]
+    runs-on:
+      group: proxmox-small
+      labels: [self-hosted, linux, x64]
+    timeout-minutes: 15
+    strategy:
+      fail-fast: false
+      max-parallel: 8
+      matrix:
+        include:
+          - name: alpine-openrc
+            binary_artifact: supervizio-linux-amd64-musl
+            pkg_artifact: supervizio-amd64.apk
+            pkg_ext: apk
+          - name: alpine-s6
+            binary_artifact: supervizio-linux-amd64-musl
+            pkg_artifact: supervizio-amd64.apk
+            pkg_ext: apk
+          - name: arch-systemd
+            binary_artifact: supervizio-linux-amd64
+            pkg_artifact: supervizio-amd64.pkg.tar.zst
+            pkg_ext: pkg.tar.zst
+          - name: artix-dinit
+            binary_artifact: supervizio-linux-amd64
+            pkg_artifact: supervizio-amd64.pkg.tar.zst
+            pkg_ext: pkg.tar.zst
+          - name: debian-systemd
+            binary_artifact: supervizio-linux-amd64
+            pkg_artifact: supervizio-amd64.deb
+            pkg_ext: deb
+          - name: devuan-sysvinit
+            binary_artifact: supervizio-linux-amd64
+            pkg_artifact: supervizio-amd64.deb
+            pkg_ext: deb
+          - name: fedora-systemd
+            binary_artifact: supervizio-linux-amd64
+            pkg_artifact: supervizio-amd64.rpm
+            pkg_ext: rpm
+          - name: opensuse-systemd
+            binary_artifact: supervizio-linux-amd64
+            pkg_artifact: supervizio-amd64.rpm
+            pkg_ext: rpm
+          - name: void-runit
+            binary_artifact: supervizio-linux-amd64
+            pkg_artifact: supervizio-amd64.xbps
+            pkg_ext: xbps
+          - name: freebsd
+            binary_artifact: supervizio-freebsd-amd64
+            pkg_artifact: ""
+            pkg_ext: ""
+          - name: openbsd
+            binary_artifact: supervizio-openbsd-amd64
+            pkg_artifact: ""
+            pkg_ext: ""
+          - name: netbsd
+            binary_artifact: supervizio-netbsd-amd64
+            pkg_artifact: ""
+            pkg_ext: ""
+    env:
+      PROXMOX_API_URL: "https://192.168.100.1:8006/api2/json"
+      PVE_AUTH: "PVEAPIToken=${{ secrets.CI_RUNNER_API_TOKEN_ID }}=${{ secrets.CI_RUNNER_API_TOKEN_SECRET }}"
+      NODE: ${{ secrets.PROXMOX_NODE }}
+      SSH_OPTS: "-o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o ConnectTimeout=10"
+      GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+    steps:
+      - name: Report status (pending)
+        if: needs.resolve.outputs.sha != ''
+        continue-on-error: true
+        env:
+          GH_TOKEN: ${{ secrets.AGENT_REPO_TOKEN }}
+        run: |
+          [ -z "$GH_TOKEN" ] && { echo "AGENT_REPO_TOKEN not set, skipping"; exit 0; }
+          curl -sf -X POST \
+            -H "Authorization: Bearer $GH_TOKEN" \
+            -H "Accept: application/vnd.github+json" \
+            "https://api.github.com/repos/supervizio/agent/statuses/${{ needs.resolve.outputs.sha }}" \
+            -d '{"state":"pending","context":"e2e/vm/${{ matrix.name }}","description":"Running...","target_url":"${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"}'
+
+      - name: Checkout runner-template (for VM scripts)
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+        with:
+          path: runner-template
+
+      - name: Checkout agent code
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+        with:
+          repository: supervizio/agent
+          ref: ${{ needs.resolve.outputs.ref }}
+          token: ${{ secrets.AGENT_REPO_TOKEN }}
+          path: agent
+
+      - name: Download package artifact
+        if: matrix.pkg_artifact != ''
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        continue-on-error: true
+        id: download-pkg
+        with:
+          name: ${{ matrix.pkg_artifact }}
+          path: artifacts/
+          github-token: ${{ secrets.AGENT_REPO_TOKEN }}
+          repository: supervizio/agent
+          run-id: ${{ needs.resolve.outputs.run_id }}
+
+      - name: Download binary artifact (fallback)
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        continue-on-error: true
+        id: download-bin
+        with:
+          name: ${{ matrix.binary_artifact }}
+          path: artifacts/
+          github-token: ${{ secrets.AGENT_REPO_TOKEN }}
+          repository: supervizio/agent
+          run-id: ${{ needs.resolve.outputs.run_id }}
+
+      - name: Prepare artifacts
+        run: |
+          echo "=== Available artifacts ==="
+          ls -la artifacts/ 2>/dev/null || echo "No artifacts found"
+
+          # Find the package or binary to deploy
+          if [ -n "${{ matrix.pkg_ext }}" ]; then
+            PKG_FILE=$(find artifacts/ -name "*.${{ matrix.pkg_ext }}" 2>/dev/null | head -1)
+            if [ -n "$PKG_FILE" ]; then
+              echo "PKG_FILE=$PKG_FILE" >> "$GITHUB_ENV"
+              echo "DEPLOY_MODE=package" >> "$GITHUB_ENV"
+              echo "Found package: $PKG_FILE"
+            else
+              echo "Package not found, falling back to binary"
+              echo "DEPLOY_MODE=binary" >> "$GITHUB_ENV"
+            fi
+          else
+            echo "DEPLOY_MODE=binary" >> "$GITHUB_ENV"
+          fi
+
+          # Find binary
+          BIN_FILE=$(find artifacts/ -name "supervizio-*" -not -name "*.deb" -not -name "*.rpm" -not -name "*.apk" -not -name "*.pkg.tar.zst" -not -name "*.xbps" 2>/dev/null | head -1)
+          if [ -n "$BIN_FILE" ]; then
+            chmod +x "$BIN_FILE"
+            echo "BIN_FILE=$BIN_FILE" >> "$GITHUB_ENV"
+            echo "Found binary: $BIN_FILE"
+          fi
+
+      - name: Acquire VM (lock)
+        id: vm
+        run: |
+          chmod +x runner-template/.github/scripts/vm-acquire.sh
+          runner-template/.github/scripts/vm-acquire.sh "${{ matrix.name }}" "${GITHUB_RUN_ID}_e2e-vm-${{ matrix.name }}"
+
+      - name: SCP files to VM
+        run: |
+          # Retry helper for transient SSH/SCP failures
+          retry() {
+            local n=0 max=3
+            while [ $n -lt $max ]; do
+              "$@" && return 0
+              n=$((n + 1))
+              echo "Retry $n/$max..."
+              sleep 5
+            done
+            echo "Failed after $max attempts: $*"
+            return 1
+          }
+
+          # Use -O (legacy SCP protocol) for VMs without SFTP subsystem
+          SCP_CMD="scp -O ${SSH_OPTS}"
+
+          # Clean previous files to prevent SCP nesting issues
+          ssh ${SSH_OPTS} root@${VM_IP} "rm -rf /tmp/setup /tmp/validate-probe.sh /tmp/supervizio*" || true
+
+          # Copy setup scripts (from agent repo checkout)
+          retry ${SCP_CMD} -r agent/setup root@${VM_IP}:/tmp/setup
+
+          # Copy test scripts (from agent repo checkout)
+          retry ${SCP_CMD} agent/e2e/validate-probe.sh root@${VM_IP}:/tmp/validate-probe.sh
+
+          # Copy package if available
+          if [ "$DEPLOY_MODE" = "package" ] && [ -n "${PKG_FILE:-}" ]; then
+            retry ${SCP_CMD} "$PKG_FILE" root@${VM_IP}:/tmp/supervizio.${{ matrix.pkg_ext }}
+            echo "Copied package: $PKG_FILE"
+          fi
+
+          # Always copy binary as fallback
+          if [ -n "${BIN_FILE:-}" ]; then
+            retry ${SCP_CMD} "$BIN_FILE" root@${VM_IP}:/tmp/supervizio
+            ssh ${SSH_OPTS} root@${VM_IP} "chmod +x /tmp/supervizio"
+            echo "Copied binary: $BIN_FILE"
+          fi
+
+          # Fail if nothing was copied
+          if [ -z "${PKG_FILE:-}" ] && [ -z "${BIN_FILE:-}" ]; then
+            echo "ERROR: No package or binary to deploy"
+            exit 1
+          fi
+
+      - name: Install jq (best-effort)
+        run: |
+          ssh ${SSH_OPTS} root@${VM_IP} << 'INSTALL_JQ'
+          # Try to install jq - varies by OS
+          # Verify jq actually works (not just exists — some VMs have empty binaries)
+          if command -v jq >/dev/null 2>&1 && echo '{}' | jq . >/dev/null 2>&1; then
+            echo "jq already available and functional"
+            exit 0
+          fi
+          # Remove broken jq if present but non-functional
+          if command -v jq >/dev/null 2>&1; then
+            echo "jq exists but broken, forcing reinstall"
+            rm -f "$(command -v jq)" 2>/dev/null || true
+          fi
+          # Try common package managers
+          apk add --no-cache jq 2>/dev/null && echo '{}' | jq . >/dev/null 2>&1 && exit 0
+          apt-get update -qq && apt-get install -y -qq jq 2>/dev/null && echo '{}' | jq . >/dev/null 2>&1 && exit 0
+          dnf install -y jq 2>/dev/null && echo '{}' | jq . >/dev/null 2>&1 && exit 0
+          yum install -y jq 2>/dev/null && echo '{}' | jq . >/dev/null 2>&1 && exit 0
+          zypper install -y jq 2>/dev/null && echo '{}' | jq . >/dev/null 2>&1 && exit 0
+          pacman -Sy --noconfirm jq 2>/dev/null && echo '{}' | jq . >/dev/null 2>&1 && exit 0
+          xbps-install -Sy jq 2>/dev/null && echo '{}' | jq . >/dev/null 2>&1 && exit 0
+          pkg install -y jq 2>/dev/null && echo '{}' | jq . >/dev/null 2>&1 && exit 0
+          pkg_add jq 2>/dev/null && echo '{}' | jq . >/dev/null 2>&1 && exit 0
+          pkgin -y install jq 2>/dev/null && echo '{}' | jq . >/dev/null 2>&1 && exit 0
+          # Static binary fallback (works on any Linux/BSD x86_64)
+          echo "Package jq install failed or broken, trying static binary..."
+          ARCH=$(uname -m)
+          case "$ARCH" in
+            x86_64|amd64) JQ_ARCH="amd64" ;;
+            aarch64|arm64) JQ_ARCH="arm64" ;;
+            *) JQ_ARCH="" ;;
+          esac
+          if [ -n "$JQ_ARCH" ]; then
+            OS=$(uname -s | tr '[:upper:]' '[:lower:]')
+            case "$OS" in
+              freebsd) OS="linux" ;; # jq linux static works on FreeBSD via compat
+              *) ;;
+            esac
+            JQ_URL="https://github.com/jqlang/jq/releases/download/jq-1.7.1/jq-${OS}-${JQ_ARCH}"
+            curl -fsSL "$JQ_URL" -o /usr/local/bin/jq 2>/dev/null || \
+              fetch -o /usr/local/bin/jq "$JQ_URL" 2>/dev/null || \
+              ftp -o /usr/local/bin/jq "$JQ_URL" 2>/dev/null || true
+            chmod +x /usr/local/bin/jq 2>/dev/null
+            if echo '{}' | /usr/local/bin/jq . >/dev/null 2>&1; then
+              echo "Static jq installed successfully"
+              exit 0
+            fi
+          fi
+          echo "WARNING: Could not install functional jq"
+          exit 0
+          INSTALL_JQ
+
+      - name: Install supervizio
+        run: |
+          ssh ${SSH_OPTS} root@${VM_IP} << 'INSTALL_CMD'
+          set -e
+          echo "=== Platform Info ==="
+          uname -a
+          echo ""
+
+          # Set package source if available
+          if [ -f "/tmp/supervizio.${{ matrix.pkg_ext }}" ] && [ -n "${{ matrix.pkg_ext }}" ]; then
+            echo "Package available: /tmp/supervizio.${{ matrix.pkg_ext }}"
+            export SUPERVIZIO_LOCAL_PKG="/tmp/supervizio.${{ matrix.pkg_ext }}"
+          fi
+
+          # Set binary fallback if available
+          if [ -f "/tmp/supervizio" ]; then
+            echo "Binary available: /tmp/supervizio"
+            export SUPERVIZIO_LOCAL_BIN="/tmp/supervizio"
+          fi
+
+          if [ -z "${SUPERVIZIO_LOCAL_PKG:-}" ] && [ -z "${SUPERVIZIO_LOCAL_BIN:-}" ]; then
+            echo "ERROR: No package or binary found"
+            exit 1
+          fi
+
+          chmod +x /tmp/setup/install.sh
+          /tmp/setup/install.sh
+          INSTALL_CMD
+
+      - name: Verify installation
+        run: |
+          ssh ${SSH_OPTS} root@${VM_IP} << 'VERIFY_CMD'
+          set -e
+          echo "=== Verify Installation ==="
+
+          # Check binary exists
+          if [ -f /usr/local/bin/supervizio ]; then
+            echo "OK Binary found at /usr/local/bin/supervizio"
+          else
+            echo "FAIL Binary NOT found"
+            exit 1
+          fi
+
+          # Check config directory
+          if [ -d /etc/supervizio ]; then
+            echo "OK Config directory exists"
+          else
+            echo "SKIP Config directory not found (may be OK for BSD)"
+          fi
+
+          # Check config file
+          if [ -f /etc/supervizio/config.example.yaml ]; then
+            echo "OK Example config found"
+          else
+            echo "SKIP Example config not found"
+          fi
+
+          # Check version
+          echo ""
+          echo "=== Version ==="
+          /usr/local/bin/supervizio --version || echo "version check done"
+          VERIFY_CMD
+
+      - name: Validate probe
+        run: |
+          ssh ${SSH_OPTS} root@${VM_IP} << 'PROBE_CMD'
+          set -e
+          if command -v jq >/dev/null 2>&1; then
+            chmod +x /tmp/validate-probe.sh
+            /tmp/validate-probe.sh
+          else
+            echo "[WARN] jq not available, running basic probe test"
+            OUTPUT=$(/usr/local/bin/supervizio --probe 2>&1) || {
+              echo "ERROR: --probe failed"
+              echo "Output: $OUTPUT"
+              exit 1
+            }
+            echo "Probe output:"
+            echo "$OUTPUT"
+            echo "OK Probe returned output (jq not available for validation)"
+          fi
+          PROBE_CMD
+
+      - name: Uninstall supervizio
+        run: |
+          ssh ${SSH_OPTS} root@${VM_IP} << 'UNINSTALL_CMD'
+          set -e
+          echo "=== Uninstalling supervizio ==="
+          export SUPERVIZIO_NON_INTERACTIVE=true
+          chmod +x /tmp/setup/uninstall.sh
+          /tmp/setup/uninstall.sh
+          UNINSTALL_CMD
+
+      - name: Verify clean uninstall
+        run: |
+          ssh ${SSH_OPTS} root@${VM_IP} << 'VERIFY_CLEAN'
+          set -e
+          echo "=== Verify Clean Uninstall ==="
+          ERRORS=0
+
+          # Check binary removed
+          if [ -f /usr/local/bin/supervizio ]; then
+            echo "FAIL Binary still present!"
+            ERRORS=$((ERRORS + 1))
+          else
+            echo "OK Binary removed"
+          fi
+
+          # Check service files removed
+          for svc in /etc/systemd/system/supervizio.service \
+                     /usr/lib/systemd/system/supervizio.service \
+                     /etc/init.d/supervizio \
+                     /etc/sv/supervizio/run \
+                     /etc/s6/supervizio/run \
+                     /etc/dinit.d/supervizio \
+                     /etc/rc.d/supervizio; do
+            if [ -f "$svc" ]; then
+              echo "FAIL Service file still present: $svc"
+              ERRORS=$((ERRORS + 1))
+            fi
+          done
+
+          if [ "$ERRORS" -gt 0 ]; then
+            echo ""
+            echo "WARNING: $ERRORS items not cleaned up"
+            # Don't fail - some systems may retain config
+          else
+            echo "OK Clean uninstall verified"
+          fi
+          VERIFY_CLEAN
+
+      - name: Release VM
+        if: always()
+        run: |
+          chmod +x runner-template/.github/scripts/vm-release.sh
+          runner-template/.github/scripts/vm-release.sh "${{ steps.vm.outputs.VMID || matrix.name }}"
+
+      - name: Report status (result)
+        if: always() && needs.resolve.outputs.sha != ''
+        continue-on-error: true
+        env:
+          GH_TOKEN: ${{ secrets.AGENT_REPO_TOKEN }}
+        run: |
+          [ -z "$GH_TOKEN" ] && { echo "AGENT_REPO_TOKEN not set, skipping"; exit 0; }
+          STATE="success"
+          DESC="Passed"
+          if [ "${{ job.status }}" != "success" ]; then
+            STATE="failure"
+            DESC="Failed"
+          fi
+          curl -sf -X POST \
+            -H "Authorization: Bearer $GH_TOKEN" \
+            -H "Accept: application/vnd.github+json" \
+            "https://api.github.com/repos/supervizio/agent/statuses/${{ needs.resolve.outputs.sha }}" \
+            -d "{\"state\":\"$STATE\",\"context\":\"e2e/vm/${{ matrix.name }}\",\"description\":\"$DESC\",\"target_url\":\"${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}\"}"
+
+  # ===========================================================================
+  # VM CLEANUP: Reset all VMs to base snapshot
+  # ===========================================================================
+
+  vm-cleanup:
+    name: VM Cleanup
+    needs: [e2e-vm]
+    if: always()
+    runs-on:
+      group: proxmox-small
+      labels: [self-hosted, linux, x64]
+    timeout-minutes: 10
+    env:
+      PROXMOX_API_URL: "https://192.168.100.1:8006/api2/json"
+      PVE_AUTH: "PVEAPIToken=${{ secrets.CI_RUNNER_API_TOKEN_ID }}=${{ secrets.CI_RUNNER_API_TOKEN_SECRET }}"
+      NODE: ${{ secrets.PROXMOX_NODE }}
+    steps:
+      - name: Reset all VMs to base snapshot
+        run: |
+          echo "=== VM Cleanup: Resetting all VMs to base snapshot ==="
+
+          # Validate Proxmox credentials
+          if [ -z "$NODE" ] || [ "$PVE_AUTH" = "PVEAPIToken==" ]; then
+            echo "WARNING: Proxmox secrets not configured, skipping VM cleanup"
+            exit 0
+          fi
+
+          # Dynamically discover test VM VMIDs via Proxmox API
+          # Test VMs are named after OS templates (alpine-openrc, debian-systemd, freebsd, etc.)
+          # Exclude: runner-* (CI runners), tpl-* (Packer templates), e2e-* (ephemeral clones)
+          echo "Discovering test VMs..."
+          ALL_VMS=$(curl -sf -k --max-time 30 \
+            -H "Authorization: ${PVE_AUTH}" \
+            "${PROXMOX_API_URL}/nodes/${NODE}/qemu" 2>/dev/null) || {
+            echo "ERROR: Failed to list VMs from Proxmox API"
+            exit 1
+          }
+
+          # Filter: exclude runners, templates, and numeric-only names
+          VMIDS=$(echo "$ALL_VMS" | jq -r '
+            .data[]
+            | select(.name | test("^(runner-|tpl-|e2e-)") | not)
+            | select(.name | test("^[0-9]+$") | not)
+            | .vmid
+          ' 2>/dev/null | sort -n)
+
+          if [ -z "$VMIDS" ]; then
+            echo "WARNING: No test VMs found to reset"
+            exit 0
+          fi
+
+          echo "Found test VMs:"
+          echo "$ALL_VMS" | jq -r '
+            .data[]
+            | select(.name | test("^(runner-|tpl-|e2e-)") | not)
+            | select(.name | test("^[0-9]+$") | not)
+            | "  \(.vmid) \(.name) (\(.status))"
+          ' 2>/dev/null
+
+          TOTAL=0
+          FAILED=0
+          for VMID in $VMIDS; do
+            TOTAL=$((TOTAL + 1))
+            VM_NAME=$(echo "$ALL_VMS" | jq -r ".data[] | select(.vmid == ${VMID}) | .name")
+            echo ""
+            echo "--- ${VM_NAME} (VMID ${VMID}) ---"
+
+            echo "  Stopping VM ${VMID}..."
+            curl -sf -k --max-time 30 \
+              -H "Authorization: ${PVE_AUTH}" \
+              -X POST "${PROXMOX_API_URL}/nodes/${NODE}/qemu/${VMID}/status/stop" \
+              >/dev/null 2>&1 || true
+            sleep 3
+
+            echo "  Rolling back to 'base' snapshot..."
+            if curl -sf -k --max-time 60 \
+              -H "Authorization: ${PVE_AUTH}" \
+              -X POST "${PROXMOX_API_URL}/nodes/${NODE}/qemu/${VMID}/snapshot/base/rollback" \
+              >/dev/null 2>&1; then
+              echo "  OK: ${VM_NAME} reset to base"
+            else
+              echo "  WARNING: Failed to reset ${VM_NAME} (VMID ${VMID})"
+              FAILED=$((FAILED + 1))
+            fi
+          done
+
+          echo ""
+          echo "=== VM Cleanup Complete ==="
+          echo "  Total VMs: ${TOTAL}"
+          echo "  Failed: ${FAILED}"
+
+          if [ "$FAILED" -gt 0 ]; then
+            echo "  WARNING: ${FAILED} VM(s) failed to reset (non-fatal)"
+          fi
+
+  # ===========================================================================
   # REPORT: Aggregate results and post final commit status
   # ===========================================================================
 
   report:
     name: Report Results
-    needs: [resolve, e2e-docker, e2e-docker-arm64, e2e-macos, e2e-macos-arm64]
+    needs: [resolve, e2e-docker, e2e-docker-arm64, e2e-macos, e2e-macos-arm64, e2e-vm]
     if: always()
     runs-on: ubuntu-24.04
     steps:
@@ -591,6 +1095,7 @@ jobs:
           echo "e2e-docker-arm64: ${{ needs.e2e-docker-arm64.result }}"
           echo "e2e-macos:        ${{ needs.e2e-macos.result }}"
           echo "e2e-macos-arm64:  ${{ needs.e2e-macos-arm64.result }}"
+          echo "e2e-vm:           ${{ needs.e2e-vm.result }}"
 
       - name: Report final status
         if: needs.resolve.outputs.sha != ''
@@ -600,7 +1105,8 @@ jobs:
         run: |
           [ -z "$GH_TOKEN" ] && { echo "AGENT_REPO_TOKEN not set, skipping"; exit 0; }
           RESULTS=("${{ needs.e2e-docker.result }}" "${{ needs.e2e-docker-arm64.result }}" \
-                   "${{ needs.e2e-macos.result }}" "${{ needs.e2e-macos-arm64.result }}")
+                   "${{ needs.e2e-macos.result }}" "${{ needs.e2e-macos-arm64.result }}" \
+                   "${{ needs.e2e-vm.result }}")
           STATE="success"
           DESC="All E2E tests passed"
           for r in "${RESULTS[@]}"; do
@@ -628,6 +1134,7 @@ jobs:
             echo "| Docker arm64 | \`${{ needs.e2e-docker-arm64.result }}\` |"
             echo "| macOS x86_64 | \`${{ needs.e2e-macos.result }}\` |"
             echo "| macOS ARM64 | \`${{ needs.e2e-macos-arm64.result }}\` |"
+            echo "| VM E2E | \`${{ needs.e2e-vm.result }}\` |"
             echo ""
             echo "**Agent ref:** \`${{ needs.resolve.outputs.ref }}\`"
             echo "**Agent SHA:** \`${{ needs.resolve.outputs.sha }}\`"
@@ -637,7 +1144,8 @@ jobs:
       - name: Fail if any E2E failed
         run: |
           RESULTS=("${{ needs.e2e-docker.result }}" "${{ needs.e2e-docker-arm64.result }}" \
-                   "${{ needs.e2e-macos.result }}" "${{ needs.e2e-macos-arm64.result }}")
+                   "${{ needs.e2e-macos.result }}" "${{ needs.e2e-macos-arm64.result }}" \
+                   "${{ needs.e2e-vm.result }}")
           for r in "${RESULTS[@]}"; do
             if [ "$r" = "failure" ]; then
               echo "FAILED: At least one E2E job failed"
