@@ -1,0 +1,8 @@
+{
+  "id": "perl",
+  "version": "1.0.0",
+  "name": "Perl Development Environment",
+  "description": "Installs Perl, cpanminus, Perl::Tidy, and Perl::Critic",
+  "options": {},
+  "installsAfter": []
+}
