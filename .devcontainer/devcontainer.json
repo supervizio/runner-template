@@ -1,0 +1,96 @@
+{
+  "name": "${localWorkspaceFolderBasename} Dev Environment",
+  "dockerComposeFile": "docker-compose.yml",
+  "service": "devcontainer",
+  "workspaceFolder": "/workspace",
+  // Features - additional languages (tools are already in base image)
+  "features": {
+    // ========== LANGUAGES ==========
+    // Node.js enabled by default (required for MCP servers)
+    "./features/languages/nodejs": {},
+    // Uncomment other languages as needed
+    // "./features/languages/c": {},
+    // "./features/languages/cpp": {},
+    // "./features/languages/java": {},
+    // "./features/languages/csharp": {},
+    // "./features/languages/python": {},
+    // "./features/languages/go": {},
+    // "./features/languages/rust": {},
+    // "./features/languages/ruby": {},
+    // "./features/languages/php": {},
+    // "./features/languages/elixir": {},
+    // "./features/languages/scala": {},
+    // "./features/languages/dart-flutter": {},
+    // "./features/languages/kotlin": {},
+    // "./features/languages/swift": {},
+    // "./features/languages/r": {},
+    // "./features/languages/perl": {},
+    // "./features/languages/lua": {},
+    // "./features/languages/fortran": {},
+    // "./features/languages/ada": {},
+    // "./features/languages/cobol": {},
+    // "./features/languages/pascal": {},
+    // "./features/languages/vbnet": {},
+    // "./features/languages/matlab": {},
+    // "./features/languages/assembly": {},
+    // ========== KUBERNETES ==========
+    // Local Kubernetes development with kind (requires docker-outside-of-docker)
+    "./features/kubernetes": {},
+    // ========== INFRASTRUCTURE ==========
+    // Infra tools: terragrunt, tflint, infracost, cfssl, ansible-lint, molecule
+    // Recommended companions: python (for ansible-lint/molecule), go (for Terratest)
+    // "./features/infrastructure": {},
+    // ========== NETWORKING ==========
+    // VPN clients (OpenVPN, WireGuard, IPsec, PPTP) are built into the base image
+    // Configure credentials in .env with op:// references (see .env.example)
+    // ========== EXTERNAL ==========
+    // Docker support
+    "ghcr.io/devcontainers/features/docker-outside-of-docker:1": {
+      "moby": false,
+      "installDockerBuildx": true,
+      "dockerDashComposeVersion": "v2"
+    }
+  },
+  // Configure tool-specific properties
+  "customizations": {
+    "vscode": {
+      "settings": {
+        "terminal.integrated.defaultProfile.linux": "zsh",
+        "terminal.integrated.profiles.linux": {
+          "zsh": {
+            "path": "/bin/zsh"
+          }
+        },
+        "editor.formatOnSave": true,
+        "files.eol": "\n",
+        "files.insertFinalNewline": true,
+        "files.trimTrailingWhitespace": true,
+        "files.exclude": {
+          "**/.grepai": true,
+          "**/.git": true
+        }
+      },
+      "extensions": [
+        "vscode-icons-team.vscode-icons",
+        "redhat.vscode-yaml",
+        "tamasfe.even-better-toml",
+        "bierner.markdown-mermaid"
+      ]
+    }
+  },
+  // ========== LIFECYCLE COMMANDS ==========
+  // All commands check for script existence to avoid failures if scripts are missing
+  "waitFor": "postCreateCommand",
+  "initializeCommand": "[ -f \"${localWorkspaceFolder}/.devcontainer/hooks/lifecycle/initialize.sh\" ] && bash \"${localWorkspaceFolder}/.devcontainer/hooks/lifecycle/initialize.sh\" || true",
+  "onCreateCommand": {
+    "chmod-hooks": "chmod +x /workspace/.devcontainer/hooks/lifecycle/*.sh 2>/dev/null || true",
+    "run-hook": "[ -f /workspace/.devcontainer/hooks/lifecycle/onCreate.sh ] && /workspace/.devcontainer/hooks/lifecycle/onCreate.sh || true"
+  },
+  "updateContentCommand": "[ -f /workspace/.devcontainer/hooks/lifecycle/updateContent.sh ] && /workspace/.devcontainer/hooks/lifecycle/updateContent.sh || true",
+  "postCreateCommand": "[ -f /workspace/.devcontainer/hooks/lifecycle/postCreate.sh ] && /workspace/.devcontainer/hooks/lifecycle/postCreate.sh || true",
+  "postStartCommand": "[ -f /workspace/.devcontainer/hooks/lifecycle/postStart.sh ] && /workspace/.devcontainer/hooks/lifecycle/postStart.sh || true",
+  "postAttachCommand": "[ -f /workspace/.devcontainer/hooks/lifecycle/postAttach.sh ] && /workspace/.devcontainer/hooks/lifecycle/postAttach.sh || true",
+  "forwardPorts": [],
+  "remoteUser": "vscode",
+  "shutdownAction": "none"
+}
