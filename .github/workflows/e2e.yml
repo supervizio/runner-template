@@ -447,6 +447,21 @@ jobs:
           echo "$OUTPUT" | jq -e '.timestamp and .os.platform and .cpu.cores > 0' && \
             echo "OK Probe validation passed on macOS x86_64"
 
+      - name: Save probe capabilities
+        if: always()
+        run: |
+          chmod +x agent/e2e/probe-capabilities.sh
+          agent/e2e/probe-capabilities.sh ./bin/supervizio probe-cap-darwin-amd64.json darwin-amd64
+
+      - name: Upload probe capabilities
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: probe-cap-darwin-amd64
+          path: probe-cap-darwin-amd64.json
+          retention-days: 1
+          if-no-files-found: ignore
+
       - name: Report status (result)
         if: always() && needs.resolve.outputs.sha != ''
         continue-on-error: true
@@ -554,6 +569,21 @@ jobs:
           echo "=== Final validation ==="
           echo "$OUTPUT" | jq -e '.timestamp and .os.platform and .cpu.cores > 0' && \
             echo "OK Probe validation passed on macOS ARM64"
+
+      - name: Save probe capabilities
+        if: always()
+        run: |
+          chmod +x agent/e2e/probe-capabilities.sh
+          agent/e2e/probe-capabilities.sh ./bin/supervizio probe-cap-darwin-arm64.json darwin-arm64
+
+      - name: Upload probe capabilities
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: probe-cap-darwin-arm64
+          path: probe-cap-darwin-arm64.json
+          retention-days: 1
+          if-no-files-found: ignore
 
       - name: Report status (result)
         if: always() && needs.resolve.outputs.sha != ''
