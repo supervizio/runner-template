@@ -190,6 +190,7 @@ jobs:
 
       - name: Save probe capabilities
         if: always()
+        continue-on-error: true
         run: |
           PLATFORM="docker-${{ matrix.name }}"
           if [ "${{ matrix.dockerfile }}" = "Dockerfile.scratch" ]; then
@@ -476,6 +477,7 @@ jobs:
 
       - name: Save probe capabilities
         if: always()
+        continue-on-error: true
         run: |
           chmod +x agent/e2e/probe-capabilities.sh
           agent/e2e/probe-capabilities.sh ./bin/supervizio probe-cap-darwin-amd64.json darwin-amd64
@@ -599,6 +601,7 @@ jobs:
 
       - name: Save probe capabilities
         if: always()
+        continue-on-error: true
         run: |
           chmod +x agent/e2e/probe-capabilities.sh
           agent/e2e/probe-capabilities.sh ./bin/supervizio probe-cap-darwin-arm64.json darwin-arm64
