@@ -62,7 +62,7 @@ jobs:
   e2e-docker:
     name: E2E Docker ${{ matrix.name }}
     needs: [resolve]
-    runs-on: ubuntu-24.04
+    runs-on: [self-hosted, proxmox, linux, x64]
     timeout-minutes: 10
     strategy:
       fail-fast: false
@@ -242,8 +242,8 @@ jobs:
   e2e-docker-arm64:
     name: E2E Docker arm64 ${{ matrix.name }}
     needs: [resolve]
-    runs-on: ubuntu-24.04-arm
-    timeout-minutes: 10
+    runs-on: [self-hosted, proxmox, linux, x64]
+    timeout-minutes: 15
     strategy:
       fail-fast: false
       matrix:
@@ -300,18 +300,27 @@ jobs:
           mv bin/${{ matrix.artifact }} bin/${{ matrix.binary_name }}
           file bin/${{ matrix.binary_name }}
 
+      - name: Set up QEMU (ARM64 emulation on x64)
+        uses: docker/setup-qemu-action@29109295f81e9208d7d86ff1c6c12d2833863392 # v3.6.0
+        with:
+          platforms: arm64
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@b5ca514318bd6ebac0fb2aedd5d36ec1b5c232a2 # v3.10.0
+
       - name: Build container
         run: |
-          docker build -f e2e/${{ matrix.dockerfile }} -t supervizio-e2e:${{ matrix.name }}-arm64 .
+          docker buildx build --platform linux/arm64 --load \
+            -f e2e/${{ matrix.dockerfile }} -t supervizio-e2e:${{ matrix.name }}-arm64 .
 
       - name: Test container startup
         run: |
-          docker run --rm supervizio-e2e:${{ matrix.name }}-arm64
+          docker run --rm --platform linux/arm64 supervizio-e2e:${{ matrix.name }}-arm64
 
       - name: Validate probe metrics
         if: matrix.dockerfile != 'Dockerfile.scratch'
         run: |
-          docker run --rm --entrypoint sh supervizio-e2e:${{ matrix.name }}-arm64 -c "
+          docker run --rm --platform linux/arm64 --entrypoint sh supervizio-e2e:${{ matrix.name }}-arm64 -c "
             set -e
             echo '=== System Info ==='
             uname -a
@@ -344,12 +353,12 @@ jobs:
           echo "=== Testing scratch container (static binary, no OS) ==="
 
           echo "--- Test --version ---"
-          docker run --rm supervizio-e2e:scratch-arm64 --version
+          docker run --rm --platform linux/arm64 supervizio-e2e:scratch-arm64 --version
           echo "OK --version works"
 
           echo ""
           echo "--- Test --probe ---"
-          OUTPUT=$(docker run --rm supervizio-e2e:scratch-arm64 --probe 2>&1) || {
+          OUTPUT=$(docker run --rm --platform linux/arm64 supervizio-e2e:scratch-arm64 --probe 2>&1) || {
             echo "ERROR: --probe failed"
             echo "Output: $OUTPUT"
             exit 1
