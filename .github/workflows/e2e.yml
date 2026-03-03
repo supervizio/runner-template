@@ -714,8 +714,12 @@ jobs:
             echo "DEPLOY_MODE=binary" >> "$GITHUB_ENV"
           fi
 
-          # Find binary
-          BIN_FILE=$(find artifacts/ -name "supervizio-*" -not -name "*.deb" -not -name "*.rpm" -not -name "*.apk" -not -name "*.pkg.tar.zst" -not -name "*.xbps" 2>/dev/null | head -1)
+          # Find binary (use matrix.binary_artifact name to avoid picking wrong platform)
+          BIN_FILE=$(find artifacts/ -name "${{ matrix.binary_artifact }}" 2>/dev/null | head -1)
+          if [ -z "$BIN_FILE" ]; then
+            # Fallback: generic search if exact name not found
+            BIN_FILE=$(find artifacts/ -name "supervizio-*" -not -name "*.deb" -not -name "*.rpm" -not -name "*.apk" -not -name "*.pkg.tar.zst" -not -name "*.xbps" 2>/dev/null | head -1)
+          fi
           if [ -n "$BIN_FILE" ]; then
             chmod +x "$BIN_FILE"
             echo "BIN_FILE=$BIN_FILE" >> "$GITHUB_ENV"
