@@ -102,7 +102,7 @@ jobs:
           token: ${{ secrets.AGENT_REPO_TOKEN }}
 
       - name: Download binary (cross-repo)
-        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        uses: actions/download-artifact@70fc10c6e5e1ce46ad2ea6f2b72d43f7d47b13c3 # v8.0.0
         with:
           name: ${{ matrix.artifact }}
           path: bin
@@ -257,7 +257,7 @@ jobs:
           token: ${{ secrets.AGENT_REPO_TOKEN }}
 
       - name: Download binary (cross-repo)
-        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        uses: actions/download-artifact@70fc10c6e5e1ce46ad2ea6f2b72d43f7d47b13c3 # v8.0.0
         with:
           name: ${{ matrix.artifact }}
           path: bin
@@ -389,7 +389,7 @@ jobs:
           token: ${{ secrets.AGENT_REPO_TOKEN }}
 
       - name: Download binary (cross-repo)
-        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        uses: actions/download-artifact@70fc10c6e5e1ce46ad2ea6f2b72d43f7d47b13c3 # v8.0.0
         with:
           name: supervizio-darwin-amd64
           path: bin
@@ -497,7 +497,7 @@ jobs:
           token: ${{ secrets.AGENT_REPO_TOKEN }}
 
       - name: Download binary (cross-repo)
-        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        uses: actions/download-artifact@70fc10c6e5e1ce46ad2ea6f2b72d43f7d47b13c3 # v8.0.0
         with:
           name: supervizio-darwin-arm64
           path: bin
@@ -673,7 +673,7 @@ jobs:
 
       - name: Download package artifact
         if: matrix.pkg_artifact != ''
-        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        uses: actions/download-artifact@70fc10c6e5e1ce46ad2ea6f2b72d43f7d47b13c3 # v8.0.0
         continue-on-error: true
         id: download-pkg
         with:
@@ -684,7 +684,7 @@ jobs:
           run-id: ${{ needs.resolve.outputs.run_id }}
 
       - name: Download binary artifact (fallback)
-        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        uses: actions/download-artifact@70fc10c6e5e1ce46ad2ea6f2b72d43f7d47b13c3 # v8.0.0
         continue-on-error: true
         id: download-bin
         with:
