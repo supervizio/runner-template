@@ -479,8 +479,13 @@ jobs:
         if: always()
         continue-on-error: true
         run: |
-          chmod +x agent/e2e/probe-capabilities.sh
-          agent/e2e/probe-capabilities.sh ./bin/supervizio probe-cap-darwin-amd64.json darwin-amd64
+          PLATFORM="darwin-amd64"
+          OUTPUT=$(./bin/supervizio --probe 2>/dev/null) || true
+          if [ -n "$OUTPUT" ] && echo "$OUTPUT" | jq -e '.' >/dev/null 2>&1; then
+            echo "$OUTPUT" | jq --arg p "$PLATFORM" '. + {"_platform": $p}' > "probe-cap-${PLATFORM}.json"
+          else
+            printf '{"_platform":"%s","_error":true}\n' "$PLATFORM" > "probe-cap-${PLATFORM}.json"
+          fi
 
       - name: Upload probe capabilities
         if: always()
@@ -603,8 +608,13 @@ jobs:
         if: always()
         continue-on-error: true
         run: |
-          chmod +x agent/e2e/probe-capabilities.sh
-          agent/e2e/probe-capabilities.sh ./bin/supervizio probe-cap-darwin-arm64.json darwin-arm64
+          PLATFORM="darwin-arm64"
+          OUTPUT=$(./bin/supervizio --probe 2>/dev/null) || true
+          if [ -n "$OUTPUT" ] && echo "$OUTPUT" | jq -e '.' >/dev/null 2>&1; then
+            echo "$OUTPUT" | jq --arg p "$PLATFORM" '. + {"_platform": $p}' > "probe-cap-${PLATFORM}.json"
+          else
+            printf '{"_platform":"%s","_error":true}\n' "$PLATFORM" > "probe-cap-${PLATFORM}.json"
+          fi
 
       - name: Upload probe capabilities
         if: always()
