@@ -1205,6 +1205,30 @@ jobs:
             "https://api.github.com/repos/supervizio/agent/statuses/${{ needs.resolve.outputs.sha }}" \
             -d "{\"state\":\"$STATE\",\"context\":\"e2e/runner-template\",\"description\":\"$DESC\",\"target_url\":\"${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}\"}"
 
+      - name: Dispatch callback to agent repo
+        if: needs.resolve.outputs.sha != ''
+        continue-on-error: true
+        env:
+          GH_TOKEN: ${{ secrets.AGENT_REPO_TOKEN }}
+        run: |
+          [ -z "$GH_TOKEN" ] && { echo "AGENT_REPO_TOKEN not set, skipping"; exit 0; }
+          RESULTS=("${{ needs.e2e-docker.result }}" "${{ needs.e2e-docker-arm64.result }}" \
+                   "${{ needs.e2e-macos.result }}" "${{ needs.e2e-macos-arm64.result }}" \
+                   "${{ needs.e2e-vm.result }}")
+          STATE="success"
+          for r in "${RESULTS[@]}"; do
+            if [ "$r" = "failure" ]; then
+              STATE="failure"
+              break
+            fi
+          done
+          curl -sf -X POST \
+            -H "Authorization: Bearer $GH_TOKEN" \
+            -H "Accept: application/vnd.github+json" \
+            "https://api.github.com/repos/supervizio/agent/dispatches" \
+            -d "{\"event_type\":\"e2e-result\",\"client_payload\":{\"state\":\"$STATE\",\"sha\":\"${{ needs.resolve.outputs.sha }}\",\"run_id\":\"${{ github.run_id }}\",\"target_url\":\"${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}\"}}"
+          echo "Dispatched e2e-result to supervizio/agent (state=$STATE)"
+
       - name: Summary
         if: always()
         run: |
