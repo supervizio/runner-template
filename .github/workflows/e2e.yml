@@ -30,7 +30,7 @@ jobs:
 
   resolve:
     name: Resolve Inputs
-    runs-on: ubuntu-24.04
+    runs-on: supervizio-runner
     outputs:
       ref: ${{ steps.resolve.outputs.ref }}
       run_id: ${{ steps.resolve.outputs.run_id }}
@@ -1278,7 +1278,7 @@ jobs:
     name: Report Results
     needs: [resolve, e2e-docker, e2e-docker-arm64, e2e-macos, e2e-macos-arm64, e2e-vm]
     if: always()
-    runs-on: ubuntu-24.04
+    runs-on: supervizio-runner
     steps:
       - name: Aggregate results
         run: |
