@@ -505,6 +505,12 @@ jobs:
           retention-days: 1
           if-no-files-found: ignore
 
+      - name: Supervision scenarios
+        run: |
+          # Prove the supervisor's restart/exit/limit/SIGKILL reactions on macOS.
+          chmod +x e2e/scenario-battery.sh
+          e2e/scenario-battery.sh "$PWD/bin/supervizio"
+
       - name: Report status (result)
         if: always() && needs.resolve.outputs.sha != ''
         continue-on-error: true
@@ -633,6 +639,12 @@ jobs:
           path: probe-cap-darwin-arm64.json
           retention-days: 1
           if-no-files-found: ignore
+
+      - name: Supervision scenarios
+        run: |
+          # Prove the supervisor's restart/exit/limit/SIGKILL reactions on macOS.
+          chmod +x e2e/scenario-battery.sh
+          e2e/scenario-battery.sh "$PWD/bin/supervizio"
 
       - name: Report status (result)
         if: always() && needs.resolve.outputs.sha != ''
@@ -837,6 +849,7 @@ jobs:
 
           # Copy test scripts (from agent repo checkout)
           retry ${SCP_CMD} agent/e2e/validate-probe.sh root@${VM_IP}:/tmp/validate-probe.sh
+          retry ${SCP_CMD} agent/e2e/scenario-battery.sh root@${VM_IP}:/tmp/scenario-battery.sh
 
           # Copy package if available
           if [ "$DEPLOY_MODE" = "package" ] && [ -n "${PKG_FILE:-}" ]; then
@@ -992,6 +1005,17 @@ jobs:
             echo "OK Probe returned output (jq not available for validation)"
           fi
           PROBE_CMD
+
+      - name: Supervision scenarios
+        run: |
+          # Prove the supervisor REACTS correctly on this OS: crash→restart,
+          # clean-exit→policy, never, max_retries, ignore-SIGTERM→SIGKILL, rlimit.
+          # Self-contained battery (no extra binary) against the installed binary.
+          ssh ${SSH_OPTS} root@${VM_IP} << 'BATTERY_CMD'
+          set -e
+          chmod +x /tmp/scenario-battery.sh
+          /tmp/scenario-battery.sh /usr/local/bin/supervizio
+          BATTERY_CMD
 
       - name: Uninstall supervizio
         run: |
