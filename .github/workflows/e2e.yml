@@ -62,7 +62,7 @@ jobs:
   e2e-docker:
     name: E2E Docker ${{ matrix.name }}
     needs: [resolve]
-    runs-on: [self-hosted, proxmox, linux, x64]
+    runs-on: supervizio-runner
     timeout-minutes: 10
     strategy:
       fail-fast: false
@@ -242,7 +242,7 @@ jobs:
   e2e-docker-arm64:
     name: E2E Docker arm64 ${{ matrix.name }}
     needs: [resolve]
-    runs-on: [self-hosted, proxmox, linux, x64]
+    runs-on: supervizio-runner
     timeout-minutes: 15
     strategy:
       fail-fast: false
@@ -672,9 +672,7 @@ jobs:
   e2e-vm:
     name: E2E VM ${{ matrix.name }}
     needs: [resolve]
-    runs-on:
-      group: proxmox-small
-      labels: [self-hosted, linux, x64]
+    runs-on: supervizio-runner
     timeout-minutes: 15
     strategy:
       fail-fast: false
