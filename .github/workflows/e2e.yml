@@ -121,6 +121,21 @@ jobs:
           fi
           file bin/supervizio* | head -5
 
+      - name: Wait for Docker daemon (DinD)
+        run: |
+          # The dind sidecar's dockerd needs a few seconds to open
+          # tcp://localhost:2375. Without this wait the first `docker build`
+          # races dockerd startup and dies with "Cannot connect to the Docker
+          # daemon" (issue #15). Probe `docker info` for up to 60s.
+          for i in $(seq 1 30); do
+            if docker info >/dev/null 2>&1; then
+              echo "Docker daemon ready (attempt $i)"; exit 0
+            fi
+            echo "waiting for dockerd... ($i/30)"; sleep 2
+          done
+          echo "::error::Docker daemon (DinD) not reachable at ${DOCKER_HOST:-tcp://localhost:2375} after 60s"
+          exit 1
+
       - name: Build container
         run: |
           docker build -f e2e/${{ matrix.dockerfile }} -t supervizio-e2e:${{ matrix.name }}-amd64 .
@@ -307,6 +322,21 @@ jobs:
 
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@b5ca514318bd6ebac0fb2aedd5d36ec1b5c232a2 # v3.10.0
+
+      - name: Wait for Docker daemon (DinD)
+        run: |
+          # The dind sidecar's dockerd needs a few seconds to open
+          # tcp://localhost:2375. Without this wait the first `docker build`
+          # races dockerd startup and dies with "Cannot connect to the Docker
+          # daemon" (issue #15). Probe `docker info` for up to 60s.
+          for i in $(seq 1 30); do
+            if docker info >/dev/null 2>&1; then
+              echo "Docker daemon ready (attempt $i)"; exit 0
+            fi
+            echo "waiting for dockerd... ($i/30)"; sleep 2
+          done
+          echo "::error::Docker daemon (DinD) not reachable at ${DOCKER_HOST:-tcp://localhost:2375} after 60s"
+          exit 1
 
       - name: Build container
         run: |
