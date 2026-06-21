@@ -52,13 +52,24 @@ if [ "$PVE_AUTH" = "PVEAPIToken==" ] || [[ "$PVE_AUTH" == *"==" && ! "$PVE_AUTH"
   exit 1
 fi
 
-# Proxmox API helper (curl with auth, timeout, insecure TLS)
+# Proxmox API helper (curl with auth, timeout, insecure TLS).
+# -f makes curl fail silently on HTTP errors — fine for the action paths below,
+# but it hides WHY a list came back empty, so resolution uses pve_api_diag.
 pve_api() {
   curl -sf -k --max-time 30 -H "Authorization: ${PVE_AUTH}" "$@"
 }
 
-# Resolve VM name to VMID via Proxmox API
-# If input is already numeric, return as-is (backward compatible)
+# Diagnostic variant: NO -f, so the body is returned even on 4xx/5xx, with the
+# HTTP status appended. Turns a blind "Available VMs:" (empty) into an actionable
+# signal: 401 (bad token), 200-empty (token lacks VM.Audit / wrong scope), or the
+# VM genuinely absent from the cluster.
+pve_api_diag() {
+  curl -s -k --max-time 30 -w '\n[http_status=%{http_code}]' \
+    -H "Authorization: ${PVE_AUTH}" "$@"
+}
+
+# Resolve VM name to VMID via the Proxmox API.
+# If input is already numeric, return as-is (backward compatible).
 resolve_vmid() {
   local input="$1"
 
@@ -68,22 +79,31 @@ resolve_vmid() {
     return 0
   fi
 
-  # Resolve name → VMID via Proxmox API
+  # Resolve name -> VMID cluster-wide. /cluster/resources?type=vm carries
+  # vmid+name+node+status for every guest, so resolution does not depend on
+  # guessing the right node like the old /nodes/$NODE/qemu did (single-node).
   local vmid
-  vmid=$(pve_api "${PROXMOX_API_URL}/nodes/${NODE}/qemu" 2>/dev/null \
+  vmid=$(pve_api "${PROXMOX_API_URL}/cluster/resources?type=vm" 2>/dev/null \
     | jq -r ".data[] | select(.name == \"${input}\") | .vmid" 2>/dev/null \
     | head -1) || true
 
   if [ -n "$vmid" ] && [ "$vmid" != "null" ]; then
-    log "Resolved '${input}' → VMID ${vmid}"
+    log "Resolved '${input}' -> VMID ${vmid}"
     echo "$vmid"
     return 0
   fi
 
   log "ERROR: Cannot resolve VM name '${input}' to VMID"
-  log "Available VMs:"
-  pve_api "${PROXMOX_API_URL}/nodes/${NODE}/qemu" 2>/dev/null \
-    | jq -r '.data[] | "  \(.vmid) \(.name) (\(.status))"' 2>/dev/null || true
+  # Raw API response (with HTTP status) so an empty list is diagnosable instead
+  # of a silent blank. Last 600 bytes keep the log short but show status + tail.
+  local resp
+  resp=$(pve_api_diag "${PROXMOX_API_URL}/cluster/resources?type=vm" 2>/dev/null)
+  log "Raw /cluster/resources?type=vm response (tail):"
+  printf '%s\n' "$resp" | tail -c 600 >&2
+  log "Available VMs (cluster-wide):"
+  printf '%s' "$resp" | sed 's/\[http_status=[0-9]*\]$//' \
+    | jq -r '.data[]? | select(.type == "qemu") | "  \(.vmid) \(.name) (\(.status))"' 2>/dev/null \
+    || log "  (could not parse VM list — see raw response above; likely 401/empty-scope)"
   return 1
 }
 
