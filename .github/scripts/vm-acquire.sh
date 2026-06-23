@@ -34,6 +34,18 @@ MAX_RETRIES=15
 RETRY_INTERVAL=60
 IP_FAIL_THRESHOLD=3  # After N consecutive IP detection failures, reset the VM
 
+# macOS lab VMs (e.g. sequoia/VMID 215) differ from the Linux/BSD VMs: SSH user is
+# kodflow (not root), the lock lives at /tmp/usebyjob (root FS is read-only), and
+# boot is slower (~45s, no QEMU guest agent — IP comes from the MAC/neighbor scan
+# which is already platform-agnostic). The branch is keyed on the VM name so the
+# Linux/BSD path (root@, /usebyjob, 15s) is byte-for-byte unchanged.
+is_macos_vm() { case "$1" in *sequoia*|*ventura*|*macos*|*darwin*) return 0 ;; *) return 1 ;; esac; }
+if is_macos_vm "$INPUT"; then
+  SSH_USER="kodflow"; LOCK_FILE="/tmp/usebyjob"; BOOT_WAIT=45
+else
+  SSH_USER="root"; LOCK_FILE="/usebyjob"; BOOT_WAIT=15
+fi
+
 # Log to stderr so messages are visible even inside $() command substitutions
 log() { echo "[vm-acquire] $*" >&2; }
 
@@ -223,7 +235,7 @@ wait_ssh() {
   local ip="$1"
   log "Waiting for SSH on ${ip}..."
   for i in $(seq 1 30); do
-    if ssh ${SSH_OPTS} root@"${ip}" "echo ready" 2>/dev/null; then
+    if ssh ${SSH_OPTS} "${SSH_USER}@${ip}" "echo ready" 2>/dev/null; then
       log "SSH ready after $((i * 5)) seconds"
       return 0
     fi
@@ -257,7 +269,7 @@ for attempt in $(seq 1 "$MAX_RETRIES"); do
     resolved_ip=$(detect_ip "$VMID") || true
     if [ -n "$resolved_ip" ]; then
       ip_fail_count=0  # Reset counter on successful IP detection
-      lock_owner=$(ssh ${SSH_OPTS} root@"$resolved_ip" "cat /usebyjob 2>/dev/null" || true)
+      lock_owner=$(ssh ${SSH_OPTS} "${SSH_USER}@$resolved_ip" "cat ${LOCK_FILE} 2>/dev/null" || true)
       if [ -n "$lock_owner" ] && [ "$lock_owner" != "$JOB_ID" ]; then
         log "VM ${VMID} locked by '$lock_owner'"
 
@@ -275,7 +287,7 @@ for attempt in $(seq 1 "$MAX_RETRIES"); do
           if [ "$run_status" != "in_progress" ] && [ "$run_status" != "queued" ] \
              && [ "$run_status" != "api_error" ] && [ "$run_status" != "unknown" ]; then
             log "STALE LOCK: run $lock_run_id status='$run_status', breaking lock"
-            ssh ${SSH_OPTS} root@"$resolved_ip" "rm -f /usebyjob" || true
+            ssh ${SSH_OPTS} "${SSH_USER}@$resolved_ip" "rm -f ${LOCK_FILE}" || true
             sleep 2
             continue
           fi
@@ -311,8 +323,8 @@ for attempt in $(seq 1 "$MAX_RETRIES"); do
   if [ "$vm_st" != "running" ]; then
     log "Starting VM ${VMID}..."
     pve_api -X POST "${PROXMOX_API_URL}/nodes/${NODE}/qemu/${VMID}/status/start" > /dev/null 2>&1 || true
-    log "Waiting 15s for VM boot..."
-    sleep 15
+    log "Waiting ${BOOT_WAIT}s for VM boot..."
+    sleep "${BOOT_WAIT}"
   fi
 
   # Resolve IP: reuse from lock check if available, otherwise detect fresh
@@ -341,14 +353,16 @@ for attempt in $(seq 1 "$MAX_RETRIES"); do
   fi
 
   # Create lock file (flambeau)
-  ssh ${SSH_OPTS} root@"$VM_IP" "echo '${JOB_ID}' > /usebyjob"
-  log "VM ${VMID} acquired by '${JOB_ID}' at ${VM_IP}"
+  ssh ${SSH_OPTS} "${SSH_USER}@$VM_IP" "echo '${JOB_ID}' > ${LOCK_FILE}"
+  log "VM ${VMID} acquired by '${JOB_ID}' at ${VM_IP} (user ${SSH_USER})"
 
   # Export outputs
   echo "VM_IP=${VM_IP}" >> "$GITHUB_OUTPUT"
   echo "VM_IP=${VM_IP}" >> "$GITHUB_ENV"
   echo "VMID=${VMID}" >> "$GITHUB_OUTPUT"
   echo "VMID=${VMID}" >> "$GITHUB_ENV"
+  echo "SSH_USER=${SSH_USER}" >> "$GITHUB_OUTPUT"
+  echo "SSH_USER=${SSH_USER}" >> "$GITHUB_ENV"
   exit 0
 done
 
