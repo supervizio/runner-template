@@ -454,8 +454,16 @@ jobs:
   e2e-macos:
     name: E2E macOS x86_64
     needs: [resolve]
-    runs-on: macos-15-intel
-    timeout-minutes: 10
+    runs-on: supervizio-runner
+    timeout-minutes: 20
+    env:
+      PROXMOX_API_URL: "https://192.168.100.1:8006/api2/json"
+      PVE_AUTH: "PVEAPIToken=${{ secrets.CI_RUNNER_API_TOKEN_ID }}=${{ secrets.CI_RUNNER_API_TOKEN_SECRET }}"
+      NODE: ${{ secrets.PROXMOX_NODE }}
+      SSH_OPTS: "-o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o ConnectTimeout=10"
+      GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      ARTIFACT_REGISTRY: "192.168.100.250:5000"
+      RUN_ID: ${{ needs.resolve.outputs.run_id }}
     steps:
       - name: Report status (pending)
         if: needs.resolve.outputs.sha != ''
@@ -470,83 +478,63 @@ jobs:
             "https://api.github.com/repos/supervizio/agent/statuses/${{ needs.resolve.outputs.sha }}" \
             -d '{"state":"pending","context":"e2e/macos-x86_64","description":"Running...","target_url":"${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"}'
 
-      - name: Checkout agent code
+      - name: Checkout runner-template (for VM scripts)
         uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
         with:
-          repository: supervizio/agent
-          ref: ${{ needs.resolve.outputs.ref }}
-          token: ${{ secrets.AGENT_REPO_TOKEN }}
+          path: runner-template
 
-      - name: Download binary (cross-repo)
-        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
-        with:
-          name: supervizio-darwin-amd64
-          path: bin
-          github-token: ${{ secrets.AGENT_REPO_TOKEN }}
-          repository: supervizio/agent
-          run-id: ${{ needs.resolve.outputs.run_id }}
-
-      - name: Prepare binary
+      - name: Acquire macOS VM (sequoia, lock)
+        id: vm
         run: |
-          chmod +x bin/supervizio-darwin-amd64
-          file bin/supervizio-darwin-amd64
+          chmod +x runner-template/.github/scripts/vm-acquire.sh
+          runner-template/.github/scripts/vm-acquire.sh sequoia "${GITHUB_RUN_ID}_e2e-macos-x86_64"
 
-      - name: Run macOS E2E test
+      - name: Probe E2E on macOS (sequoia, exec via ssh)
+        env:
+          VM_IP: ${{ steps.vm.outputs.VM_IP }}
+          SSH_USER: ${{ steps.vm.outputs.SSH_USER }}
         run: |
           set -euo pipefail
-          export PATH="$PWD/bin:$PATH"
+          # sequoia is an Intel macOS VM on the lab subnet, so it reaches the zot
+          # store directly and runs the shipped darwin-amd64 binary natively. The
+          # binary is pulled ON the VM (no scp from the pod) — "zot on every VM".
+          ssh ${SSH_OPTS} "${SSH_USER}@${VM_IP}" \
+            ARTIFACT_REGISTRY="$ARTIFACT_REGISTRY" RUN_ID="$RUN_ID" 'bash -s' <<'REMOTE'
+          set -euo pipefail
+          work="$HOME/svz-e2e"; rm -rf "$work"; mkdir -p "$work/bin"; cd "$work"
+          export PATH="$work/bin:/opt/homebrew/bin:/usr/local/bin:$PATH"
+          # oras (darwin) into a local dir — kodflow has no passwordless sudo.
+          if ! command -v oras >/dev/null 2>&1; then
+            v=1.2.0; a=$(uname -m); case "$a" in arm64) oa=arm64;; *) oa=amd64;; esac
+            curl -fsSL "https://github.com/oras-project/oras/releases/download/v${v}/oras_${v}_darwin_${oa}.tar.gz" | tar xz -C bin oras
+          fi
+          # jq is on the dev snapshot; brew-install as a fallback if absent.
+          command -v jq >/dev/null 2>&1 || brew install jq
+          n=0; until oras pull --plain-http "$ARTIFACT_REGISTRY/run-${RUN_ID}/supervizio-darwin-amd64:latest" -o bin; do
+            n=$((n+1)); [ "$n" -ge 5 ] && { echo "::error::zot pull failed for supervizio-darwin-amd64"; exit 1; }
+            echo "retry $n"; sleep $((n*8))
+          done
+          chmod +x bin/supervizio-darwin-amd64
           mv bin/supervizio-darwin-amd64 bin/supervizio
-          chmod +x bin/supervizio
+          echo "=== System ==="; uname -a; sw_vers || true
+          echo "=== version ==="; bin/supervizio --version
+          echo "=== probe ==="
+          OUT=$(bin/supervizio --probe 2>&1) || { echo "::error::probe failed: $OUT"; exit 1; }
+          echo "$OUT" | jq -e 'type=="object"' >/dev/null
+          echo "$OUT" | jq -e '.timestamp and .os.platform and .cpu.cores > 0' \
+            && echo "OK probe validation passed on macOS x86_64"
+          echo "$OUT" | jq --arg p darwin-amd64 '. + {"_platform":$p}' > "$work/probe-cap-darwin-amd64.json"
+          REMOTE
 
-          echo "=== System Info ==="
-          uname -a
-          sysctl hw.ncpu || true
-          sw_vers || true
-
-          echo ""
-          echo "=== Test version ==="
-          bin/supervizio --version
-
-          echo ""
-          echo "=== Test probe ==="
-          OUTPUT=$(bin/supervizio --probe 2>&1) || {
-            echo "ERROR: --probe command failed with exit code $?"
-            echo "Output: $OUTPUT"
-            exit 1
-          }
-
-          echo "Raw JSON output:"
-          echo "$OUTPUT"
-
-          echo ""
-          echo "=== Validate JSON structure ==="
-          echo "$OUTPUT" | jq -e 'type == "object"' > /dev/null || {
-            echo "ERROR: Output is not valid JSON object"
-            exit 1
-          }
-
-          echo "Checking required fields..."
-          echo "$OUTPUT" | jq -e '.timestamp' > /dev/null && echo "OK timestamp present"
-          echo "$OUTPUT" | jq -e '.os.platform' > /dev/null && echo "OK platform present"
-          echo "$OUTPUT" | jq -e '.cpu' > /dev/null && echo "OK cpu present" || echo "FAIL cpu MISSING"
-          echo "$OUTPUT" | jq -r '.cpu.cores // "null"' | xargs -I {} echo "  cpu.cores = {}"
-
-          echo ""
-          echo "=== Final validation ==="
-          echo "$OUTPUT" | jq -e '.timestamp and .os.platform and .cpu.cores > 0' && \
-            echo "OK Probe validation passed on macOS x86_64"
-
-      - name: Save probe capabilities
+      - name: Fetch probe capabilities from VM
         if: always()
         continue-on-error: true
+        env:
+          VM_IP: ${{ steps.vm.outputs.VM_IP }}
+          SSH_USER: ${{ steps.vm.outputs.SSH_USER }}
         run: |
-          PLATFORM="darwin-amd64"
-          OUTPUT=$(./bin/supervizio --probe 2>/dev/null) || true
-          if [ -n "$OUTPUT" ] && echo "$OUTPUT" | jq -e '.' >/dev/null 2>&1; then
-            echo "$OUTPUT" | jq --arg p "$PLATFORM" '. + {"_platform": $p}' > "probe-cap-${PLATFORM}.json"
-          else
-            printf '{"_platform":"%s","_error":true}\n' "$PLATFORM" > "probe-cap-${PLATFORM}.json"
-          fi
+          scp -O ${SSH_OPTS} "${SSH_USER}@${VM_IP}:svz-e2e/probe-cap-darwin-amd64.json" probe-cap-darwin-amd64.json \
+            || printf '{"_platform":"darwin-amd64","_error":true}\n' > probe-cap-darwin-amd64.json
 
       - name: Upload probe capabilities
         if: always()
@@ -557,6 +545,12 @@ jobs:
           retention-days: 1
           if-no-files-found: ignore
 
+      - name: Release macOS VM (lock)
+        if: always()
+        run: |
+          chmod +x runner-template/.github/scripts/vm-release.sh
+          runner-template/.github/scripts/vm-release.sh "${{ steps.vm.outputs.VMID || 'sequoia' }}" || true
+
       - name: Report status (result)
         if: always() && needs.resolve.outputs.sha != ''
         continue-on-error: true
@@ -564,12 +558,8 @@ jobs:
           GH_TOKEN: ${{ secrets.AGENT_REPO_TOKEN }}
         run: |
           [ -z "$GH_TOKEN" ] && { echo "AGENT_REPO_TOKEN not set, skipping"; exit 0; }
-          STATE="success"
-          DESC="Passed"
-          if [ "${{ job.status }}" != "success" ]; then
-            STATE="failure"
-            DESC="Failed"
-          fi
+          STATE="success"; DESC="Passed"
+          if [ "${{ job.status }}" != "success" ]; then STATE="failure"; DESC="Failed"; fi
           curl -sf -X POST \
             -H "Authorization: Bearer $GH_TOKEN" \
             -H "Accept: application/vnd.github+json" \
