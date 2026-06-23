@@ -101,14 +101,25 @@ jobs:
           ref: ${{ needs.resolve.outputs.ref }}
           token: ${{ secrets.AGENT_REPO_TOKEN }}
 
-      - name: Download binary (cross-repo)
-        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
-        with:
-          name: ${{ matrix.artifact }}
-          path: bin
-          github-token: ${{ secrets.AGENT_REPO_TOKEN }}
-          repository: supervizio/agent
-          run-id: ${{ needs.resolve.outputs.run_id }}
+      - name: Download binary from zot (cross-repo)
+        env:
+          ARTIFACT_REGISTRY: 192.168.100.250:5000
+          RUN_ID: ${{ needs.resolve.outputs.run_id }}
+          ARTIFACT: ${{ matrix.artifact }}
+        run: |
+          set -euo pipefail
+          mkdir -p bin
+          # Agent CI publishes binaries to the self-hosted zot store (no GitHub
+          # artifacts). This runner (supervizio-runner) is on the lab network.
+          command -v oras >/dev/null 2>&1 || {
+            v=1.2.0; a=$(uname -m); case "$a" in x86_64) oa=amd64;; aarch64|arm64) oa=arm64;; *) oa=amd64;; esac
+            curl -fsSL "https://github.com/oras-project/oras/releases/download/v${v}/oras_${v}_linux_${oa}.tar.gz" | sudo tar xz -C /usr/local/bin oras
+          }
+          n=0; until oras pull --plain-http "$ARTIFACT_REGISTRY/run-${RUN_ID}/${ARTIFACT}:latest" -o bin; do
+            n=$((n+1)); [ "$n" -ge 5 ] && { echo "::error::zot pull failed for ${ARTIFACT}"; exit 1; }
+            echo "retry $n"; sleep $((n*8))
+          done
+          ls -la bin/
 
       - name: Prepare binary
         run: |
@@ -299,14 +310,25 @@ jobs:
           ref: ${{ needs.resolve.outputs.ref }}
           token: ${{ secrets.AGENT_REPO_TOKEN }}
 
-      - name: Download binary (cross-repo)
-        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
-        with:
-          name: ${{ matrix.artifact }}
-          path: bin
-          github-token: ${{ secrets.AGENT_REPO_TOKEN }}
-          repository: supervizio/agent
-          run-id: ${{ needs.resolve.outputs.run_id }}
+      - name: Download binary from zot (cross-repo)
+        env:
+          ARTIFACT_REGISTRY: 192.168.100.250:5000
+          RUN_ID: ${{ needs.resolve.outputs.run_id }}
+          ARTIFACT: ${{ matrix.artifact }}
+        run: |
+          set -euo pipefail
+          mkdir -p bin
+          # Agent CI publishes binaries to the self-hosted zot store (no GitHub
+          # artifacts). This runner (supervizio-runner) is on the lab network.
+          command -v oras >/dev/null 2>&1 || {
+            v=1.2.0; a=$(uname -m); case "$a" in x86_64) oa=amd64;; aarch64|arm64) oa=arm64;; *) oa=amd64;; esac
+            curl -fsSL "https://github.com/oras-project/oras/releases/download/v${v}/oras_${v}_linux_${oa}.tar.gz" | sudo tar xz -C /usr/local/bin oras
+          }
+          n=0; until oras pull --plain-http "$ARTIFACT_REGISTRY/run-${RUN_ID}/${ARTIFACT}:latest" -o bin; do
+            n=$((n+1)); [ "$n" -ge 5 ] && { echo "::error::zot pull failed for ${ARTIFACT}"; exit 1; }
+            echo "retry $n"; sleep $((n*8))
+          done
+          ls -la bin/
 
       - name: Prepare binary
         run: |
@@ -778,28 +800,38 @@ jobs:
           token: ${{ secrets.AGENT_REPO_TOKEN }}
           path: agent
 
-      - name: Download package artifact
+      - name: Install oras (zot client)
+        run: |
+          set -euo pipefail
+          command -v oras >/dev/null 2>&1 || {
+            v=1.2.0; a=$(uname -m); case "$a" in x86_64) oa=amd64;; aarch64|arm64) oa=arm64;; *) oa=amd64;; esac
+            curl -fsSL "https://github.com/oras-project/oras/releases/download/v${v}/oras_${v}_linux_${oa}.tar.gz" | sudo tar xz -C /usr/local/bin oras
+          }
+
+      - name: Download package from zot
         if: matrix.pkg_artifact != ''
-        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
         continue-on-error: true
         id: download-pkg
-        with:
-          name: ${{ matrix.pkg_artifact }}
-          path: artifacts/
-          github-token: ${{ secrets.AGENT_REPO_TOKEN }}
-          repository: supervizio/agent
-          run-id: ${{ needs.resolve.outputs.run_id }}
+        env:
+          ARTIFACT_REGISTRY: 192.168.100.250:5000
+          RUN_ID: ${{ needs.resolve.outputs.run_id }}
+          ARTIFACT: ${{ matrix.pkg_artifact }}
+        run: |
+          set -euo pipefail
+          mkdir -p artifacts/
+          oras pull --plain-http "$ARTIFACT_REGISTRY/run-${RUN_ID}/${ARTIFACT}:latest" -o artifacts/
 
-      - name: Download binary artifact (fallback)
-        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+      - name: Download binary from zot (fallback)
         continue-on-error: true
         id: download-bin
-        with:
-          name: ${{ matrix.binary_artifact }}
-          path: artifacts/
-          github-token: ${{ secrets.AGENT_REPO_TOKEN }}
-          repository: supervizio/agent
-          run-id: ${{ needs.resolve.outputs.run_id }}
+        env:
+          ARTIFACT_REGISTRY: 192.168.100.250:5000
+          RUN_ID: ${{ needs.resolve.outputs.run_id }}
+          ARTIFACT: ${{ matrix.binary_artifact }}
+        run: |
+          set -euo pipefail
+          mkdir -p artifacts/
+          oras pull --plain-http "$ARTIFACT_REGISTRY/run-${RUN_ID}/${ARTIFACT}:latest" -o artifacts/
 
       - name: Prepare artifacts
         run: |
