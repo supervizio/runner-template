@@ -1023,8 +1023,10 @@ jobs:
           # Use -O (legacy SCP protocol) for VMs without SFTP subsystem
           SCP_CMD="scp -O ${SSH_OPTS}"
 
-          # Clean previous files to prevent SCP nesting issues
-          ssh ${SSH_OPTS} root@${VM_IP} "rm -rf /tmp/setup /tmp/validate-probe.sh /tmp/supervizio*" || true
+          # Clean previous files to prevent SCP nesting / stale-file issues. A
+          # leftover /tmp/scenario-battery.sh from an earlier run made scp fail
+          # with "Permission denied" (it was missing from this cleanup list).
+          ssh ${SSH_OPTS} root@${VM_IP} "rm -rf /tmp/setup /tmp/validate-probe.sh /tmp/supervizio* /tmp/scenario-battery.sh" || true
 
           # Copy setup scripts (from agent repo checkout)
           retry ${SCP_CMD} -r agent/setup root@${VM_IP}:/tmp/setup
