@@ -13,6 +13,10 @@ on:
       sha:
         description: 'Commit SHA for status reporting (optional)'
         required: false
+      arm_only:
+        description: 'Run only the arm64 e2e jobs (skip amd64/VM)'
+        required: false
+        default: 'false'
   repository_dispatch:
     types: [run-e2e]
 
@@ -62,6 +66,7 @@ jobs:
   e2e-docker:
     name: E2E Docker ${{ matrix.name }}
     needs: [resolve]
+    if: ${{ github.event.inputs.arm_only != 'true' }}
     runs-on: supervizio-runner
     timeout-minutes: 10
     strategy:
@@ -456,6 +461,7 @@ jobs:
   e2e-macos:
     name: E2E macOS x86_64
     needs: [resolve]
+    if: ${{ github.event.inputs.arm_only != 'true' }}
     runs-on: supervizio-runner
     timeout-minutes: 20
     env:
@@ -716,6 +722,7 @@ jobs:
   e2e-vm:
     name: E2E VM ${{ matrix.name }}
     needs: [resolve]
+    if: ${{ github.event.inputs.arm_only != 'true' }}
     runs-on: supervizio-runner
     timeout-minutes: 15
     strategy:
@@ -1137,7 +1144,7 @@ jobs:
   vm-cleanup:
     name: VM Cleanup
     needs: [e2e-vm]
-    if: always()
+    if: always() && github.event.inputs.arm_only != 'true'
     runs-on: supervizio-runner
     timeout-minutes: 10
     env:
