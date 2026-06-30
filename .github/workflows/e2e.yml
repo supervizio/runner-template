@@ -767,7 +767,7 @@ jobs:
             binary_artifact: supervizio-linux-amd64
             pkg_artifact: supervizio-amd64.deb
             pkg_ext: deb
-          - name: devuan-sysvinit
+          - name: debian-sysvinit
             binary_artifact: supervizio-linux-amd64
             pkg_artifact: supervizio-amd64.deb
             pkg_ext: deb
@@ -779,10 +779,10 @@ jobs:
             binary_artifact: supervizio-linux-amd64
             pkg_artifact: supervizio-amd64.rpm
             pkg_ext: rpm
-          - name: void-runit
-            binary_artifact: supervizio-linux-amd64
-            pkg_artifact: supervizio-amd64.xbps
-            pkg_ext: xbps
+          - name: alpine-runit
+            binary_artifact: supervizio-linux-amd64-musl
+            pkg_artifact: supervizio-amd64.apk
+            pkg_ext: apk
           - name: freebsd
             binary_artifact: supervizio-freebsd-amd64
             pkg_artifact: ""
