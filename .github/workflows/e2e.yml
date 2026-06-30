@@ -757,7 +757,11 @@ jobs:
       PROXMOX_API_URL: "https://192.168.100.1:8006/api2/json"
       PVE_AUTH: "PVEAPIToken=${{ secrets.CI_RUNNER_API_TOKEN_ID }}=${{ secrets.CI_RUNNER_API_TOKEN_SECRET }}"
       NODE: ${{ secrets.PROXMOX_NODE }}
-      SSH_OPTS: "-o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o ConnectTimeout=15"
+      # Keepalive: the supervision battery runs S1-S8 in one long SSH session
+      # (S6 backoff sleeps, S7 rotation, S8 health all add idle time); without it
+      # the Windows OpenSSH server drops the idle session ("closed by remote host",
+      # exit 255) even though the scenarios pass.
+      SSH_OPTS: "-o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o ConnectTimeout=15 -o ServerAliveInterval=15 -o ServerAliveCountMax=8"
       GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
     steps:
       - name: Report status (pending)
