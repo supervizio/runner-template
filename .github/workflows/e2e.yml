@@ -713,6 +713,12 @@ jobs:
           retention-days: 1
           if-no-files-found: ignore
 
+      - name: Supervision scenarios
+        run: |
+          # Prove the supervisor's restart/exit/limit/SIGKILL reactions on macOS.
+          chmod +x e2e/scenario-battery.sh
+          e2e/scenario-battery.sh "$PWD/bin/supervizio"
+
       - name: Report status (result)
         if: always() && needs.resolve.outputs.sha != ''
         continue-on-error: true
@@ -731,6 +737,95 @@ jobs:
             -H "Accept: application/vnd.github+json" \
             "https://api.github.com/repos/supervizio/agent/statuses/${{ needs.resolve.outputs.sha }}" \
             -d "{\"state\":\"$STATE\",\"context\":\"e2e/macos-arm64\",\"description\":\"$DESC\",\"target_url\":\"${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}\"}"
+
+  # ===========================================================================
+  # E2E WINDOWS (Proxmox VM via SSH + PowerShell)
+  # NOTE: authored mirroring agent/build-windows-native; validate on first run.
+  # ===========================================================================
+
+  e2e-windows:
+    name: E2E Windows ${{ matrix.name }}
+    needs: [resolve]
+    runs-on: supervizio-runner
+    timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: windows-server
+    env:
+      PROXMOX_API_URL: "https://192.168.100.1:8006/api2/json"
+      PVE_AUTH: "PVEAPIToken=${{ secrets.CI_RUNNER_API_TOKEN_ID }}=${{ secrets.CI_RUNNER_API_TOKEN_SECRET }}"
+      NODE: ${{ secrets.PROXMOX_NODE }}
+      SSH_OPTS: "-o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o ConnectTimeout=15"
+      GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+    steps:
+      - name: Report status (pending)
+        if: needs.resolve.outputs.sha != ''
+        continue-on-error: true
+        env:
+          GH_TOKEN: ${{ secrets.AGENT_REPO_TOKEN }}
+        run: |
+          [ -z "$GH_TOKEN" ] && exit 0
+          curl -sf -X POST -H "Authorization: Bearer $GH_TOKEN" -H "Accept: application/vnd.github+json" \
+            "https://api.github.com/repos/supervizio/agent/statuses/${{ needs.resolve.outputs.sha }}" \
+            -d '{"state":"pending","context":"e2e/windows/${{ matrix.name }}","description":"Running...","target_url":"${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"}'
+
+      - name: Checkout agent code
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          repository: supervizio/agent
+          ref: ${{ needs.resolve.outputs.ref }}
+          token: ${{ secrets.AGENT_REPO_TOKEN }}
+          path: agent
+
+      - name: Setup SSH key
+        run: |
+          mkdir -p ~/.ssh && chmod 700 ~/.ssh
+          echo "${{ secrets.CI_SSH_PRIVATE_KEY }}" > ~/.ssh/id_ed25519
+          chmod 600 ~/.ssh/id_ed25519
+
+      - name: Download Windows binary
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          name: supervizio-windows-amd64
+          path: bin
+          github-token: ${{ secrets.AGENT_REPO_TOKEN }}
+          repository: supervizio/agent
+          run-id: ${{ needs.resolve.outputs.run_id }}
+
+      - name: Acquire VM (lock)
+        id: vm
+        run: |
+          chmod +x agent/.github/scripts/vm-acquire.sh
+          agent/.github/scripts/vm-acquire.sh "${{ matrix.name }}" "${GITHUB_RUN_ID}_e2e-win-${{ matrix.name }}"
+
+      - name: Supervision scenarios (PowerShell)
+        run: |
+          BIN=$(find bin -name 'supervizio-windows-amd64*' | head -1)
+          ssh ${SSH_OPTS} ${SSH_USER}@${VM_IP} "powershell -NoProfile -Command \"New-Item -ItemType Directory -Force -Path 'C:\\build' | Out-Null\""
+          scp ${SSH_OPTS} "$BIN" ${SSH_USER}@${VM_IP}:C:/build/supervizio.exe
+          scp ${SSH_OPTS} agent/e2e/scenario-battery.ps1 ${SSH_USER}@${VM_IP}:C:/build/scenario-battery.ps1
+          ssh ${SSH_OPTS} ${SSH_USER}@${VM_IP} "powershell -NoProfile -ExecutionPolicy Bypass -File C:\\build\\scenario-battery.ps1 -Sv C:\\build\\supervizio.exe"
+
+      - name: Release VM (unlock)
+        if: always()
+        run: |
+          chmod +x agent/.github/scripts/vm-release.sh
+          agent/.github/scripts/vm-release.sh "${{ steps.vm.outputs.VMID || matrix.name }}"
+
+      - name: Report status (result)
+        if: always() && needs.resolve.outputs.sha != ''
+        continue-on-error: true
+        env:
+          GH_TOKEN: ${{ secrets.AGENT_REPO_TOKEN }}
+        run: |
+          [ -z "$GH_TOKEN" ] && exit 0
+          STATE="success"; DESC="Passed"
+          if [ "${{ job.status }}" != "success" ]; then STATE="failure"; DESC="Failed"; fi
+          curl -sf -X POST -H "Authorization: Bearer $GH_TOKEN" -H "Accept: application/vnd.github+json" \
+            "https://api.github.com/repos/supervizio/agent/statuses/${{ needs.resolve.outputs.sha }}" \
+            -d "{\"state\":\"$STATE\",\"context\":\"e2e/windows/${{ matrix.name }}\",\"description\":\"$DESC\",\"target_url\":\"${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}\"}"
 
   # ===========================================================================
   # E2E VM TESTS (Proxmox, self-hosted)
@@ -925,6 +1020,7 @@ jobs:
 
           # Copy test scripts (from agent repo checkout)
           retry ${SCP_CMD} agent/e2e/validate-probe.sh root@${VM_IP}:/tmp/validate-probe.sh
+          retry ${SCP_CMD} agent/e2e/scenario-battery.sh root@${VM_IP}:/tmp/scenario-battery.sh
 
           # Copy package if available
           if [ "$DEPLOY_MODE" = "package" ] && [ -n "${PKG_FILE:-}" ]; then
@@ -1080,6 +1176,17 @@ jobs:
             echo "OK Probe returned output (jq not available for validation)"
           fi
           PROBE_CMD
+
+      - name: Supervision scenarios
+        run: |
+          # Prove the supervisor REACTS correctly on this OS: crash→restart,
+          # clean-exit→policy, never, max_retries, ignore-SIGTERM→SIGKILL, rlimit.
+          # Self-contained battery (no extra binary) against the installed binary.
+          ssh ${SSH_OPTS} root@${VM_IP} << 'BATTERY_CMD'
+          set -e
+          chmod +x /tmp/scenario-battery.sh
+          /tmp/scenario-battery.sh /usr/local/bin/supervizio
+          BATTERY_CMD
 
       - name: Uninstall supervizio
         run: |
