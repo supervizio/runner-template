@@ -329,6 +329,15 @@ jobs:
           toolchain: stable
           components: rust-src
 
+      - name: Generate Wire code
+        run: |
+          set -euo pipefail
+          # wire_gen.go (InitializeApp) is generated, not checked in — the agent
+          # CI runs this before every build. Mirror it here.
+          go install github.com/google/wire/cmd/wire@v0.7.0
+          export PATH="$(go env GOPATH)/bin:$PATH"
+          cd src && wire ./internal/bootstrap/
+
       - name: Install Zig (musl static link)
         if: matrix.libc == 'musl'
         run: |
@@ -614,6 +623,14 @@ jobs:
         with:
           toolchain: stable
           components: rust-src
+
+      - name: Generate Wire code
+        run: |
+          set -euo pipefail
+          # wire_gen.go (InitializeApp) is generated, not checked in.
+          go install github.com/google/wire/cmd/wire@v0.7.0
+          export PATH="$(go env GOPATH)/bin:$PATH"
+          cd src && wire ./internal/bootstrap/
 
       - name: Build supervizio natively (darwin-arm64)
         run: |
