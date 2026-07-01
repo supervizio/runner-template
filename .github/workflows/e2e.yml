@@ -789,6 +789,22 @@ jobs:
           echo "${{ secrets.CI_SSH_PRIVATE_KEY }}" > ~/.ssh/id_ed25519
           chmod 600 ~/.ssh/id_ed25519
 
+      - name: Set up Go
+        uses: actions/setup-go@4b73464bb391d4059bd26b0524d20df3927bd417 # v6.3.0
+        with:
+          go-version: '1.26.0'
+
+      - name: Build Windows crasher
+        run: |
+          set -euo pipefail
+          # The supervision battery supervises a separate crasher.exe (pure Go,
+          # CGO_ENABLED=0). Cross-build it here and ship it to the VM — otherwise
+          # supervizio can't spawn it (SPAWN_FAILED, all scenarios count=0).
+          ( cd agent/e2e/behavioral/crasher && \
+            GOOS=windows GOARCH=amd64 CGO_ENABLED=0 GOWORK=off go build -ldflags="-s -w" \
+              -o "${GITHUB_WORKSPACE}/crasher.exe" . )
+          ls -la "${GITHUB_WORKSPACE}/crasher.exe"
+
       - name: Download Windows binary from zot (cross-repo)
         env:
           ARTIFACT_REGISTRY: 192.168.100.250:5000
@@ -820,8 +836,9 @@ jobs:
           BIN=$(find bin -name 'supervizio-windows-amd64*' | head -1)
           ssh ${SSH_OPTS} ${SSH_USER}@${VM_IP} "powershell -NoProfile -Command \"New-Item -ItemType Directory -Force -Path 'C:\\build' | Out-Null\""
           scp ${SSH_OPTS} "$BIN" ${SSH_USER}@${VM_IP}:C:/build/supervizio.exe
+          scp ${SSH_OPTS} "${GITHUB_WORKSPACE}/crasher.exe" ${SSH_USER}@${VM_IP}:C:/build/crasher.exe
           scp ${SSH_OPTS} agent/e2e/scenario-battery.ps1 ${SSH_USER}@${VM_IP}:C:/build/scenario-battery.ps1
-          ssh ${SSH_OPTS} ${SSH_USER}@${VM_IP} "powershell -NoProfile -ExecutionPolicy Bypass -File C:\\build\\scenario-battery.ps1 -Sv C:\\build\\supervizio.exe"
+          ssh ${SSH_OPTS} ${SSH_USER}@${VM_IP} "powershell -NoProfile -ExecutionPolicy Bypass -File C:\\build\\scenario-battery.ps1 -Sv C:\\build\\supervizio.exe -Crasher C:\\build\\crasher.exe"
 
       - name: Release VM (unlock)
         if: always()
