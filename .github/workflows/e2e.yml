@@ -757,7 +757,11 @@ jobs:
       PROXMOX_API_URL: "https://192.168.100.1:8006/api2/json"
       PVE_AUTH: "PVEAPIToken=${{ secrets.CI_RUNNER_API_TOKEN_ID }}=${{ secrets.CI_RUNNER_API_TOKEN_SECRET }}"
       NODE: ${{ secrets.PROXMOX_NODE }}
-      SSH_OPTS: "-o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o ConnectTimeout=15"
+      # Keepalive: the supervision battery runs S1-S8 in one long SSH session
+      # (S6 backoff sleeps, S7 rotation, S8 health all add idle time); without it
+      # the Windows OpenSSH server drops the idle session ("closed by remote host",
+      # exit 255) even though the scenarios pass.
+      SSH_OPTS: "-o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o ConnectTimeout=15 -o ServerAliveInterval=15 -o ServerAliveCountMax=8"
       GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
     steps:
       - name: Report status (pending)
@@ -785,14 +789,25 @@ jobs:
           echo "${{ secrets.CI_SSH_PRIVATE_KEY }}" > ~/.ssh/id_ed25519
           chmod 600 ~/.ssh/id_ed25519
 
-      - name: Download Windows binary
-        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
-        with:
-          name: supervizio-windows-amd64
-          path: bin
-          github-token: ${{ secrets.AGENT_REPO_TOKEN }}
-          repository: supervizio/agent
-          run-id: ${{ needs.resolve.outputs.run_id }}
+      - name: Download Windows binary from zot (cross-repo)
+        env:
+          ARTIFACT_REGISTRY: 192.168.100.250:5000
+          RUN_ID: ${{ needs.resolve.outputs.run_id }}
+          ARTIFACT: supervizio-windows-amd64
+        run: |
+          set -euo pipefail
+          mkdir -p bin
+          # Agent CI publishes binaries to the self-hosted zot store (no GitHub
+          # artifacts). This runner (supervizio-runner) is on the lab network.
+          command -v oras >/dev/null 2>&1 || {
+            v=1.2.0; a=$(uname -m); case "$a" in x86_64) oa=amd64;; aarch64|arm64) oa=arm64;; *) oa=amd64;; esac
+            curl -fsSL "https://github.com/oras-project/oras/releases/download/v${v}/oras_${v}_linux_${oa}.tar.gz" | sudo tar xz -C /usr/local/bin oras
+          }
+          n=0; until oras pull --plain-http "$ARTIFACT_REGISTRY/run-${RUN_ID}/${ARTIFACT}:latest" -o bin; do
+            n=$((n+1)); [ "$n" -ge 5 ] && { echo "::error::zot pull failed for ${ARTIFACT}"; exit 1; }
+            echo "retry $n"; sleep $((n*8))
+          done
+          ls -la bin/
 
       - name: Acquire VM (lock)
         id: vm
@@ -1012,8 +1027,10 @@ jobs:
           # Use -O (legacy SCP protocol) for VMs without SFTP subsystem
           SCP_CMD="scp -O ${SSH_OPTS}"
 
-          # Clean previous files to prevent SCP nesting issues
-          ssh ${SSH_OPTS} root@${VM_IP} "rm -rf /tmp/setup /tmp/validate-probe.sh /tmp/supervizio*" || true
+          # Clean previous files to prevent SCP nesting / stale-file issues. A
+          # leftover /tmp/scenario-battery.sh from an earlier run made scp fail
+          # with "Permission denied" (it was missing from this cleanup list).
+          ssh ${SSH_OPTS} root@${VM_IP} "rm -rf /tmp/setup /tmp/validate-probe.sh /tmp/supervizio* /tmp/scenario-battery.sh" || true
 
           # Copy setup scripts (from agent repo checkout)
           retry ${SCP_CMD} -r agent/setup root@${VM_IP}:/tmp/setup
