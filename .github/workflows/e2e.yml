@@ -865,14 +865,11 @@ jobs:
             binary_artifact: supervizio-linux-amd64-musl
             pkg_artifact: supervizio-amd64.apk
             pkg_ext: apk
-          - name: arch-systemd
-            binary_artifact: supervizio-linux-amd64
-            pkg_artifact: supervizio-amd64.pkg.tar.zst
-            pkg_ext: pkg.tar.zst
-          - name: artix-dinit
-            binary_artifact: supervizio-linux-amd64
-            pkg_artifact: supervizio-amd64.pkg.tar.zst
-            pkg_ext: pkg.tar.zst
+          # NOTE: arch-systemd and artix-dinit are intentionally omitted — the lab
+          # has no arch template and the artix-dinit Packer build is blocked, so
+          # no running VM by those names exists. Their legs failed "Acquire VM
+          # (lock)" on every run (deterministic red). Re-add here once the
+          # matching lab VMs are provisioned and appear in `qm list`.
           - name: debian-systemd
             binary_artifact: supervizio-linux-amd64
             pkg_artifact: supervizio-amd64.deb
