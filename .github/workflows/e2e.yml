@@ -1303,10 +1303,16 @@ jobs:
             exit 0
           fi
 
-          # Dynamically discover test VM VMIDs via Proxmox API
-          # Test VMs are named after OS templates (alpine-openrc, debian-systemd, freebsd, etc.)
-          # Exclude: runner-* (CI runners), tpl-* (Packer templates), e2e-* (ephemeral clones)
-          echo "Discovering test VMs..."
+          # Dynamically discover test VM VMIDs via Proxmox API.
+          # Test VMs live in the 200-215 band (template_VMID + 100). We hard-scope
+          # the reset to that band so infra VMs can NEVER be caught in the sweep:
+          #   - ci-artifacts-zot (250): the CI artifact registry — stopping it makes
+          #     zot "no route to host" and breaks agent CI + this very workflow.
+          #   - mcp-service (301), runner-k3s (300): stateful infra.
+          #   - dynamic/e2e (400-499), staging (500-522).
+          # Name-prefix excludes (runner-/tpl-/e2e-/ci-artifacts-/mcp-/zot) are kept
+          # as defense-in-depth in case the band ever changes.
+          echo "Discovering test VMs (VMID 200-215)..."
           ALL_VMS=$(curl -sf -k --max-time 30 \
             -H "Authorization: ${PVE_AUTH}" \
             "${PROXMOX_API_URL}/nodes/${NODE}/qemu" 2>/dev/null) || {
@@ -1314,10 +1320,12 @@ jobs:
             exit 1
           }
 
-          # Filter: exclude runners, templates, and numeric-only names
+          # Filter: test-VM band 200-215 only, excluding infra/runner/template names
           VMIDS=$(echo "$ALL_VMS" | jq -r '
             .data[]
-            | select(.name | test("^(runner-|tpl-|e2e-)") | not)
+            | select((.vmid | tonumber) >= 200 and (.vmid | tonumber) <= 215)
+            | select(.name | test("^(runner-|tpl-|e2e-|ci-artifacts-|mcp-)") | not)
+            | select(.name | test("zot") | not)
             | select(.name | test("^[0-9]+$") | not)
             | .vmid
           ' 2>/dev/null | sort -n)
@@ -1330,7 +1338,9 @@ jobs:
           echo "Found test VMs:"
           echo "$ALL_VMS" | jq -r '
             .data[]
-            | select(.name | test("^(runner-|tpl-|e2e-)") | not)
+            | select((.vmid | tonumber) >= 200 and (.vmid | tonumber) <= 215)
+            | select(.name | test("^(runner-|tpl-|e2e-|ci-artifacts-|mcp-)") | not)
+            | select(.name | test("zot") | not)
             | select(.name | test("^[0-9]+$") | not)
             | "  \(.vmid) \(.name) (\(.status))"
           ' 2>/dev/null
