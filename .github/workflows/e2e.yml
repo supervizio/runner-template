@@ -863,7 +863,14 @@ jobs:
     timeout-minutes: 15
     strategy:
       fail-fast: false
-      max-parallel: 8
+      # Host RAM headroom, not leg count. Each acquired bench VM is a 4 GB guest, so
+      # 8-way fan-out demanded ~32 GB of the Proxmox host at once — but the host keeps
+      # only ~28 GB free (infra VMs 300/301/250 pin ~80 GB) and its swap sits full.
+      # Overcommit made freshly-rolled-back VMs boot into swap-thrash, so neither the
+      # guest-agent nor dhcpcd came up inside vm-acquire's 15-min window and EVERY leg
+      # failed "Could not detect VM IP" (labs #136 / #122). Capping at 5 keeps peak
+      # bench demand ~20 GB, leaving headroom for a concurrent e2e-macos (16 GB) leg.
+      max-parallel: 5
       matrix:
         include:
           - name: alpine-openrc
