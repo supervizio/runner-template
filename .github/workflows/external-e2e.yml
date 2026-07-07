@@ -9,10 +9,10 @@ name: External E2E (dispatched)
 # SECURITY MODEL (this repo is a public executor of private code — treat as
 # critical surface):
 #   * repository_dispatch-only trigger; no pull_request / pull_request_target.
-#   * LIBPROBE_REPO_TOKEN = fine-grained PAT, Contents:read + Checks:write on the
+#   * LIBPROBE_REPO_TOKEN = fine-grained PAT, Contents:read + Commit statuses:write on the
 #     SOURCE repo only. Used to checkout the private source and to post the
-#     result back as a check-run on the source commit.
-#   * Results travel via that check-run (lives on the private source repo), NOT
+#     result back as a commit status on the source commit.
+#   * Results travel via that commit status (on the private source commit), NOT
 #     via artifacts — there is NO upload-artifact here.
 #   * Logs are minimized (no --nocapture, RUST_BACKTRACE=0, no set -x) and the
 #     whole run is DELETED by cleanup-external-e2e.yml after completion. Note:
@@ -42,29 +42,22 @@ env:
   RUST_BACKTRACE: "0"
 
 jobs:
-  # --- Ack: create the in_progress check-run immediately, so the source repo's
+  # --- Ack: set the pending commit status immediately, so the source repo's
   # collect job knows the dispatch was received (even if the matrix later dies).
   ack:
-    name: Ack (create check-run)
+    name: Ack (pending status)
     runs-on: ubuntu-24.04
-    outputs:
-      check_run_id: ${{ steps.mk.outputs.id }}
     steps:
-      - name: Create in_progress check-run on source commit
-        id: mk
+      - name: Set pending commit status on source
         env:
           GH_TOKEN: ${{ secrets.LIBPROBE_REPO_TOKEN }}
         run: |
           set -euo pipefail
-          id=$(gh api -X POST "repos/${SOURCE_REPO}/check-runs" \
-            -f name="${CHECK_NAME}" \
-            -f head_sha="${SOURCE_SHA}" \
-            -f status="in_progress" \
-            -f "output[title]=External E2E (public runners, clean-nil)" \
-            -f "output[summary]=Dispatched from ${SOURCE_REPO} run ${SOURCE_RUN_ID}.${SOURCE_ATTEMPT}; matrix running." \
-            --jq '.id')
-          echo "id=$id" >> "$GITHUB_OUTPUT"
-          echo "created check-run $id"
+          gh api -X POST "repos/${SOURCE_REPO}/statuses/${SOURCE_SHA}" \
+            -f state="pending" \
+            -f context="${CHECK_NAME}" \
+            -f description="Dispatched from run ${SOURCE_RUN_ID}.${SOURCE_ATTEMPT}; matrix running." >/dev/null
+          echo "pending status set"
 
   # --- Native legs: gating. Free hosted runners honor rust-toolchain.toml via
   # the preinstalled rustup. Quiet by design (no --nocapture).
@@ -95,7 +88,7 @@ jobs:
 
   # --- BSD legs via QEMU (vmactions). Advisory (continue-on-error) until the
   # per-OS rust toolchain path is shaken out on a first real run — they report
-  # but do not gate the check-run conclusion.
+  # but do not gate the reported status.
   freebsd:
     name: e2e freebsd-amd64
     needs: [ack]
@@ -150,11 +143,11 @@ jobs:
           prepare: /usr/sbin/pkg_add -I rust || pkgin -y install rust
           run: cargo test --release -p probe-platform --test behavioral --test capability --test inventory -- --include-ignored
 
-  # --- Report: complete the source check-run. Overall = success iff every NATIVE
+  # --- Report: set the final source commit status. Overall = success iff every NATIVE
   # leg passed; BSD legs are reported but advisory. Reads only this run's job
   # conclusions (actions:read on self) — no artifacts, no source in this job.
   report:
-    name: Report → source check-run
+    name: Report → source status
     needs: [ack, native, freebsd, openbsd, netbsd]
     if: ${{ always() }}
     runs-on: ubuntu-24.04
@@ -162,11 +155,10 @@ jobs:
       contents: read
       actions: read
     steps:
-      - name: Aggregate + complete check-run
+      - name: Aggregate + set final commit status
         env:
           GH_TOKEN: ${{ secrets.LIBPROBE_REPO_TOKEN }}
           RT_TOKEN: ${{ github.token }}
-          CHECK_ID: ${{ needs.ack.outputs.check_run_id }}
         run: |
           set -euo pipefail
           native="linux-amd64 linux-arm64 windows-amd64 windows-arm64 macos-amd64 macos-arm64"
@@ -188,11 +180,12 @@ jobs:
             table="${table}| ${p} | ${c} | advisory |\n"
           done
           if [ "$fails" -eq 0 ]; then overall=success; else overall=failure; fi
-          summary="## External E2E — public runners (clean-nil)\n\nsource: ${SOURCE_REPO}@${SOURCE_SHA} (run ${SOURCE_RUN_ID}.${SOURCE_ATTEMPT})\n\n| platform | result | lane |\n|---|---|---|\n${table}\n**overall (native): ${overall}**"
-          printf '%b\n' "$summary"
-          gh api -X PATCH "repos/${SOURCE_REPO}/check-runs/${CHECK_ID}" \
-            -f status="completed" \
-            -f conclusion="${overall}" \
-            -f "output[title]=External E2E (public runners, clean-nil)" \
-            -f "output[summary]=$(printf '%b' "$summary")" >/dev/null
-          echo "check-run ${CHECK_ID} completed: ${overall}"
+          printf '%b\n' "native: ${overall} (${fails} failing) — ${SOURCE_REPO}@${SOURCE_SHA}\n${table}"
+          # Commit Status API (mirrors runner-template e2e.yml for agent): a fine-grained
+          # PAT can set statuses (Commit statuses: write); it can NOT create check-runs.
+          gh api -X POST "repos/${SOURCE_REPO}/statuses/${SOURCE_SHA}" \
+            -f state="${overall}" \
+            -f context="${CHECK_NAME}" \
+            -f description="native e2e: ${overall} (${fails} failing)" \
+            -f target_url="https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }}" >/dev/null
+          echo "status set: ${overall}"
