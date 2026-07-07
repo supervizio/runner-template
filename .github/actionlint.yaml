@@ -1,0 +1,5 @@
+# windows-11-arm is a real GitHub-hosted runner label (Windows 11 arm64) that
+# actionlint's bundled list doesn't know yet. Whitelist so lint stays clean.
+self-hosted-runner:
+  labels:
+    - windows-11-arm

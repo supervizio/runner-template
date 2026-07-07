@@ -1,0 +1,35 @@
+name: Cleanup external E2E
+
+# Deletes each dispatched External-E2E run once it completes, so no persistent
+# public trace of the private-source run remains. A run cannot delete itself
+# while running, hence this separate workflow_run-triggered janitor.
+#
+# STRICTLY scoped: only deletes runs of the "External E2E (dispatched)" workflow
+# that were triggered by repository_dispatch — manual/other runs are never
+# touched. This janitor's own run is tiny and contains no source or test output.
+
+on:
+  workflow_run:
+    workflows: ["External E2E (dispatched)"]
+    types: [completed]
+
+permissions:
+  # Delete-only janitor: it checks out nothing, so actions:write is the only
+  # scope it needs (least privilege).
+  actions: write
+
+jobs:
+  delete-run:
+    name: Delete completed dispatched run
+    if: ${{ github.event.workflow_run.event == 'repository_dispatch' }}
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Delete the run
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          rid="${{ github.event.workflow_run.id }}"
+          echo "deleting External-E2E run ${rid} (trigger=${{ github.event.workflow_run.event }})"
+          gh api -X DELETE "repos/${{ github.repository }}/actions/runs/${rid}"
+          echo "deleted."

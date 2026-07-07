@@ -1,0 +1,198 @@
+name: External E2E (dispatched)
+
+# =============================================================================
+# Runs another (PRIVATE) repo's CLASSIC clean-nil E2E on this PUBLIC repo's FREE,
+# unlimited GitHub-hosted runners (native linux/windows/macos amd64+arm64 + BSD
+# via QEMU). Triggered ONLY by an authenticated repository_dispatch — never by a
+# PR — so external forks can never reach the secrets below.
+#
+# SECURITY MODEL (this repo is a public executor of private code — treat as
+# critical surface):
+#   * repository_dispatch-only trigger; no pull_request / pull_request_target.
+#   * LIBPROBE_REPO_TOKEN = fine-grained PAT, Contents:read + Checks:write on the
+#     SOURCE repo only. Used to checkout the private source and to post the
+#     result back as a check-run on the source commit.
+#   * Results travel via that check-run (lives on the private source repo), NOT
+#     via artifacts — there is NO upload-artifact here.
+#   * Logs are minimized (no --nocapture, RUST_BACKTRACE=0, no set -x) and the
+#     whole run is DELETED by cleanup-external-e2e.yml after completion. Note:
+#     while the run is live its logs are publicly visible — unavoidable on a
+#     public repo; deletion removes the persistent trace only.
+#   * Third-party actions pinned by commit SHA.
+# =============================================================================
+
+on:
+  repository_dispatch:
+    types: [run-external-e2e]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: external-e2e-${{ github.event.client_payload.source_repo }}-${{ github.event.client_payload.source_run_id }}
+  cancel-in-progress: true
+
+env:
+  SOURCE_REPO: ${{ github.event.client_payload.source_repo }}
+  SOURCE_SHA: ${{ github.event.client_payload.source_sha }}
+  SOURCE_RUN_ID: ${{ github.event.client_payload.source_run_id }}
+  SOURCE_ATTEMPT: ${{ github.event.client_payload.source_attempt }}
+  CHECK_NAME: e2e-public/${{ github.event.client_payload.source_run_id }}-${{ github.event.client_payload.source_attempt }}
+  CARGO_TERM_COLOR: always
+  RUST_BACKTRACE: "0"
+
+jobs:
+  # --- Ack: create the in_progress check-run immediately, so the source repo's
+  # collect job knows the dispatch was received (even if the matrix later dies).
+  ack:
+    name: Ack (create check-run)
+    runs-on: ubuntu-24.04
+    outputs:
+      check_run_id: ${{ steps.mk.outputs.id }}
+    steps:
+      - name: Create in_progress check-run on source commit
+        id: mk
+        env:
+          GH_TOKEN: ${{ secrets.LIBPROBE_REPO_TOKEN }}
+        run: |
+          set -euo pipefail
+          id=$(gh api -X POST "repos/${SOURCE_REPO}/check-runs" \
+            -f name="${CHECK_NAME}" \
+            -f head_sha="${SOURCE_SHA}" \
+            -f status="in_progress" \
+            -f "output[title]=External E2E (public runners, clean-nil)" \
+            -f "output[summary]=Dispatched from ${SOURCE_REPO} run ${SOURCE_RUN_ID}.${SOURCE_ATTEMPT}; matrix running." \
+            --jq '.id')
+          echo "id=$id" >> "$GITHUB_OUTPUT"
+          echo "created check-run $id"
+
+  # --- Native legs: gating. Free hosted runners honor rust-toolchain.toml via
+  # the preinstalled rustup. Quiet by design (no --nocapture).
+  native:
+    name: e2e ${{ matrix.platform }}
+    needs: [ack]
+    runs-on: ${{ matrix.runner }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { platform: linux-amd64,   runner: ubuntu-24.04 }
+          - { platform: linux-arm64,   runner: ubuntu-24.04-arm }
+          - { platform: windows-amd64, runner: windows-latest }
+          - { platform: windows-arm64, runner: windows-11-arm }
+          - { platform: macos-amd64,   runner: macos-13 }
+          - { platform: macos-arm64,   runner: macos-15 }
+    steps:
+      - name: Checkout private source (ephemeral, no persisted creds)
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          repository: ${{ env.SOURCE_REPO }}
+          ref: ${{ env.SOURCE_SHA }}
+          token: ${{ secrets.LIBPROBE_REPO_TOKEN }}
+          persist-credentials: false
+      - name: Classic E2E (clean-nil, quiet)
+        run: cargo test --release -p probe-platform --test behavioral --test capability --test inventory -- --include-ignored
+
+  # --- BSD legs via QEMU (vmactions). Advisory (continue-on-error) until the
+  # per-OS rust toolchain path is shaken out on a first real run — they report
+  # but do not gate the check-run conclusion.
+  freebsd:
+    name: e2e freebsd-amd64
+    needs: [ack]
+    runs-on: ubuntu-24.04
+    continue-on-error: true
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          repository: ${{ env.SOURCE_REPO }}
+          ref: ${{ env.SOURCE_SHA }}
+          token: ${{ secrets.LIBPROBE_REPO_TOKEN }}
+          persist-credentials: false
+      - uses: vmactions/freebsd-vm@5a72679103d223925653750faa878a143340fbd0 # v1.5.0
+        with:
+          usesh: true
+          prepare: pkg install -y rust
+          run: cargo test --release -p probe-platform --test behavioral --test capability --test inventory -- --include-ignored
+
+  openbsd:
+    name: e2e openbsd-amd64
+    needs: [ack]
+    runs-on: ubuntu-24.04
+    continue-on-error: true
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          repository: ${{ env.SOURCE_REPO }}
+          ref: ${{ env.SOURCE_SHA }}
+          token: ${{ secrets.LIBPROBE_REPO_TOKEN }}
+          persist-credentials: false
+      - uses: vmactions/openbsd-vm@18edb32f4e48dae5865d7b8b3a9587bc01218a20 # v1.4.4
+        with:
+          usesh: true
+          prepare: pkg_add -I rust
+          run: cargo test --release -p probe-platform --test behavioral --test capability --test inventory -- --include-ignored
+
+  netbsd:
+    name: e2e netbsd-amd64
+    needs: [ack]
+    runs-on: ubuntu-24.04
+    continue-on-error: true
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          repository: ${{ env.SOURCE_REPO }}
+          ref: ${{ env.SOURCE_SHA }}
+          token: ${{ secrets.LIBPROBE_REPO_TOKEN }}
+          persist-credentials: false
+      - uses: vmactions/netbsd-vm@1d9767765fd3f986e6de3aff4b1148f0c3a45f01 # v1.4.1
+        with:
+          usesh: true
+          prepare: /usr/sbin/pkg_add -I rust || pkgin -y install rust
+          run: cargo test --release -p probe-platform --test behavioral --test capability --test inventory -- --include-ignored
+
+  # --- Report: complete the source check-run. Overall = success iff every NATIVE
+  # leg passed; BSD legs are reported but advisory. Reads only this run's job
+  # conclusions (actions:read on self) — no artifacts, no source in this job.
+  report:
+    name: Report → source check-run
+    needs: [ack, native, freebsd, openbsd, netbsd]
+    if: ${{ always() }}
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+      actions: read
+    steps:
+      - name: Aggregate + complete check-run
+        env:
+          GH_TOKEN: ${{ secrets.LIBPROBE_REPO_TOKEN }}
+          RT_TOKEN: ${{ github.token }}
+          CHECK_ID: ${{ needs.ack.outputs.check_run_id }}
+        run: |
+          set -euo pipefail
+          native="linux-amd64 linux-arm64 windows-amd64 windows-arm64 macos-amd64 macos-arm64"
+          # Read this run's job conclusions (own repo → RT_TOKEN / github.token).
+          jobs=$(GH_TOKEN="$RT_TOKEN" gh api "repos/${{ github.repository }}/actions/runs/${{ github.run_id }}/jobs?per_page=100" \
+                  --jq '.jobs[] | select(.name|startswith("e2e ")) | "\(.name|ltrimstr("e2e "))|\(.conclusion)"')
+          table=""; fails=0
+          # native (gating)
+          for p in $native; do
+            c=$(printf '%s\n' "$jobs" | awk -F'|' -v p="$p" '$1==p{print $2; exit}')
+            [ -z "$c" ] && c="missing"
+            table="${table}| ${p} | ${c} | gating |\n"
+            [ "$c" = "success" ] || fails=$((fails+1))
+          done
+          # bsd (advisory)
+          for p in freebsd-amd64 openbsd-amd64 netbsd-amd64; do
+            c=$(printf '%s\n' "$jobs" | awk -F'|' -v p="$p" '$1==p{print $2; exit}')
+            [ -z "$c" ] && c="missing"
+            table="${table}| ${p} | ${c} | advisory |\n"
+          done
+          if [ "$fails" -eq 0 ]; then overall=success; else overall=failure; fi
+          summary="## External E2E — public runners (clean-nil)\n\nsource: ${SOURCE_REPO}@${SOURCE_SHA} (run ${SOURCE_RUN_ID}.${SOURCE_ATTEMPT})\n\n| platform | result | lane |\n|---|---|---|\n${table}\n**overall (native): ${overall}**"
+          printf '%b\n' "$summary"
+          gh api -X PATCH "repos/${SOURCE_REPO}/check-runs/${CHECK_ID}" \
+            -f status="completed" \
+            -f conclusion="${overall}" \
+            -f "output[title]=External E2E (public runners, clean-nil)" \
+            -f "output[summary]=$(printf '%b' "$summary")" >/dev/null
+          echo "check-run ${CHECK_ID} completed: ${overall}"
