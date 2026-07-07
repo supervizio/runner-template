@@ -17,6 +17,10 @@ on:
         description: 'Run only the arm64 e2e jobs (skip amd64/VM)'
         required: false
         default: 'false'
+      repo:
+        description: 'Repository to test (supervizio/agent | supervizio/libprobe)'
+        required: false
+        default: 'supervizio/agent'
   repository_dispatch:
     types: [run-e2e]
 
@@ -39,6 +43,7 @@ jobs:
       ref: ${{ steps.resolve.outputs.ref }}
       run_id: ${{ steps.resolve.outputs.run_id }}
       sha: ${{ steps.resolve.outputs.sha }}
+      repo: ${{ steps.resolve.outputs.repo }}
     steps:
       - name: Resolve dispatch parameters
         id: resolve
@@ -47,10 +52,12 @@ jobs:
             echo "ref=${{ inputs.ref }}" >> "$GITHUB_OUTPUT"
             echo "run_id=${{ inputs.run_id }}" >> "$GITHUB_OUTPUT"
             echo "sha=${{ inputs.sha }}" >> "$GITHUB_OUTPUT"
+            echo "repo=${{ inputs.repo || 'supervizio/agent' }}" >> "$GITHUB_OUTPUT"
           else
             echo "ref=${{ github.event.client_payload.ref }}" >> "$GITHUB_OUTPUT"
             echo "run_id=${{ github.event.client_payload.run_id }}" >> "$GITHUB_OUTPUT"
             echo "sha=${{ github.event.client_payload.sha }}" >> "$GITHUB_OUTPUT"
+            echo "repo=${{ github.event.client_payload.repo || 'supervizio/agent' }}" >> "$GITHUB_OUTPUT"
           fi
 
       - name: Display resolved parameters
@@ -66,7 +73,7 @@ jobs:
   e2e-docker:
     name: E2E Docker ${{ matrix.name }}
     needs: [resolve]
-    if: ${{ github.event.inputs.arm_only != 'true' }}
+    if: ${{ github.event.inputs.arm_only != 'true' && needs.resolve.outputs.repo == 'supervizio/agent' }}
     runs-on: supervizio-runner
     timeout-minutes: 10
     strategy:
@@ -273,6 +280,7 @@ jobs:
   e2e-docker-arm64:
     name: E2E Docker arm64 ${{ matrix.name }}
     needs: [resolve]
+    if: ${{ needs.resolve.outputs.repo == 'supervizio/agent' }}
     # GitHub-hosted native arm64 runner: real Docker (no DinD sidecar, no QEMU)
     # and a native aarch64 toolchain. The binary is built natively here rather
     # than pulled from the lab zot store (unreachable from a hosted runner).
@@ -479,7 +487,7 @@ jobs:
   e2e-macos:
     name: E2E macOS x86_64
     needs: [resolve]
-    if: ${{ github.event.inputs.arm_only != 'true' }}
+    if: ${{ github.event.inputs.arm_only != 'true' && needs.resolve.outputs.repo == 'supervizio/agent' }}
     runs-on: supervizio-runner
     timeout-minutes: 20
     env:
@@ -599,6 +607,7 @@ jobs:
   e2e-macos-arm64:
     name: E2E macOS ARM64
     needs: [resolve]
+    if: ${{ needs.resolve.outputs.repo == 'supervizio/agent' }}
     runs-on: macos-15
     timeout-minutes: 10
     steps:
@@ -755,6 +764,7 @@ jobs:
   e2e-windows:
     name: E2E Windows ${{ matrix.name }}
     needs: [resolve]
+    if: ${{ needs.resolve.outputs.repo == 'supervizio/agent' }}
     runs-on: supervizio-runner
     timeout-minutes: 20
     strategy:
@@ -858,7 +868,7 @@ jobs:
   e2e-vm:
     name: E2E VM ${{ matrix.name }}
     needs: [resolve]
-    if: ${{ github.event.inputs.arm_only != 'true' }}
+    if: ${{ github.event.inputs.arm_only != 'true' && needs.resolve.outputs.repo == 'supervizio/agent' }}
     runs-on: supervizio-runner
     timeout-minutes: 15
     strategy:
@@ -1405,7 +1415,7 @@ jobs:
   report:
     name: Report Results
     needs: [resolve, e2e-docker, e2e-docker-arm64, e2e-macos, e2e-macos-arm64, e2e-vm]
-    if: always()
+    if: always() && needs.resolve.outputs.repo == 'supervizio/agent'
     runs-on: ubuntu-24.04
     steps:
       - name: Aggregate results
@@ -1497,3 +1507,87 @@ jobs:
             fi
           done
           echo "SUCCESS: All E2E tests passed"
+
+  # ===========================================================================
+  # E2E LIBPROBE (arm64 / Apple-Silicon) — dispatched by supervizio/libprobe for
+  # the legs its x86 bench cannot run natively. Pure Rust: checkout libprobe@ref
+  # and run its probe-platform E2E on the GitHub-hosted arm64/macOS runners, then
+  # report the status back onto the libprobe commit. Runs ONLY when the dispatch
+  # names libprobe (agent jobs above are gated to repo == supervizio/agent).
+  # ===========================================================================
+  e2e-libprobe-arm64:
+    name: E2E libprobe ${{ matrix.platform }}
+    needs: [resolve]
+    if: ${{ needs.resolve.outputs.repo == 'supervizio/libprobe' }}
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 25
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { os: ubuntu-24.04-arm, platform: linux-arm64 }
+          - { os: macos-15,         platform: darwin-arm64 }
+          - { os: windows-11-arm,   platform: windows-arm64 }
+    steps:
+      - name: Report status (pending)
+        if: needs.resolve.outputs.sha != ''
+        continue-on-error: true
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.LIBPROBE_REPO_TOKEN }}
+          SHA: ${{ needs.resolve.outputs.sha }}
+          PLATFORM: ${{ matrix.platform }}
+          TARGET_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          [ -z "$GH_TOKEN" ] && { echo "LIBPROBE_REPO_TOKEN not set, skipping status"; exit 0; }
+          payload=$(jq -nc --arg ctx "e2e/$PLATFORM" --arg url "$TARGET_URL" \
+            '{state:"pending",context:$ctx,description:"Running...",target_url:$url}')
+          curl -sf -X POST \
+            -H "Authorization: Bearer $GH_TOKEN" \
+            -H "Accept: application/vnd.github+json" \
+            "https://api.github.com/repos/supervizio/libprobe/statuses/$SHA" -d "$payload"
+
+      - name: Checkout libprobe
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          repository: supervizio/libprobe
+          ref: ${{ needs.resolve.outputs.ref }}
+          token: ${{ secrets.LIBPROBE_REPO_TOKEN }}
+
+      - name: Set up Rust
+        uses: dtolnay/rust-toolchain@56f84321dbccf38fb67ce29ab63e4754056677e0 # stable
+        with:
+          toolchain: stable
+          components: rust-src
+
+      - name: E2E — behavioral + capability + inventory
+        shell: bash
+        env:
+          # Lab CRL/OCSP is unreachable from hosted Windows runners; disable the
+          # schannel revocation check so cargo's crates.io fetch succeeds.
+          CARGO_HTTP_CHECK_REVOKE: 'false'
+        run: |
+          cargo test --release -p probe-platform \
+            --test behavioral --test capability --test inventory \
+            -- --include-ignored --nocapture
+
+      - name: Report status (final)
+        if: always() && needs.resolve.outputs.sha != ''
+        continue-on-error: true
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.LIBPROBE_REPO_TOKEN }}
+          JOB_STATUS: ${{ job.status }}
+          SHA: ${{ needs.resolve.outputs.sha }}
+          PLATFORM: ${{ matrix.platform }}
+          TARGET_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          [ -z "$GH_TOKEN" ] && exit 0
+          STATE=failure; DESC=Failed
+          [ "$JOB_STATUS" = success ] && { STATE=success; DESC=Passed; }
+          payload=$(jq -nc --arg st "$STATE" --arg ctx "e2e/$PLATFORM" --arg desc "$DESC" --arg url "$TARGET_URL" \
+            '{state:$st,context:$ctx,description:$desc,target_url:$url}')
+          curl -sf -X POST \
+            -H "Authorization: Bearer $GH_TOKEN" \
+            -H "Accept: application/vnd.github+json" \
+            "https://api.github.com/repos/supervizio/libprobe/statuses/$SHA" -d "$payload"
