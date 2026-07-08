@@ -238,11 +238,69 @@ jobs:
           path: report-netbsd-${{ matrix.arch }}.json
           if-no-files-found: warn
 
+  # --- Container legs: the same metrics are ALSO collected INSIDE Docker
+  # containers (musl/glibc/scratch), so the report certifies what libprobe
+  # captures under each libc + a no-OS image. metrics_report is built for the
+  # matching target, then run inside the image; its JSON is extracted. Advisory.
+  containers:
+    name: e2e container-${{ matrix.distro }}
+    needs: [ack]
+    runs-on: ubuntu-24.04
+    continue-on-error: true
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { distro: ubuntu,  image: "ubuntu:24.04", target: x86_64-unknown-linux-gnu,  musl: false }
+          - { distro: alpine,  image: "alpine:3.21",  target: x86_64-unknown-linux-musl, musl: true }
+          - { distro: scratch, image: "scratch",      target: x86_64-unknown-linux-musl, musl: true }
+    steps:
+      - name: Checkout private source (ephemeral, no persisted creds)
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          repository: ${{ env.SOURCE_REPO }}
+          ref: ${{ env.SOURCE_SHA }}
+          token: ${{ secrets.LIBPROBE_REPO_TOKEN }}
+          persist-credentials: false
+      - name: Rust target + musl toolchain
+        run: |
+          set -euo pipefail
+          rustup target add ${{ matrix.target }}
+          if [ "${{ matrix.musl }}" = "true" ]; then
+            sudo apt-get update -qq && sudo apt-get install -y musl-tools
+          fi
+      - name: Build metrics_report for ${{ matrix.distro }}
+        env:
+          CC_x86_64_unknown_linux_musl: musl-gcc
+          RUSTFLAGS: ${{ matrix.musl && '-C target-feature=+crt-static' || '' }}
+        run: cargo build --release -p probe-platform --bin metrics_report --target ${{ matrix.target }}
+      - name: Run metrics_report inside ${{ matrix.image }}
+        run: |
+          set -euo pipefail
+          bin="target/${{ matrix.target }}/release/metrics_report"
+          out="report-container-${{ matrix.distro }}.json"
+          if [ "${{ matrix.distro }}" = "scratch" ]; then
+            cp "$bin" mr
+            printf 'FROM scratch\nCOPY mr /metrics_report\nENTRYPOINT ["/metrics_report"]\n' > Dockerfile.mr
+            docker build -q -f Dockerfile.mr -t mr-scratch . >/dev/null
+            docker run --rm mr-scratch > "$out"
+          else
+            docker run --rm -v "$PWD/$bin:/metrics_report:ro" ${{ matrix.image }} /metrics_report > "$out"
+          fi
+          echo "$(wc -c <"$out") bytes"; head -c 200 "$out"
+      - name: Upload container report
+        if: ${{ always() }}
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: report-container-${{ matrix.distro }}
+          path: report-container-${{ matrix.distro }}.json
+          if-no-files-found: warn
+
   # --- Collect: fuse every per-(os,arch) report into one `metrics-reports`
   # artifact the dispatcher downloads to regenerate the coverage plaquette.
   collect-reports:
     name: Collect metric reports
-    needs: [native, freebsd, openbsd, netbsd]
+    needs: [native, freebsd, openbsd, netbsd, containers]
     if: ${{ always() }}
     runs-on: ubuntu-24.04
     steps:
