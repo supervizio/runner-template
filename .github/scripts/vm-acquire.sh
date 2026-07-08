@@ -119,12 +119,30 @@ resolve_vmid() {
   return 1
 }
 
-# Detect VM IP via neighbor table, QEMU guest agent, or DHCP lease
+# Detect VM IP via reserved lease, neighbor table, QEMU guest agent, or DHCP.
 # Returns: IP address on stdout, logs on stderr
-# Methods ordered by speed: neighbor scan (~5s) > guest agent (~15s) > DHCP (~20s)
+# Methods ordered by speed: reserved lease (~1s) > neighbor scan (~5s) >
+# guest agent (~15s) > DHCP (~20s) > nmap.
 detect_ip() {
   local vmid="$1"
   local vm_ip=""
+
+  # Method 0: deterministic reserved lease (kodflow/labs#153). The persistent
+  # test VMs (VMID 200-215) have reserved dnsmasq leases keyed on a deterministic
+  # MAC, so their IP is a pure function of the VMID and is stable across
+  # rollback/resume: 192.168.100.(180 + vmid - 200) — e.g. 204 -> .184. Probe it
+  # first; a hit skips the whole scan chain (the biggest source of acquire
+  # flakiness). A miss (non-test VMID, VM still booting, or ICMP filtered as on
+  # macOS) falls straight through to the scan methods below — no regression.
+  if [ "$vmid" -ge 200 ] && [ "$vmid" -le 215 ]; then
+    local det_ip="192.168.100.$((180 + vmid - 200))"
+    if ping -c 1 -W 1 "$det_ip" >/dev/null 2>&1; then
+      log "VM IP (reserved lease): $det_ip"
+      echo "$det_ip"
+      return 0
+    fi
+    log "Reserved-lease IP $det_ip not answering yet; falling back to scan"
+  fi
 
   # Get MAC address (needed by neighbor scan and DHCP)
   local mac=""
