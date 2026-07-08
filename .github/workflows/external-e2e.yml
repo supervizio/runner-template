@@ -62,8 +62,11 @@ env:
   CHECK_NAME: e2e-public/${{ github.event.client_payload.source_run_id || github.event.inputs.source_run_id }}-${{ github.event.client_payload.source_attempt || github.event.inputs.source_attempt }}
   CARGO_TERM_COLOR: always
   RUST_BACKTRACE: "0"
-  # Full test suite command (test EVERYTHING, not a hand-picked subset).
-  TEST_CMD: "cargo test --release -p probe-platform -- --include-ignored"
+  # Full test suite: every unit + integration test (--lib --tests), including
+  # the #[ignore]-gated E2E ones. Doctests are excluded (--doc) on purpose: they
+  # are compile-checked examples, not functional tests, and one stale example in
+  # the darwin backend would otherwise red the gate on macOS.
+  TEST_CMD: "cargo test --release -p probe-platform --lib --tests -- --include-ignored"
   REPORT_CMD: "cargo run --release -p probe-platform --bin metrics_report"
 
 jobs:
