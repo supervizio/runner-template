@@ -27,20 +27,39 @@ name: External E2E (dispatched)
 on:
   repository_dispatch:
     types: [run-external-e2e]
+  # Manual trigger for validating this workflow on a feature branch BEFORE it is
+  # merged to the default branch (repository_dispatch always runs the default
+  # branch's copy). Inputs mirror the dispatch client_payload.
+  workflow_dispatch:
+    inputs:
+      source_repo:
+        description: "Source repo (e.g. supervizio/libprobe)"
+        required: true
+      source_sha:
+        description: "Source commit SHA to check out"
+        required: true
+      source_run_id:
+        description: "Source run id (for the status context)"
+        required: false
+        default: "manual"
+      source_attempt:
+        description: "Source run attempt"
+        required: false
+        default: "1"
 
 permissions:
   contents: read
 
 concurrency:
-  group: external-e2e-${{ github.event.client_payload.source_repo }}-${{ github.event.client_payload.source_run_id }}
+  group: external-e2e-${{ github.event.client_payload.source_repo || github.event.inputs.source_repo }}-${{ github.event.client_payload.source_run_id || github.event.inputs.source_run_id }}
   cancel-in-progress: true
 
 env:
-  SOURCE_REPO: ${{ github.event.client_payload.source_repo }}
-  SOURCE_SHA: ${{ github.event.client_payload.source_sha }}
-  SOURCE_RUN_ID: ${{ github.event.client_payload.source_run_id }}
-  SOURCE_ATTEMPT: ${{ github.event.client_payload.source_attempt }}
-  CHECK_NAME: e2e-public/${{ github.event.client_payload.source_run_id }}-${{ github.event.client_payload.source_attempt }}
+  SOURCE_REPO: ${{ github.event.client_payload.source_repo || github.event.inputs.source_repo }}
+  SOURCE_SHA: ${{ github.event.client_payload.source_sha || github.event.inputs.source_sha }}
+  SOURCE_RUN_ID: ${{ github.event.client_payload.source_run_id || github.event.inputs.source_run_id }}
+  SOURCE_ATTEMPT: ${{ github.event.client_payload.source_attempt || github.event.inputs.source_attempt }}
+  CHECK_NAME: e2e-public/${{ github.event.client_payload.source_run_id || github.event.inputs.source_run_id }}-${{ github.event.client_payload.source_attempt || github.event.inputs.source_attempt }}
   CARGO_TERM_COLOR: always
   RUST_BACKTRACE: "0"
   # Full test suite command (test EVERYTHING, not a hand-picked subset).
