@@ -73,7 +73,8 @@ jobs:
           - { platform: linux-arm64,   runner: ubuntu-24.04-arm }
           - { platform: windows-amd64, runner: windows-latest }
           - { platform: windows-arm64, runner: windows-11-arm }
-          - { platform: macos-arm64,   runner: macos-15 }
+          - { platform: macos-amd64,   runner: macos-26-intel }
+          - { platform: macos-arm64,   runner: macos-26 }
     steps:
       - name: Checkout private source (ephemeral, no persisted creds)
         uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
@@ -142,30 +143,11 @@ jobs:
           prepare: /usr/sbin/pkg_add -I rust || pkgin -y install rust
           run: cargo test --release -p probe-platform --test behavioral --test capability --test inventory -- --include-ignored
 
-  # --- macOS Intel (macos-13): BEST-EFFORT. Deliberately NOT in report's `needs`
-  # and NOT in the gating set. macos-13 hosted runners are scarce and can sit
-  # queued 30-60 min; macos-arm64 (Apple Silicon) already gates macOS, so Intel
-  # mac runs when a runner frees up but never blocks the reported status.
-  macos_amd64:
-    name: e2e macos-amd64
-    needs: [ack]
-    runs-on: macos-13
-    continue-on-error: true
-    steps:
-      - name: Checkout private source (ephemeral, no persisted creds)
-        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
-        with:
-          repository: ${{ env.SOURCE_REPO }}
-          ref: ${{ env.SOURCE_SHA }}
-          token: ${{ secrets.LIBPROBE_REPO_TOKEN }}
-          persist-credentials: false
-      - name: Classic E2E (clean-nil, quiet)
-        run: cargo test --release -p probe-platform --test behavioral --test capability --test inventory -- --include-ignored
-
   # --- Report: set the final source commit status. Overall = success iff every
-  # GATING native leg passed; BSD + macos-amd64 are reported but advisory. Reads
-  # only this run's job conclusions (actions:read on self). It does NOT `need`
-  # macos_amd64, so a stuck Intel-mac runner queue can never block the gate.
+  # native leg (incl. macos-amd64 on macos-26-intel) passed; BSD legs are advisory.
+  # macos-amd64 runs on macos-26-intel — the current GA Intel-Mac image (macos-13
+  # was retired and no longer allocates), so Intel mac is a first-class gating leg
+  # again, not a best-effort side job.
   report:
     name: Report → source status
     needs: [ack, native, freebsd, openbsd, netbsd]
@@ -181,7 +163,7 @@ jobs:
           RT_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
-          native="linux-amd64 linux-arm64 windows-amd64 windows-arm64 macos-arm64"
+          native="linux-amd64 linux-arm64 windows-amd64 windows-arm64 macos-amd64 macos-arm64"
           # Read this run's job conclusions (own repo → RT_TOKEN / github.token).
           jobs=$(GH_TOKEN="$RT_TOKEN" gh api "repos/${{ github.repository }}/actions/runs/${{ github.run_id }}/jobs?per_page=100" \
                   --jq '.jobs[] | select(.name|startswith("e2e ")) | "\(.name|ltrimstr("e2e "))|\(.conclusion)"')
@@ -193,8 +175,8 @@ jobs:
             table="${table}| ${p} | ${c} | gating |\n"
             [ "$c" = "success" ] || fails=$((fails+1))
           done
-          # advisory (best-effort — reported, never gated: Intel-mac + BSD QEMU)
-          for p in macos-amd64 freebsd-amd64 openbsd-amd64 netbsd-amd64; do
+          # advisory (BSD QEMU legs — reported, never gating)
+          for p in freebsd-amd64 openbsd-amd64 netbsd-amd64; do
             c=$(printf '%s\n' "$jobs" | awk -F'|' -v p="$p" '$1==p{print $2; exit}')
             [ -z "$c" ] && c="missing"
             table="${table}| ${p} | ${c} | advisory |\n"
