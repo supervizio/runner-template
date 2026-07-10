@@ -325,9 +325,14 @@ jobs:
 
   # --- Report: set the final source commit status. Overall = success iff every
   # native leg (incl. macos-amd64 on macos-26-intel) passed; BSD legs are advisory.
+  # It does NOT `needs:` the BSD jobs: their verdict never affects `overall`, and
+  # waiting on the emulated arm64-BSD QEMU legs (~3-4 h) would push the status past
+  # the source repo's commit-status poll deadline. The status posts as soon as the
+  # gating native legs finish; BSD rows in the table read whatever conclusion exists
+  # at that instant (often still running) — purely informational.
   report:
     name: Report → source status
-    needs: [ack, native, freebsd, openbsd, netbsd]
+    needs: [ack, native]
     if: ${{ always() }}
     runs-on: ubuntu-24.04
     permissions:
