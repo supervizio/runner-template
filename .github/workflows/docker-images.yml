@@ -32,8 +32,8 @@ jobs:
   # Build each architecture in parallel (native runners)
   # =============================================================================
   build:
-    # Only run on the original template repository, not on forks/copies
-    if: github.repository == 'kodflow/devcontainer-template'
+    # Only run on the original repository, not on forks (portable across copies)
+    if: github.event.repository.fork == false
     permissions:
       contents: read
       packages: write
@@ -137,7 +137,7 @@ jobs:
   # Merge architectures into multi-arch manifest (push events only)
   # =============================================================================
   merge:
-    if: github.repository == 'kodflow/devcontainer-template' && github.event_name != 'pull_request'
+    if: github.event.repository.fork == false && github.event_name != 'pull_request'
     runs-on: ubuntu-latest
     needs: build
     permissions:
