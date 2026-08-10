@@ -48,6 +48,14 @@ jobs:
     runs-on: ${{ matrix.runner }}
 
     steps:
+      # OCI reference names must be lowercase, but github.repository keeps the
+      # repository's real case and the expression syntax has no lowercase
+      # function. Re-export through $GITHUB_ENV, which overrides the
+      # workflow-level default for the remaining steps of this job.
+      - name: Normalise image names to lowercase
+        run: |
+          echo "IMAGE_NAME=$(echo "$IMAGE_NAME" | tr '[:upper:]' '[:lower:]')" >> "$GITHUB_ENV"
+
       - name: Checkout repository
         uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
 
@@ -145,6 +153,14 @@ jobs:
       packages: write
 
     steps:
+      # OCI reference names must be lowercase, but github.repository keeps the
+      # repository's real case and the expression syntax has no lowercase
+      # function. Re-export through $GITHUB_ENV, which overrides the
+      # workflow-level default for the remaining steps of this job.
+      - name: Normalise image names to lowercase
+        run: |
+          echo "IMAGE_NAME=$(echo "$IMAGE_NAME" | tr '[:upper:]' '[:lower:]')" >> "$GITHUB_ENV"
+
       - name: Download digests
         uses: actions/download-artifact@70fc10c6e5e1ce46ad2ea6f2b72d43f7d47b13c3 # v8.0.0
         with:
