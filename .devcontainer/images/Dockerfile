@@ -256,12 +256,12 @@ RUN mkdir -p "$HOME/.local/bin" && \
 # =============================================================================
 RUN ARCH=$([ "$TARGETARCH" = "arm64" ] && echo "arm64" || echo "amd64") && \
     mkdir -p ~/.local/bin && \
-    SL_TAG=$(curl -fsSLI -o /dev/null -w '%{url_effective}' https://github.com/kodflow/status-line/releases/latest) && \
+    SL_TAG=$(curl -fsSLI --retry 3 --retry-delay 2 -o /dev/null -w '%{url_effective}' https://github.com/kodflow/status-line/releases/latest) && \
     SL_TAG=${SL_TAG##*/} && \
     echo "Installing status-line (${SL_TAG})..." && \
-    curl -fsSL "https://github.com/kodflow/status-line/releases/download/${SL_TAG}/status-line-linux-${ARCH}" \
+    curl -fsSL --retry 3 --retry-delay 2 "https://github.com/kodflow/status-line/releases/download/${SL_TAG}/status-line-linux-${ARCH}" \
       -o ~/.local/bin/status-line && \
-    curl -fsSL "https://github.com/kodflow/status-line/releases/download/${SL_TAG}/status-line-linux-${ARCH}.sha256" \
+    curl -fsSL --retry 3 --retry-delay 2 "https://github.com/kodflow/status-line/releases/download/${SL_TAG}/status-line-linux-${ARCH}.sha256" \
       -o /tmp/status-line.sha256 && \
     sed -i "s|status-line-linux-${ARCH}|$HOME/.local/bin/status-line|" /tmp/status-line.sha256 && \
     sha256sum -c /tmp/status-line.sha256 && rm -f /tmp/status-line.sha256 && \
