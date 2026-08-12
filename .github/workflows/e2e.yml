@@ -319,7 +319,7 @@ jobs:
           token: ${{ secrets.AGENT_REPO_TOKEN }}
 
       - name: Set up Go
-        uses: actions/setup-go@4b73464bb391d4059bd26b0524d20df3927bd417 # v6.3.0
+        uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16 # v6.5.0
         with:
           go-version: '1.26.0'
 
@@ -623,7 +623,7 @@ jobs:
           token: ${{ secrets.AGENT_REPO_TOKEN }}
 
       - name: Set up Go
-        uses: actions/setup-go@4b73464bb391d4059bd26b0524d20df3927bd417 # v6.3.0
+        uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16 # v6.5.0
         with:
           go-version: '1.26.0'
 
@@ -799,7 +799,7 @@ jobs:
           chmod 600 ~/.ssh/id_ed25519
 
       - name: Set up Go
-        uses: actions/setup-go@4b73464bb391d4059bd26b0524d20df3927bd417 # v6.3.0
+        uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16 # v6.5.0
         with:
           go-version: '1.26.0'
 
