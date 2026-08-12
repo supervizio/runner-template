@@ -98,28 +98,28 @@ RUN ARCH_AWS=$([ "$TARGETARCH" = "arm64" ] && echo "aarch64" || echo "x86_64") &
     rm -rf /var/lib/apt/lists/*
 
 # =============================================================================
-# Kubernetes + Binary Tools (kubectl, Helm, Bazelisk, yq, grepai) - consolidated
+# Kubernetes + Binary Tools (kubectl, Helm, Bazelisk, yq) - consolidated
 # =============================================================================
 RUN ARCH=$([ "$TARGETARCH" = "arm64" ] && echo "arm64" || echo "amd64") && \
     KUBECTL_LATEST=$(curl -fsSL "https://dl.k8s.io/release/stable.txt") && \
     echo "Installing kubectl ${KUBECTL_LATEST}..." && \
     curl -fsSL "https://dl.k8s.io/release/${KUBECTL_LATEST}/bin/linux/${ARCH}/kubectl" -o /usr/local/bin/kubectl && \
     chmod +x /usr/local/bin/kubectl && \
-    HELM_LATEST=$(curl -fsSL ${GITHUB_TOKEN:+-H "Authorization: token ${GITHUB_TOKEN}"} "https://api.github.com/repos/helm/helm/releases/latest" | jq -r '.tag_name') && \
+    HELM_LATEST=$(curl -fsSL --retry 5 --retry-delay 5 ${GITHUB_TOKEN:+-H "Authorization: token ${GITHUB_TOKEN}"} "https://api.github.com/repos/helm/helm/releases/latest" | jq -r '.tag_name') && \
     echo "Installing Helm ${HELM_LATEST}..." && \
     curl -fsSL "https://get.helm.sh/helm-${HELM_LATEST}-linux-${ARCH}.tar.gz" | tar xz -C /tmp && \
     mv /tmp/linux-${ARCH}/helm /usr/local/bin/helm && \
     rm -rf /tmp/linux-${ARCH} && \
-    echo "Installing Bazelisk (latest)..." && \
-    curl -fsSL "https://github.com/bazelbuild/bazelisk/releases/latest/download/bazelisk-linux-${ARCH}" -o /usr/local/bin/bazel && \
+    BZ_RELEASE=$(curl -fsSL --retry 5 --retry-delay 5 ${GITHUB_TOKEN:+-H "Authorization: token ${GITHUB_TOKEN}"} "https://api.github.com/repos/bazelbuild/bazelisk/releases/latest") && \
+    echo "Installing Bazelisk $(printf '%s' "$BZ_RELEASE" | jq -r '.tag_name')..." && \
+    BZ_URL=$(printf '%s' "$BZ_RELEASE" | jq -r --arg n "bazelisk-linux-${ARCH}" '.assets[] | select(.name == $n) | .url') && \
+    curl -fsSL --retry 5 --retry-delay 5 -H "Accept: application/octet-stream" ${GITHUB_TOKEN:+-H "Authorization: token ${GITHUB_TOKEN}"} "$BZ_URL" -o /usr/local/bin/bazel && \
     chmod +x /usr/local/bin/bazel && \
-    echo "Installing yq (latest)..." && \
-    curl -fsSL "https://github.com/mikefarah/yq/releases/latest/download/yq_linux_${ARCH}" -o /usr/bin/yq && \
-    chmod +x /usr/bin/yq && \
-    GREPAI_LATEST=$(curl -fsSL ${GITHUB_TOKEN:+-H "Authorization: token ${GITHUB_TOKEN}"} "https://api.github.com/repos/yoanbernabeu/grepai/releases/latest" | jq -r '.tag_name') && \
-    echo "Installing grepai ${GREPAI_LATEST}..." && \
-    curl -fsSL "https://github.com/yoanbernabeu/grepai/releases/download/${GREPAI_LATEST}/grepai_${GREPAI_LATEST#v}_linux_${ARCH}.tar.gz" | \
-    tar xz -C /usr/local/bin grepai
+    YQ_RELEASE=$(curl -fsSL --retry 5 --retry-delay 5 ${GITHUB_TOKEN:+-H "Authorization: token ${GITHUB_TOKEN}"} "https://api.github.com/repos/mikefarah/yq/releases/latest") && \
+    echo "Installing yq $(printf '%s' "$YQ_RELEASE" | jq -r '.tag_name')..." && \
+    YQ_URL=$(printf '%s' "$YQ_RELEASE" | jq -r --arg n "yq_linux_${ARCH}" '.assets[] | select(.name == $n) | .url') && \
+    curl -fsSL --retry 5 --retry-delay 5 -H "Accept: application/octet-stream" ${GITHUB_TOKEN:+-H "Authorization: token ${GITHUB_TOKEN}"} "$YQ_URL" -o /usr/bin/yq && \
+    chmod +x /usr/bin/yq
 
 # =============================================================================
 # MkDocs Material (Documentation Server)
@@ -260,12 +260,15 @@ RUN mkdir -p "$HOME/.local/bin" && \
 # =============================================================================
 RUN ARCH=$([ "$TARGETARCH" = "arm64" ] && echo "arm64" || echo "amd64") && \
     mkdir -p ~/.local/bin && \
-    SL_TAG=$(curl -fsSLI -o /dev/null -w '%{url_effective}' https://github.com/kodflow/status-line/releases/latest) && \
-    SL_TAG=${SL_TAG##*/} && \
+    SL_RELEASE=$(curl -fsSL --retry 5 --retry-delay 5 ${GITHUB_TOKEN:+-H "Authorization: token ${GITHUB_TOKEN}"} "https://api.github.com/repos/kodflow/status-line/releases/latest") && \
+    SL_TAG=$(printf '%s' "$SL_RELEASE" | jq -r '.tag_name') && \
+    [ -n "$SL_TAG" ] && [ "$SL_TAG" != "null" ] && \
     echo "Installing status-line (${SL_TAG})..." && \
-    curl -fsSL "https://github.com/kodflow/status-line/releases/download/${SL_TAG}/status-line-linux-${ARCH}" \
+    SL_BIN_URL=$(printf '%s' "$SL_RELEASE" | jq -r --arg n "status-line-linux-${ARCH}" '.assets[] | select(.name == $n) | .url') && \
+    SL_SHA_URL=$(printf '%s' "$SL_RELEASE" | jq -r --arg n "status-line-linux-${ARCH}.sha256" '.assets[] | select(.name == $n) | .url') && \
+    curl -fsSL --retry 5 --retry-delay 5 -H "Accept: application/octet-stream" ${GITHUB_TOKEN:+-H "Authorization: token ${GITHUB_TOKEN}"} "$SL_BIN_URL" \
       -o ~/.local/bin/status-line && \
-    curl -fsSL "https://github.com/kodflow/status-line/releases/download/${SL_TAG}/status-line-linux-${ARCH}.sha256" \
+    curl -fsSL --retry 5 --retry-delay 5 -H "Accept: application/octet-stream" ${GITHUB_TOKEN:+-H "Authorization: token ${GITHUB_TOKEN}"} "$SL_SHA_URL" \
       -o /tmp/status-line.sha256 && \
     sed -i "s|status-line-linux-${ARCH}|$HOME/.local/bin/status-line|" /tmp/status-line.sha256 && \
     sha256sum -c /tmp/status-line.sha256 && rm -f /tmp/status-line.sha256 && \
