@@ -106,6 +106,7 @@ jobs:
           build-args: |
             CACHE_BUST_DYNAMIC=${{ steps.cachebust.outputs.value }}
             GITHUB_TOKEN=${{ secrets.GITHUB_TOKEN }}
+            GITHUB_TOKEN=${{ secrets.GITHUB_TOKEN }}
           cache-from: type=gha,scope=build-${{ steps.platform.outputs.pair }}
 
       # Push events: Build and push by digest
@@ -120,6 +121,7 @@ jobs:
           labels: ${{ steps.meta.outputs.labels }}
           build-args: |
             CACHE_BUST_DYNAMIC=${{ steps.cachebust.outputs.value }}
+            GITHUB_TOKEN=${{ secrets.GITHUB_TOKEN }}
             GITHUB_TOKEN=${{ secrets.GITHUB_TOKEN }}
           cache-from: type=gha,scope=build-${{ steps.platform.outputs.pair }}
           cache-to: type=gha,mode=max,scope=build-${{ steps.platform.outputs.pair }}
