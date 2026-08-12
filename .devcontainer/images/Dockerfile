@@ -98,7 +98,7 @@ RUN ARCH_AWS=$([ "$TARGETARCH" = "arm64" ] && echo "aarch64" || echo "x86_64") &
     rm -rf /var/lib/apt/lists/*
 
 # =============================================================================
-# Kubernetes + Binary Tools (kubectl, Helm, Bazelisk, yq, grepai) - consolidated
+# Kubernetes + Binary Tools (kubectl, Helm, Bazelisk, yq) - consolidated
 # =============================================================================
 RUN ARCH=$([ "$TARGETARCH" = "arm64" ] && echo "arm64" || echo "amd64") && \
     KUBECTL_LATEST=$(curl -fsSL "https://dl.k8s.io/release/stable.txt") && \
@@ -115,11 +115,7 @@ RUN ARCH=$([ "$TARGETARCH" = "arm64" ] && echo "arm64" || echo "amd64") && \
     chmod +x /usr/local/bin/bazel && \
     echo "Installing yq (latest)..." && \
     curl -fsSL "https://github.com/mikefarah/yq/releases/latest/download/yq_linux_${ARCH}" -o /usr/bin/yq && \
-    chmod +x /usr/bin/yq && \
-    GREPAI_LATEST=$(curl -fsSL ${GITHUB_TOKEN:+-H "Authorization: token ${GITHUB_TOKEN}"} "https://api.github.com/repos/yoanbernabeu/grepai/releases/latest" | jq -r '.tag_name') && \
-    echo "Installing grepai ${GREPAI_LATEST}..." && \
-    curl -fsSL "https://github.com/yoanbernabeu/grepai/releases/download/${GREPAI_LATEST}/grepai_${GREPAI_LATEST#v}_linux_${ARCH}.tar.gz" | \
-    tar xz -C /usr/local/bin grepai
+    chmod +x /usr/bin/yq
 
 # =============================================================================
 # MkDocs Material (Documentation Server)
