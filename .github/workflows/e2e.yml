@@ -105,6 +105,7 @@ jobs:
           repository: supervizio/agent
           ref: ${{ needs.resolve.outputs.ref }}
           token: ${{ secrets.AGENT_REPO_TOKEN }}
+          submodules: true
 
       - name: Download binary from zot (cross-repo)
         env:
@@ -317,6 +318,7 @@ jobs:
           repository: supervizio/agent
           ref: ${{ needs.resolve.outputs.ref }}
           token: ${{ secrets.AGENT_REPO_TOKEN }}
+          submodules: true
 
       - name: Set up Go
         uses: actions/setup-go@4b73464bb391d4059bd26b0524d20df3927bd417 # v6.3.0
@@ -621,6 +623,7 @@ jobs:
           repository: supervizio/agent
           ref: ${{ needs.resolve.outputs.ref }}
           token: ${{ secrets.AGENT_REPO_TOKEN }}
+          submodules: true
 
       - name: Set up Go
         uses: actions/setup-go@4b73464bb391d4059bd26b0524d20df3927bd417 # v6.3.0
@@ -790,6 +793,7 @@ jobs:
           repository: supervizio/agent
           ref: ${{ needs.resolve.outputs.ref }}
           token: ${{ secrets.AGENT_REPO_TOKEN }}
+          submodules: true
           path: agent
 
       - name: Setup SSH key
@@ -970,6 +974,7 @@ jobs:
           repository: supervizio/agent
           ref: ${{ needs.resolve.outputs.ref }}
           token: ${{ secrets.AGENT_REPO_TOKEN }}
+          submodules: true
           path: agent
 
       - name: Install oras (zot client)
