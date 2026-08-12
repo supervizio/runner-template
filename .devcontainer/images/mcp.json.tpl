@@ -1,11 +1,5 @@
 {
   "mcpServers": {
-    "grepai": {
-      "command": "/usr/local/bin/grepai",
-      "args": [
-        "mcp-serve"
-      ]
-    },
     "context7": {
       "command": "npx",
       "args": [
