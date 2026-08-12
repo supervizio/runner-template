@@ -237,8 +237,10 @@ USER vscode
 # hadolint ignore=DL4006
 RUN mkdir -p "$HOME/.local/bin" && \
     for attempt in 1 2 3 4 5; do \
-      curl -fsSL --retry 3 --retry-delay 2 https://cli.coderabbit.ai/install.sh -o /tmp/cr-install.sh || true; \
-      sh /tmp/cr-install.sh || true; \
+      rm -f /tmp/cr-install.sh; \
+      if curl -fsSL --retry 3 --retry-delay 2 https://cli.coderabbit.ai/install.sh -o /tmp/cr-install.sh; then \
+        sh /tmp/cr-install.sh || true; \
+      fi; \
       if [ -x "$HOME/.local/bin/coderabbit" ]; then \
         echo "CodeRabbit CLI installed (attempt $attempt)" >&2; \
         rm -f /tmp/cr-install.sh; \
@@ -258,10 +260,12 @@ RUN mkdir -p "$HOME/.local/bin" && \
 # =============================================================================
 RUN ARCH=$([ "$TARGETARCH" = "arm64" ] && echo "arm64" || echo "amd64") && \
     mkdir -p ~/.local/bin && \
-    echo "Installing status-line (latest)..." && \
-    curl -fsSL "https://github.com/kodflow/status-line/releases/latest/download/status-line-linux-${ARCH}" \
+    SL_TAG=$(curl -fsSLI -o /dev/null -w '%{url_effective}' https://github.com/kodflow/status-line/releases/latest) && \
+    SL_TAG=${SL_TAG##*/} && \
+    echo "Installing status-line (${SL_TAG})..." && \
+    curl -fsSL "https://github.com/kodflow/status-line/releases/download/${SL_TAG}/status-line-linux-${ARCH}" \
       -o ~/.local/bin/status-line && \
-    curl -fsSL "https://github.com/kodflow/status-line/releases/latest/download/status-line-linux-${ARCH}.sha256" \
+    curl -fsSL "https://github.com/kodflow/status-line/releases/download/${SL_TAG}/status-line-linux-${ARCH}.sha256" \
       -o /tmp/status-line.sha256 && \
     sed -i "s|status-line-linux-${ARCH}|$HOME/.local/bin/status-line|" /tmp/status-line.sha256 && \
     sha256sum -c /tmp/status-line.sha256 && rm -f /tmp/status-line.sha256 && \
