@@ -111,10 +111,10 @@ RUN ARCH=$([ "$TARGETARCH" = "arm64" ] && echo "arm64" || echo "amd64") && \
     mv /tmp/linux-${ARCH}/helm /usr/local/bin/helm && \
     rm -rf /tmp/linux-${ARCH} && \
     echo "Installing Bazelisk (latest)..." && \
-    curl -fsSL "https://github.com/bazelbuild/bazelisk/releases/latest/download/bazelisk-linux-${ARCH}" -o /usr/local/bin/bazel && \
+    curl -fsSL --retry 5 --retry-delay 5 "https://github.com/bazelbuild/bazelisk/releases/latest/download/bazelisk-linux-${ARCH}" -o /usr/local/bin/bazel && \
     chmod +x /usr/local/bin/bazel && \
     echo "Installing yq (latest)..." && \
-    curl -fsSL "https://github.com/mikefarah/yq/releases/latest/download/yq_linux_${ARCH}" -o /usr/bin/yq && \
+    curl -fsSL --retry 5 --retry-delay 5 "https://github.com/mikefarah/yq/releases/latest/download/yq_linux_${ARCH}" -o /usr/bin/yq && \
     chmod +x /usr/bin/yq
 
 # =============================================================================
@@ -256,12 +256,15 @@ RUN mkdir -p "$HOME/.local/bin" && \
 # =============================================================================
 RUN ARCH=$([ "$TARGETARCH" = "arm64" ] && echo "arm64" || echo "amd64") && \
     mkdir -p ~/.local/bin && \
-    SL_TAG=$(curl -fsSL --retry 3 --retry-delay 2 ${GITHUB_TOKEN:+-H "Authorization: token ${GITHUB_TOKEN}"} "https://api.github.com/repos/kodflow/status-line/releases/latest" | jq -r '.tag_name') && \
+    SL_RELEASE=$(curl -fsSL --retry 5 --retry-delay 5 ${GITHUB_TOKEN:+-H "Authorization: token ${GITHUB_TOKEN}"} "https://api.github.com/repos/kodflow/status-line/releases/latest") && \
+    SL_TAG=$(printf '%s' "$SL_RELEASE" | jq -r '.tag_name') && \
     [ -n "$SL_TAG" ] && [ "$SL_TAG" != "null" ] && \
     echo "Installing status-line (${SL_TAG})..." && \
-    curl -fsSL --retry 3 --retry-delay 2 "https://github.com/kodflow/status-line/releases/download/${SL_TAG}/status-line-linux-${ARCH}" \
+    SL_BIN_URL=$(printf '%s' "$SL_RELEASE" | jq -r --arg n "status-line-linux-${ARCH}" '.assets[] | select(.name == $n) | .url') && \
+    SL_SHA_URL=$(printf '%s' "$SL_RELEASE" | jq -r --arg n "status-line-linux-${ARCH}.sha256" '.assets[] | select(.name == $n) | .url') && \
+    curl -fsSL --retry 5 --retry-delay 5 -H "Accept: application/octet-stream" ${GITHUB_TOKEN:+-H "Authorization: token ${GITHUB_TOKEN}"} "$SL_BIN_URL" \
       -o ~/.local/bin/status-line && \
-    curl -fsSL --retry 3 --retry-delay 2 "https://github.com/kodflow/status-line/releases/download/${SL_TAG}/status-line-linux-${ARCH}.sha256" \
+    curl -fsSL --retry 5 --retry-delay 5 -H "Accept: application/octet-stream" ${GITHUB_TOKEN:+-H "Authorization: token ${GITHUB_TOKEN}"} "$SL_SHA_URL" \
       -o /tmp/status-line.sha256 && \
     sed -i "s|status-line-linux-${ARCH}|$HOME/.local/bin/status-line|" /tmp/status-line.sha256 && \
     sha256sum -c /tmp/status-line.sha256 && rm -f /tmp/status-line.sha256 && \
