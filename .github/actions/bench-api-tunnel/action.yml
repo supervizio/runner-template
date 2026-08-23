@@ -1,0 +1,247 @@
+# =============================================================================
+# bench-api-tunnel — reach the BENCH Proxmox API from a CI-host runner pod.
+#
+# Since the two-Proxmox split (kodflow/labs#185, 2026-07-23) the runner pods no
+# longer live on the same hypervisor as the test VMs:
+#
+#   pods             -> CI host   `vm`   (vm.making.codes)    K3s/ARC + zot
+#   test VMs 200-215 -> BENCH host `labs` (labs.making.codes)
+#
+# Both hosts run an IDENTICAL, deliberately unrouted `192.168.100.0/24`. So the
+# literal `https://192.168.100.1:8006` that every workflow used to hardcode
+# resolves, from inside a pod, to the CI host's OWN Proxmox — a hypervisor that
+# has neither the `ci-runner@pve` user nor a single test VM. It answers, and it
+# answers HTTP 401. That is what reddened every `Acquire VM (lock)` step after
+# the split: not an expired token, a request delivered to the wrong machine.
+#
+# The SSH layer WAS remapped for the split (ssh-secret.yaml.j2 rewrites both
+# `Host proxmox` and a literal `Host 192.168.100.1` to the bench's public IP),
+# but `curl` does not read ssh_config, so the HTTPS API kept going local.
+#
+# This action closes that gap the same way kitsunium/sdk#115 did: forward a
+# local port to the bench's API THROUGH the bastion the scripts already use,
+# then point PROXMOX_API_URL at the forwarded port. One multiplexed WAN
+# connection, no new firewall hole, no API exposed to the public internet.
+#
+#   127.0.0.1:<local-port>  --ssh -L-->  bastion (labs)  -->  192.168.100.1:8006
+#
+# It then GATES on two assertions before any job touches a VM, because a tunnel
+# that silently lands on the wrong host is worse than no tunnel at all:
+#
+#   1. the TLS certificate on the forwarded port must carry the bench's CN
+#      (`labs.making.codes`) — this is what tells the two Proxmoxen apart;
+#   2. an authenticated GET /nodes/<node>/qemu must return 200.
+#
+# Assertion 2 doubles as the per-job credential canary: a dead or under-scoped
+# token now fails HERE, naming the 1Password item to look at, instead of forty
+# lines deep in vm-acquire.sh behind a generic "check the secrets".
+#
+# Exports PROXMOX_API_URL to $GITHUB_ENV so every later step (vm-acquire, the
+# vm-common helpers, vm-release --reset) picks the tunnel up automatically.
+#
+# Reads from the job environment (already set once at job level by every caller):
+#   PVE_AUTH   PVEAPIToken=<user>@<realm>!<name>=<uuid>
+#   NODE       bench node name (secrets.PROXMOX_NODE)
+# =============================================================================
+name: bench-api-tunnel
+description: Open + verify an SSH tunnel to the bench Proxmox API and export PROXMOX_API_URL
+
+inputs:
+  local-port:
+    description: "Loopback port forwarded to the bench API."
+    required: false
+    default: "18006"
+  expected-cn:
+    description: >-
+      TLS subject CN the forwarded port MUST present. This is the guard against
+      tunnelling to the wrong hypervisor — do not relax it to make a job pass.
+    required: false
+    default: "labs.making.codes"
+
+outputs:
+  api-url:
+    description: "The tunnelled API base URL (also exported as PROXMOX_API_URL)."
+    value: ${{ steps.tunnel.outputs.api-url }}
+
+runs:
+  using: composite
+  steps:
+    - id: tunnel
+      shell: bash
+      env:
+        PORT_IN: ${{ inputs.local-port }}
+        CN_IN: ${{ inputs.expected-cn }}
+      run: |
+        set -uo pipefail
+
+        # Job-environment contract (see header). Fail early and by name rather
+        # than emitting a confusing "node ''" 404 forty lines from now.
+        : "${PVE_AUTH:?bench-api-tunnel: PVE_AUTH is not set in the job environment}"
+        : "${NODE:?bench-api-tunnel: NODE is not set in the job environment}"
+
+        PORT="${PORT_IN}"
+        API="https://127.0.0.1:${PORT}/api2/json"
+
+        # The ControlPath is unique per port AND per run attempt. A fixed path
+        # collides with a master still alive from an earlier attempt: `-O exit`
+        # against a socket whose process is gone is a no-op, so the old master
+        # keeps 127.0.0.1:$PORT bound and every later open dies on
+        # ExitOnForwardFailure with nothing explaining why.
+        SOCK="${RUNNER_TEMP:-/tmp}/pve-tunnel-${PORT}-${GITHUB_RUN_ID:-0}-${GITHUB_RUN_ATTEMPT:-1}.sock"
+
+        # Belt and braces: retire any master from a previous attempt, whether or
+        # not its socket file survived, then drop stale socket files for this
+        # port. Unconditional (no `[ -S ]` guard) because the file being absent
+        # is exactly the case where the process can still be holding the port.
+        for stale in "${RUNNER_TEMP:-/tmp}"/pve-tunnel-"${PORT}"-*.sock; do
+          [ -e "$stale" ] || continue
+          ssh -S "$stale" -O exit placeholder >/dev/null 2>&1 || true
+          rm -f "$stale"
+        done
+
+        # Two spellings of the same bastion. `proxmox` is the alias the ARC
+        # secret bridge writes; the bare `root@192.168.100.1` is the literal
+        # that the same config remaps to the bench. Trying both means a
+        # partially-applied bridge still yields a working tunnel rather than an
+        # opaque red leg. Assertion 1 below is what keeps this fallback honest:
+        # if the bridge is missing entirely, `root@192.168.100.1` reaches the CI
+        # host's own Proxmox, and the CN check rejects it.
+        #
+        # The forward binds 127.0.0.1 EXPLICITLY. ssh already defaults to a
+        # loopback bind (GatewayPorts=no), but saying it here means the bench
+        # API cannot be republished to the pod network by a stray GatewayPorts
+        # in some inherited ssh_config.
+        #
+        # On the host-key options: the pods' own bridged ~/.ssh/config already
+        # sets StrictHostKeyChecking no for these hosts, so repeating them here
+        # weakens nothing — it only makes the fallback target behave like the
+        # primary. What actually establishes trust is the ORDER below: the cert
+        # CN is verified BEFORE a single authenticated request is made, so a
+        # tunnel that terminated somewhere unexpected is rejected while the
+        # token is still unused.
+        opened=""
+        for target in proxmox root@192.168.100.1; do
+          if ssh -M -S "$SOCK" -f -N \
+                 -o ExitOnForwardFailure=yes \
+                 -o BatchMode=yes \
+                 -o ConnectTimeout=15 \
+                 -o StrictHostKeyChecking=no \
+                 -o UserKnownHostsFile=/dev/null \
+                 -o ServerAliveInterval=15 \
+                 -o ServerAliveCountMax=8 \
+                 -L "127.0.0.1:${PORT}:192.168.100.1:8006" \
+                 "$target" 2>/dev/null; then
+            opened="$target"
+            break
+          fi
+          echo "notice: bastion '${target}' did not accept the forward; trying next"
+        done
+
+        if [ -z "$opened" ]; then
+          echo "::error::Cannot open the bench API tunnel (tried 'proxmox' and 'root@192.168.100.1')."
+          echo "The ARC pod SSH bridge (proxmox-ssh-key secret -> ~/.ssh) is missing,"
+          echo "or the bench bastion is unreachable. In this state nothing on the"
+          echo "bench is reachable — SSH to the test VMs would fail next anyway."
+          echo ""
+          echo "If both targets authenticated but the forward was refused, port"
+          echo "${PORT} is already bound in this pod — check for a leftover ssh master:"
+          echo "  ps -ef | grep '[p]ve-tunnel'"
+          exit 1
+        fi
+        echo "bench API tunnel up via '${opened}' -> 127.0.0.1:${PORT}"
+
+        # --- Assertion 1: are we actually on the BENCH hypervisor? -----------
+        # Read the CN with whichever tool this image actually has. The runner
+        # image installs with --no-install-recommends, so the `openssl` CLI is
+        # NOT guaranteed (openssl is only a Recommends of ca-certificates) —
+        # relying on it alone would yield an empty CN and fail every job with a
+        # bogus "wrong Proxmox". curl is guaranteed: it is how the API is called.
+        # The two print different separators (openssl `,`, curl `;`), hence the
+        # [^,;/] class.
+        extract_cn() { sed -n 's/.*CN[[:space:]]*=[[:space:]]*\([^,;/]*\).*/\1/p' | head -1 | tr -d '[:space:]'; }
+
+        cn=""
+        if command -v openssl >/dev/null 2>&1; then
+          cn=$(echo | openssl s_client -connect "127.0.0.1:${PORT}" 2>/dev/null \
+               | openssl x509 -noout -subject 2>/dev/null | extract_cn)
+        fi
+        if [ -z "$cn" ]; then
+          cn=$(curl -kv --max-time 15 "https://127.0.0.1:${PORT}/" 2>&1 \
+               | grep -m1 -i '^\*  *subject:' | extract_cn)
+        fi
+
+        # An EMPTY cn is not a wrong-host verdict — it means neither probe could
+        # read a certificate at all. Reporting that as "wrong Proxmox" would send
+        # responders hunting a routing bug when the real fault is the tunnel or
+        # the tooling, so it gets its own message.
+        if [ -z "$cn" ]; then
+          echo "::error::Could not read the TLS certificate subject through the tunnel — tooling/connectivity failure, NOT a wrong-host verdict."
+          if command -v openssl >/dev/null 2>&1; then
+            echo "openssl is present, so both it and the curl fallback failed to see a certificate."
+          else
+            echo "openssl is absent and the curl fallback also saw no certificate."
+          fi
+          echo "The forward reported success, so suspect the bastion dropping the"
+          echo "channel, or the bench API not listening on 192.168.100.1:8006."
+          exit 1
+        fi
+
+        if [ "$cn" != "${CN_IN}" ]; then
+          echo "::error::Bench API tunnel landed on the WRONG Proxmox: cert CN is '${cn}', expected '${CN_IN}'."
+          echo "A CN of 'vm.making.codes' means the forward resolved on the CI host"
+          echo "instead of the bench: check the 'Host proxmox' block of the pod's"
+          echo "~/.ssh/config (kodflow/labs roles/k3s-arc/templates/ssh-secret.yaml.j2)."
+          exit 1
+        fi
+        echo "certificate CN '${cn}' confirms the bench hypervisor"
+
+        # --- Assertion 2: does the credential actually work? -----------------
+        body=$(mktemp)
+        code=$(curl -sk -o "$body" -w '%{http_code}' --max-time 20 \
+                 -H "Authorization: ${PVE_AUTH}" \
+                 "${API}/nodes/${NODE}/qemu")
+
+        case "$code" in
+          200)
+            echo "GET /nodes/${NODE}/qemu -> 200 (credential OK)"
+            ;;
+          401)
+            echo "::error::Proxmox rejected the credential on the BENCH (HTTP 401) — token expired, revoked, or malformed."
+            echo "The endpoint is now provably correct (cert CN '${cn}'), so this is"
+            echo "the token itself. Source of truth: 1Password vault CI, item"
+            echo "'proxmox/api-ci-runner-supervizio-agent'. Re-push with a trailing"
+            echo "newline stripped:  ... --reveal | tr -d '\\n' | gh secret set ..."
+            exit 1
+            ;;
+          403)
+            echo "::error::Proxmox authenticated the token but DENIED the call (HTTP 403) — ACL too narrow."
+            echo "Expected role CIRunnerAgent granted on '/' with privilege separation ON:"
+            echo "Sys.Audit, VM.Audit, VM.PowerMgmt, VM.Snapshot, VM.Snapshot.Rollback,"
+            echo "VM.GuestAgent.Audit, VM.GuestAgent.Unrestricted."
+            exit 1
+            ;;
+          404)
+            echo "::error::Node '${NODE}' does not exist on the bench (HTTP 404)."
+            echo "The PROXMOX_NODE secret must name the BENCH node ('labs'), not the CI one ('vm')."
+            exit 1
+            ;;
+          5??)
+            # NOT a credential or node problem: the tunnel is proven (cert CN
+            # '${cn}' matched) and Proxmox accepted the request far enough to
+            # fail server-side. Rotating secrets here would waste an outage.
+            echo "::error::The bench Proxmox failed server-side (HTTP ${code}) — not a credential or node problem."
+            echo "Endpoint and tunnel are already proven by the cert CN check above."
+            echo "Check pveproxy/pvedaemon health and the node task log on the bench."
+            echo "--- response body (truncated) ---"
+            head -c 500 "$body" || true
+            echo
+            exit 1
+            ;;
+          *)
+            echo "::error::Unexpected HTTP ${code} from the bench API through the tunnel."
+            exit 1
+            ;;
+        esac
+
+        echo "PROXMOX_API_URL=${API}" >> "$GITHUB_ENV"
+        echo "api-url=${API}" >> "$GITHUB_OUTPUT"
