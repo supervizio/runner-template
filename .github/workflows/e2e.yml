@@ -385,13 +385,13 @@ jobs:
           else
             # Native aarch64 musl static — same recipe as the agent CI build-cross
             # (zig-cc + build-std + external static link).
-            ( cd src/lib/probe && RUSTC_BOOTSTRAP=1 CC=zig-cc cargo build \
+            ( cd third_party/libprobe && RUSTC_BOOTSTRAP=1 CC=zig-cc cargo build \
                 -Z build-std=std,panic_abort --release \
                 --target aarch64-unknown-linux-musl --package probe-ffi )
             mkdir -p dist/lib/linux-arm64-musl
-            cp src/lib/probe/target/aarch64-unknown-linux-musl/release/libprobe.a dist/lib/linux-arm64-musl/
+            cp third_party/libprobe/target/aarch64-unknown-linux-musl/release/libprobe.a dist/lib/linux-arm64-musl/
             ( cd src && CGO_ENABLED=1 CC=zig-cc \
-                CGO_CFLAGS="-I${GITHUB_WORKSPACE}/src/lib/probe/include" \
+                CGO_CFLAGS="-I${GITHUB_WORKSPACE}/third_party/libprobe/include" \
                 CGO_LDFLAGS="-L${GITHUB_WORKSPACE}/dist/lib/linux-arm64-musl -lprobe -lm -lunwind" \
                 go build -ldflags="-s -w -linkmode external -extldflags '-static'" \
                   -o "${GITHUB_WORKSPACE}/bin/${{ matrix.binary_name }}" ./cmd/agent )
@@ -683,7 +683,7 @@ jobs:
           make build-probe
           mkdir -p bin
           cd src && CGO_ENABLED=1 \
-            CGO_CFLAGS="-I${GITHUB_WORKSPACE}/src/lib/probe/include" \
+            CGO_CFLAGS="-I${GITHUB_WORKSPACE}/third_party/libprobe/include" \
             CGO_LDFLAGS="-L${GITHUB_WORKSPACE}/dist/lib/darwin-arm64 -lprobe -framework IOKit -framework CoreFoundation -framework Metal" \
             go build -ldflags="-s -w" -o "${GITHUB_WORKSPACE}/bin/supervizio" ./cmd/agent
           file "${GITHUB_WORKSPACE}/bin/supervizio"
