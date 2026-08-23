@@ -485,7 +485,11 @@ jobs:
     runs-on: supervizio-runner
     timeout-minutes: 20
     env:
-      PROXMOX_API_URL: "https://192.168.100.1:8006/api2/json"
+      # PROXMOX_API_URL est volontairement absent : depuis un pod, le litteral
+      # 192.168.100.1 resout sur le Proxmox de l'hote CI, pas sur le banc (les
+      # deux hotes ont un 192.168.100.0/24 identique et jamais route). L'action
+      # `bench-api-tunnel` ci-dessous forwarde un port loopback vers le banc et
+      # exporte le vrai PROXMOX_API_URL. Voir kodflow/labs#185.
       PVE_AUTH: "PVEAPIToken=${{ secrets.CI_RUNNER_API_TOKEN_ID }}=${{ secrets.CI_RUNNER_API_TOKEN_SECRET }}"
       NODE: ${{ secrets.PROXMOX_NODE }}
       SSH_OPTS: "-o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o ConnectTimeout=10"
@@ -510,6 +514,12 @@ jobs:
         uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
         with:
           path: runner-template
+
+      # Doit preceder toute etape qui touche l'API : c'est elle qui fait exister
+      # PROXMOX_API_URL, et elle verifie le CN du certificat puis un 200
+      # authentifie avant qu'un credential ne parte.
+      - name: Open bench API tunnel
+        uses: ./runner-template/.github/actions/bench-api-tunnel
 
       - name: Acquire macOS VM (sequoia, lock)
         id: vm
@@ -766,7 +776,11 @@ jobs:
         include:
           - name: windows-server
     env:
-      PROXMOX_API_URL: "https://192.168.100.1:8006/api2/json"
+      # PROXMOX_API_URL est volontairement absent : depuis un pod, le litteral
+      # 192.168.100.1 resout sur le Proxmox de l'hote CI, pas sur le banc (les
+      # deux hotes ont un 192.168.100.0/24 identique et jamais route). L'action
+      # `bench-api-tunnel` ci-dessous forwarde un port loopback vers le banc et
+      # exporte le vrai PROXMOX_API_URL. Voir kodflow/labs#185.
       PVE_AUTH: "PVEAPIToken=${{ secrets.CI_RUNNER_API_TOKEN_ID }}=${{ secrets.CI_RUNNER_API_TOKEN_SECRET }}"
       NODE: ${{ secrets.PROXMOX_NODE }}
       # Keepalive: the supervision battery runs S1-S8 in one long SSH session
@@ -837,6 +851,19 @@ jobs:
             echo "retry $n"; sleep $((n*8))
           done
           ls -la bin/
+
+      # Checkout supplementaire : ce job ne sort que le depot agent, or l'action
+      # du tunnel vit ici. Repertoire dedie pour ne pas ecraser `agent/`.
+      - name: Checkout runner-template (pour l'action bench-api-tunnel)
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          path: runner-template
+
+      # Doit preceder toute etape qui touche l'API : c'est elle qui fait exister
+      # PROXMOX_API_URL, et elle verifie le CN du certificat puis un 200
+      # authentifie avant qu'un credential ne parte.
+      - name: Open bench API tunnel
+        uses: ./runner-template/.github/actions/bench-api-tunnel
 
       - name: Acquire VM (lock)
         id: vm
@@ -944,7 +971,11 @@ jobs:
             pkg_artifact: ""
             pkg_ext: ""
     env:
-      PROXMOX_API_URL: "https://192.168.100.1:8006/api2/json"
+      # PROXMOX_API_URL est volontairement absent : depuis un pod, le litteral
+      # 192.168.100.1 resout sur le Proxmox de l'hote CI, pas sur le banc (les
+      # deux hotes ont un 192.168.100.0/24 identique et jamais route). L'action
+      # `bench-api-tunnel` ci-dessous forwarde un port loopback vers le banc et
+      # exporte le vrai PROXMOX_API_URL. Voir kodflow/labs#185.
       PVE_AUTH: "PVEAPIToken=${{ secrets.CI_RUNNER_API_TOKEN_ID }}=${{ secrets.CI_RUNNER_API_TOKEN_SECRET }}"
       NODE: ${{ secrets.PROXMOX_NODE }}
       SSH_OPTS: "-o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o ConnectTimeout=10"
@@ -1041,6 +1072,12 @@ jobs:
             echo "BIN_FILE=$BIN_FILE" >> "$GITHUB_ENV"
             echo "Found binary: $BIN_FILE"
           fi
+
+      # Doit preceder toute etape qui touche l'API : c'est elle qui fait exister
+      # PROXMOX_API_URL, et elle verifie le CN du certificat puis un 200
+      # authentifie avant qu'un credential ne parte.
+      - name: Open bench API tunnel
+        uses: ./runner-template/.github/actions/bench-api-tunnel
 
       - name: Acquire VM (lock)
         id: vm
@@ -1328,10 +1365,31 @@ jobs:
     runs-on: supervizio-runner
     timeout-minutes: 10
     env:
-      PROXMOX_API_URL: "https://192.168.100.1:8006/api2/json"
+      # PROXMOX_API_URL est volontairement absent : depuis un pod, le litteral
+      # 192.168.100.1 resout sur le Proxmox de l'hote CI, pas sur le banc (les
+      # deux hotes ont un 192.168.100.0/24 identique et jamais route). L'action
+      # `bench-api-tunnel` ci-dessous forwarde un port loopback vers le banc et
+      # exporte le vrai PROXMOX_API_URL. Voir kodflow/labs#185.
       PVE_AUTH: "PVEAPIToken=${{ secrets.CI_RUNNER_API_TOKEN_ID }}=${{ secrets.CI_RUNNER_API_TOKEN_SECRET }}"
       NODE: ${{ secrets.PROXMOX_NODE }}
+      SSH_OPTS: "-o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o ConnectTimeout=10"
     steps:
+      - name: Checkout runner-template (pour l'action bench-api-tunnel)
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          path: runner-template
+
+      - name: Setup SSH key
+        run: |
+          mkdir -p ~/.ssh && chmod 700 ~/.ssh
+          echo "${{ secrets.CI_SSH_PRIVATE_KEY }}" > ~/.ssh/id_ed25519
+          chmod 600 ~/.ssh/id_ed25519
+
+      # Le listing des VMs passe encore par l'API : c'est la seule chose que ce
+      # job lit, et VM.Audit suffit. Le reset, lui, ne passe plus par l'API.
+      - name: Open bench API tunnel
+        uses: ./runner-template/.github/actions/bench-api-tunnel
+
       - name: Reset all VMs to base snapshot
         run: |
           echo "=== VM Cleanup: Resetting all VMs to base snapshot ==="
@@ -1392,18 +1450,18 @@ jobs:
             echo ""
             echo "--- ${VM_NAME} (VMID ${VMID}) ---"
 
-            echo "  Stopping VM ${VMID}..."
-            curl -sf -k --max-time 30 \
-              -H "Authorization: ${PVE_AUTH}" \
-              -X POST "${PROXMOX_API_URL}/nodes/${NODE}/qemu/${VMID}/status/stop" \
-              >/dev/null 2>&1 || true
-            sleep 3
-
-            echo "  Rolling back to 'base' snapshot..."
-            if curl -sf -k --max-time 60 \
-              -H "Authorization: ${PVE_AUTH}" \
-              -X POST "${PROXMOX_API_URL}/nodes/${NODE}/qemu/${VMID}/snapshot/base/rollback" \
-              >/dev/null 2>&1; then
+            # `ci-vm-down` fait stop + rollback base cote hote, en root, SOUS LE
+            # FLOCK PAR VM (kodflow/labs#159). Deux gains sur l'appel API direct :
+            #  - aucun privilege PVE requis : le token est privsep=1 et l'ACL de
+            #    ci-runner@pve a ete reduite a CIRunner (labs#195), donc il n'a
+            #    PAS VM.Snapshot.Rollback — l'appel API rendait 403 ;
+            #  - le flock empeche d'arracher une VM a un leg concurrent. La
+            #    version API n'avait aucun verrou et tourne en `if: always()`,
+            #    donc elle pouvait reinitialiser une VM qu'un autre depot venait
+            #    d'acquerir (la classe de panne decrite dans agent#115).
+            echo "  Reset via ci-vm-down (flock cote hote)..."
+            if ssh ${SSH_OPTS} -i ~/.ssh/id_ed25519 root@192.168.100.1 \
+                 "ci-vm-down ${VMID}" >/dev/null 2>&1; then
               echo "  OK: ${VM_NAME} reset to base"
             else
               echo "  WARNING: Failed to reset ${VM_NAME} (VMID ${VMID})"
