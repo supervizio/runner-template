@@ -105,7 +105,14 @@ jobs:
           repository: supervizio/agent
           ref: ${{ needs.resolve.outputs.ref }}
           token: ${{ secrets.AGENT_REPO_TOKEN }}
-          submodules: true
+
+      - name: Init libprobe submodule (LIBPROBE_REPO_TOKEN: AGENT_REPO_TOKEN has no
+          access to this separate private repo, so `submodules: true` above 403s)
+        env:
+          GH_TOKEN: ${{ secrets.LIBPROBE_REPO_TOKEN }}
+        run: |
+          git -c url."https://x-access-token:${GH_TOKEN}@github.com/".insteadOf="https://github.com/" \
+            submodule update --init --force --depth=1
 
       - name: Download binary from zot (cross-repo)
         env:
@@ -318,7 +325,14 @@ jobs:
           repository: supervizio/agent
           ref: ${{ needs.resolve.outputs.ref }}
           token: ${{ secrets.AGENT_REPO_TOKEN }}
-          submodules: true
+
+      - name: Init libprobe submodule (LIBPROBE_REPO_TOKEN: AGENT_REPO_TOKEN has no
+          access to this separate private repo, so `submodules: true` above 403s)
+        env:
+          GH_TOKEN: ${{ secrets.LIBPROBE_REPO_TOKEN }}
+        run: |
+          git -c url."https://x-access-token:${GH_TOKEN}@github.com/".insteadOf="https://github.com/" \
+            submodule update --init --force --depth=1
 
       - name: Set up Go
         uses: actions/setup-go@4b73464bb391d4059bd26b0524d20df3927bd417 # v6.3.0
@@ -633,7 +647,14 @@ jobs:
           repository: supervizio/agent
           ref: ${{ needs.resolve.outputs.ref }}
           token: ${{ secrets.AGENT_REPO_TOKEN }}
-          submodules: true
+
+      - name: Init libprobe submodule (LIBPROBE_REPO_TOKEN: AGENT_REPO_TOKEN has no
+          access to this separate private repo, so `submodules: true` above 403s)
+        env:
+          GH_TOKEN: ${{ secrets.LIBPROBE_REPO_TOKEN }}
+        run: |
+          git -c url."https://x-access-token:${GH_TOKEN}@github.com/".insteadOf="https://github.com/" \
+            submodule update --init --force --depth=1
 
       - name: Set up Go
         uses: actions/setup-go@4b73464bb391d4059bd26b0524d20df3927bd417 # v6.3.0
@@ -807,8 +828,16 @@ jobs:
           repository: supervizio/agent
           ref: ${{ needs.resolve.outputs.ref }}
           token: ${{ secrets.AGENT_REPO_TOKEN }}
-          submodules: true
           path: agent
+
+      - name: Init libprobe submodule (LIBPROBE_REPO_TOKEN: AGENT_REPO_TOKEN has no
+          access to this separate private repo, so `submodules: true` above 403s)
+        working-directory: agent
+        env:
+          GH_TOKEN: ${{ secrets.LIBPROBE_REPO_TOKEN }}
+        run: |
+          git -c url."https://x-access-token:${GH_TOKEN}@github.com/".insteadOf="https://github.com/" \
+            submodule update --init --force --depth=1
 
       - name: Setup SSH key
         run: |
@@ -1005,8 +1034,16 @@ jobs:
           repository: supervizio/agent
           ref: ${{ needs.resolve.outputs.ref }}
           token: ${{ secrets.AGENT_REPO_TOKEN }}
-          submodules: true
           path: agent
+
+      - name: Init libprobe submodule (LIBPROBE_REPO_TOKEN: AGENT_REPO_TOKEN has no
+          access to this separate private repo, so `submodules: true` above 403s)
+        working-directory: agent
+        env:
+          GH_TOKEN: ${{ secrets.LIBPROBE_REPO_TOKEN }}
+        run: |
+          git -c url."https://x-access-token:${GH_TOKEN}@github.com/".insteadOf="https://github.com/" \
+            submodule update --init --force --depth=1
 
       - name: Install oras (zot client)
         run: |
