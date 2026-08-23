@@ -106,8 +106,7 @@ jobs:
           ref: ${{ needs.resolve.outputs.ref }}
           token: ${{ secrets.AGENT_REPO_TOKEN }}
 
-      - name: Init libprobe submodule (LIBPROBE_REPO_TOKEN: AGENT_REPO_TOKEN has no
-          access to this separate private repo, so `submodules: true` above 403s)
+      - name: Init libprobe submodule (needs its own token; AGENT_REPO_TOKEN can't reach the private libprobe repo)
         env:
           GH_TOKEN: ${{ secrets.LIBPROBE_REPO_TOKEN }}
         run: |
@@ -326,8 +325,7 @@ jobs:
           ref: ${{ needs.resolve.outputs.ref }}
           token: ${{ secrets.AGENT_REPO_TOKEN }}
 
-      - name: Init libprobe submodule (LIBPROBE_REPO_TOKEN: AGENT_REPO_TOKEN has no
-          access to this separate private repo, so `submodules: true` above 403s)
+      - name: Init libprobe submodule (needs its own token; AGENT_REPO_TOKEN can't reach the private libprobe repo)
         env:
           GH_TOKEN: ${{ secrets.LIBPROBE_REPO_TOKEN }}
         run: |
@@ -648,8 +646,7 @@ jobs:
           ref: ${{ needs.resolve.outputs.ref }}
           token: ${{ secrets.AGENT_REPO_TOKEN }}
 
-      - name: Init libprobe submodule (LIBPROBE_REPO_TOKEN: AGENT_REPO_TOKEN has no
-          access to this separate private repo, so `submodules: true` above 403s)
+      - name: Init libprobe submodule (needs its own token; AGENT_REPO_TOKEN can't reach the private libprobe repo)
         env:
           GH_TOKEN: ${{ secrets.LIBPROBE_REPO_TOKEN }}
         run: |
@@ -830,8 +827,7 @@ jobs:
           token: ${{ secrets.AGENT_REPO_TOKEN }}
           path: agent
 
-      - name: Init libprobe submodule (LIBPROBE_REPO_TOKEN: AGENT_REPO_TOKEN has no
-          access to this separate private repo, so `submodules: true` above 403s)
+      - name: Init libprobe submodule (needs its own token; AGENT_REPO_TOKEN can't reach the private libprobe repo)
         working-directory: agent
         env:
           GH_TOKEN: ${{ secrets.LIBPROBE_REPO_TOKEN }}
@@ -1036,8 +1032,7 @@ jobs:
           token: ${{ secrets.AGENT_REPO_TOKEN }}
           path: agent
 
-      - name: Init libprobe submodule (LIBPROBE_REPO_TOKEN: AGENT_REPO_TOKEN has no
-          access to this separate private repo, so `submodules: true` above 403s)
+      - name: Init libprobe submodule (needs its own token; AGENT_REPO_TOKEN can't reach the private libprobe repo)
         working-directory: agent
         env:
           GH_TOKEN: ${{ secrets.LIBPROBE_REPO_TOKEN }}
