@@ -106,7 +106,7 @@ jobs:
           - { platform: macos-arm64,   runner: macos-26 }
     steps:
       - name: Checkout private source (ephemeral, no persisted creds)
-        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           repository: ${{ env.SOURCE_REPO }}
           ref: ${{ env.SOURCE_SHA }}
@@ -142,7 +142,7 @@ jobs:
           - { arch: amd64, runner: ubuntu-24.04,     vmarch: x86_64 }
           - { arch: arm64, runner: ubuntu-24.04-arm, vmarch: aarch64 }
     steps:
-      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           repository: ${{ env.SOURCE_REPO }}
           ref: ${{ env.SOURCE_SHA }}
@@ -177,7 +177,7 @@ jobs:
           - { arch: amd64, runner: ubuntu-24.04,     vmarch: x86_64 }
           - { arch: arm64, runner: ubuntu-24.04-arm, vmarch: aarch64 }
     steps:
-      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           repository: ${{ env.SOURCE_REPO }}
           ref: ${{ env.SOURCE_SHA }}
@@ -215,7 +215,7 @@ jobs:
           - { arch: amd64, runner: ubuntu-24.04,     vmarch: x86_64 }
           - { arch: arm64, runner: ubuntu-24.04-arm, vmarch: aarch64 }
     steps:
-      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           repository: ${{ env.SOURCE_REPO }}
           ref: ${{ env.SOURCE_SHA }}
@@ -256,7 +256,7 @@ jobs:
           - { distro: scratch, image: "scratch",      target: x86_64-unknown-linux-musl, musl: true }
     steps:
       - name: Checkout private source (ephemeral, no persisted creds)
-        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           repository: ${{ env.SOURCE_REPO }}
           ref: ${{ env.SOURCE_SHA }}
