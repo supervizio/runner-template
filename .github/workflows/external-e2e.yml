@@ -221,7 +221,7 @@ jobs:
           ref: ${{ env.SOURCE_SHA }}
           token: ${{ secrets.LIBPROBE_REPO_TOKEN }}
           persist-credentials: false
-      - uses: vmactions/netbsd-vm@1d9767765fd3f986e6de3aff4b1148f0c3a45f01 # v1.4.1
+      - uses: vmactions/netbsd-vm@6334c835de4c04a59fe59f0f8f071e02a2f0bab3 # v1.4.7
         with:
           usesh: true
           arch: ${{ matrix.vmarch }}
