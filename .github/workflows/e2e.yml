@@ -335,7 +335,12 @@ jobs:
       - name: Set up Go
         uses: actions/setup-go@4b73464bb391d4059bd26b0524d20df3927bd417 # v6.3.0
         with:
-          go-version: '1.27.0'
+          # Track the agent's own requirement instead of pinning a literal. A
+          # hardcoded '1.27.0' here silently broke every from-source leg the day
+          # the agent bumped go.work to 1.27.1: the toolchain is GOTOOLCHAIN=local
+          # on hosted runners, so `wire` died with "go.work requires go >= 1.27.1
+          # (running go 1.27.0)" before any of the real test work started.
+          go-version-file: go.work
 
       - name: Set up Rust
         uses: dtolnay/rust-toolchain@fa04a1451ff1842e2626ccb99004d0195b455a88 # stable
@@ -656,7 +661,12 @@ jobs:
       - name: Set up Go
         uses: actions/setup-go@4b73464bb391d4059bd26b0524d20df3927bd417 # v6.3.0
         with:
-          go-version: '1.27.0'
+          # Track the agent's own requirement instead of pinning a literal. A
+          # hardcoded '1.27.0' here silently broke every from-source leg the day
+          # the agent bumped go.work to 1.27.1: the toolchain is GOTOOLCHAIN=local
+          # on hosted runners, so `wire` died with "go.work requires go >= 1.27.1
+          # (running go 1.27.0)" before any of the real test work started.
+          go-version-file: go.work
 
       - name: Set up Rust
         uses: dtolnay/rust-toolchain@fa04a1451ff1842e2626ccb99004d0195b455a88 # stable
@@ -844,7 +854,9 @@ jobs:
       - name: Set up Go
         uses: actions/setup-go@4b73464bb391d4059bd26b0524d20df3927bd417 # v6.3.0
         with:
-          go-version: '1.27.0'
+          # Same reasoning as the from-source legs above; the agent is checked
+          # out under agent/ in this job, so its go.work lives one level in.
+          go-version-file: agent/go.work
 
       - name: Build Windows crasher
         run: |
