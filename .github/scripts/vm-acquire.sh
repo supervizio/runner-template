@@ -119,30 +119,21 @@ resolve_vmid() {
   return 1
 }
 
-# Detect VM IP via reserved lease, neighbor table, QEMU guest agent, or DHCP.
+# Detect VM IP via the neighbor table, the QEMU guest agent, or the DHCP leases.
 # Returns: IP address on stdout, logs on stderr
-# Methods ordered by speed: reserved lease (~1s) > neighbor scan (~5s) >
-# guest agent (~15s) > DHCP (~20s) > nmap.
+# Methods ordered by speed: neighbor scan (~5s) > guest agent (~15s) >
+# DHCP (~20s) > nmap.
 detect_ip() {
   local vmid="$1"
   local vm_ip=""
 
-  # Method 0: deterministic reserved lease (kodflow/labs#153). The persistent
-  # test VMs (VMID 200-215) have reserved dnsmasq leases keyed on a deterministic
-  # MAC, so their IP is a pure function of the VMID and is stable across
-  # rollback/resume: 192.168.100.(180 + vmid - 200) — e.g. 204 -> .184. Probe it
-  # first; a hit skips the whole scan chain (the biggest source of acquire
-  # flakiness). A miss (non-test VMID, VM still booting, or ICMP filtered as on
-  # macOS) falls straight through to the scan methods below — no regression.
-  if [ "$vmid" -ge 200 ] && [ "$vmid" -le 215 ]; then
-    local det_ip="192.168.100.$((180 + vmid - 200))"
-    if ping -c 1 -W 1 "$det_ip" >/dev/null 2>&1; then
-      log "VM IP (reserved lease): $det_ip"
-      echo "$det_ip"
-      return 0
-    fi
-    log "Reserved-lease IP $det_ip not answering yet; falling back to scan"
-  fi
+  # NOTE: there is deliberately no "deterministic reserved lease" fast path here.
+  # kodflow/labs#153 reserved 192.168.100.(180 + vmid - 200) per test VM, but it
+  # was REVERTED by kodflow/labs#156 — the bench has had no dhcp-host reservation
+  # since, and test VMs draw from the dynamic pool (204 answers on .160, not the
+  # .184 the formula predicted). Probing the stale address only cost a ping
+  # timeout per attempt before falling through, so the IP now comes from the
+  # scan methods below, which read the bench's real lease table.
 
   # Get MAC address (needed by neighbor scan and DHCP)
   local mac=""
@@ -216,11 +207,21 @@ detect_ip() {
     return 1
   fi
 
-  # Method 3: DHCP lease via SSH to Proxmox host (2 attempts)
+  # Method 3: DHCP lease via SSH to the Proxmox host (2 attempts).
+  #
+  # The bench accepts only a fixed set of commands from the CI key, and reading
+  # the lease table is one of them; an ad-hoc `grep ... | awk ...` pipeline is
+  # not. The previous version sent exactly that, so it was rejected host-side,
+  # the message went to the discarded stderr, and the empty result was
+  # indistinguishable from "this MAC holds no lease" — detection then fell
+  # through to nmap and failed, burning MAX_RETRIES x RETRY_INTERVAL = 15 min
+  # until the job timed out. Fetch the table with the supported read instead and
+  # filter it here, which is also what the supervizio/agent acquire script does.
   log "Trying DHCP lease detection..."
   for i in $(seq 1 2); do
-    vm_ip=$(ssh ${SSH_OPTS} root@192.168.100.1 \
-      "grep -i '${mac}' /var/lib/misc/dnsmasq.leases 2>/dev/null | awk '{print \$3}'" 2>/dev/null) || true
+    vm_ip=$(ssh ${SSH_OPTS} -o ConnectTimeout=5 root@192.168.100.1 \
+      "cat /var/lib/misc/dnsmasq.leases" 2>/dev/null \
+      | grep -i "${mac}" | awk '{print $3}' | head -1) || true
     if [ -n "$vm_ip" ]; then
       log "VM IP (DHCP lease): $vm_ip"
       echo "$vm_ip"
