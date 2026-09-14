@@ -11,8 +11,9 @@
 #   VM_IP            - IP address of the VM (set by vm-acquire.sh)
 #
 # The script removes the /usebyjob lock file so other jobs can acquire
-# the VM. The VM stays running — vm-cleanup resets all VMs to "base"
-# snapshot at the end of the pipeline.
+# the VM. The VM stays running — the vm-cleanup job resets the VMs this run
+# claimed (see the `vm-claim-*` artifacts) to their restore point at the end of
+# the pipeline, via `ci-vm-down` under the bench's per-VM flock.
 set -euo pipefail
 
 VM_REF="${1:?Usage: vm-release.sh <NAME_OR_VMID>}"

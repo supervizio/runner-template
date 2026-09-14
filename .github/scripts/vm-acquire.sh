@@ -24,8 +24,10 @@
 #   4. Starts the VM if stopped, waits for SSH
 #   5. Creates /usebyjob lock file with job ID
 #
-# Note: No snapshot rollback here. VM cleanup (vm-cleanup job) handles
-# resetting all VMs to "base" snapshot at the end of the pipeline.
+# Note: this script never rolls a VM back. The VMID it acquires is published as
+# a `vm-claim-*` artifact by the calling job, and the vm-cleanup job resets ONLY
+# the VMs claimed by that run — never the whole 200-215 band, which used to reset
+# VMs held by another repository's pipeline mid-job.
 set -euo pipefail
 
 INPUT="${1:?Usage: vm-acquire.sh <NAME_OR_VMID> <JOB_ID>}"
@@ -327,13 +329,19 @@ for attempt in $(seq 1 "$MAX_RETRIES"); do
       ip_fail_count=$((ip_fail_count + 1))
       log "VM running but cannot detect IP (fail $ip_fail_count/$IP_FAIL_THRESHOLD)"
       if [ "$ip_fail_count" -ge "$IP_FAIL_THRESHOLD" ]; then
-        log "VM appears stuck (running but unreachable). Resetting..."
-        pve_api -X POST "${PROXMOX_API_URL}/nodes/${NODE}/qemu/${VMID}/status/stop" > /dev/null 2>&1 || true
-        sleep 5
-        pve_api -X POST "${PROXMOX_API_URL}/nodes/${NODE}/qemu/${VMID}/snapshot/base/rollback" > /dev/null 2>&1 || true
-        sleep 2
-        log "VM reset to base snapshot, will restart on next attempt"
-        ip_fail_count=0
+        # NE PAS reinitialiser ici. A cet instant precis on ne detient PAS la VM :
+        # le verrou /usebyjob est pose plus bas, apres une connexion SSH reussie,
+        # et on n'a justement pas d'IP pour aller le lire. Un stop + rollback base
+        # ciblait donc une VM dont le proprietaire est inconnu — et une detection
+        # d'IP peut echouer pour des raisons parfaitement benignes (bail dnsmasq
+        # encore chaud, agent invite pas encore remonte, scan ARP en retard) alors
+        # qu'un autre pipeline travaille dessus. C'est la meme classe de panne que
+        # le balayage de vm-cleanup, en plus discret.
+        #
+        # La reparation d'une VM injoignable appartient au watchdog / reconciliateur
+        # de sante du banc, qui SAUTENT les VM sous bail (`vm_is_leased`) : ils ne
+        # peuvent pas casser un job en cours, contrairement a cet appel API brut.
+        log "VM unreachable after ${IP_FAIL_THRESHOLD} attempts — laisse au watchdog du banc (pas de reset ici)"
       fi
     fi
   fi
