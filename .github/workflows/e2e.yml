@@ -544,6 +544,24 @@ jobs:
           chmod +x runner-template/.github/scripts/vm-acquire.sh
           runner-template/.github/scripts/vm-acquire.sh sequoia "${GITHUB_RUN_ID}_e2e-macos-x86_64"
 
+      # Declare la VM que ce leg vient de prendre. C'est la SEULE autorite du job
+      # vm-cleanup : sans ce claim, il ne touche pas la VM. Publie tout de suite
+      # apres l'acquisition, donc avant tout test — une VM acquise est toujours
+      # reinitialisee a la fin, meme si le leg echoue ou est annule ensuite.
+      - name: Record VM claim
+        if: always() && steps.vm.outputs.VMID != ''
+        run: echo "${{ steps.vm.outputs.VMID }}" > "vm-claim-macos-sequoia.txt"
+
+      - name: Upload VM claim
+        if: always() && steps.vm.outputs.VMID != ''
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: vm-claim-macos-sequoia
+          path: vm-claim-macos-sequoia.txt
+          retention-days: 1
+          overwrite: true
+          if-no-files-found: ignore
+
       - name: Probe E2E on macOS (sequoia, exec via ssh)
         env:
           VM_IP: ${{ steps.vm.outputs.VM_IP }}
@@ -908,6 +926,24 @@ jobs:
           chmod +x agent/.github/scripts/vm-acquire.sh
           agent/.github/scripts/vm-acquire.sh "${{ matrix.name }}" "${GITHUB_RUN_ID}_e2e-win-${{ matrix.name }}"
 
+      # Declare la VM que ce leg vient de prendre. C'est la SEULE autorite du job
+      # vm-cleanup : sans ce claim, il ne touche pas la VM. Publie tout de suite
+      # apres l'acquisition, donc avant tout test — une VM acquise est toujours
+      # reinitialisee a la fin, meme si le leg echoue ou est annule ensuite.
+      - name: Record VM claim
+        if: always() && steps.vm.outputs.VMID != ''
+        run: echo "${{ steps.vm.outputs.VMID }}" > "vm-claim-win-${{ matrix.name }}.txt"
+
+      - name: Upload VM claim
+        if: always() && steps.vm.outputs.VMID != ''
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: vm-claim-win-${{ matrix.name }}
+          path: vm-claim-win-${{ matrix.name }}.txt
+          retention-days: 1
+          overwrite: true
+          if-no-files-found: ignore
+
       - name: Supervision scenarios (PowerShell)
         run: |
           BIN=$(find bin -name 'supervizio-windows-amd64*' | head -1)
@@ -1128,6 +1164,24 @@ jobs:
         run: |
           chmod +x runner-template/.github/scripts/vm-acquire.sh
           runner-template/.github/scripts/vm-acquire.sh "${{ matrix.name }}" "${GITHUB_RUN_ID}_e2e-vm-${{ matrix.name }}"
+
+      # Declare la VM que ce leg vient de prendre. C'est la SEULE autorite du job
+      # vm-cleanup : sans ce claim, il ne touche pas la VM. Publie tout de suite
+      # apres l'acquisition, donc avant tout test — une VM acquise est toujours
+      # reinitialisee a la fin, meme si le leg echoue ou est annule ensuite.
+      - name: Record VM claim
+        if: always() && steps.vm.outputs.VMID != ''
+        run: echo "${{ steps.vm.outputs.VMID }}" > "vm-claim-vm-${{ matrix.name }}.txt"
+
+      - name: Upload VM claim
+        if: always() && steps.vm.outputs.VMID != ''
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: vm-claim-vm-${{ matrix.name }}
+          path: vm-claim-vm-${{ matrix.name }}.txt
+          retention-days: 1
+          overwrite: true
+          if-no-files-found: ignore
 
       - name: SCP files to VM
         run: |
@@ -1399,123 +1453,116 @@ jobs:
             -d "{\"state\":\"$STATE\",\"context\":\"e2e/vm/${{ matrix.name }}\",\"description\":\"$DESC\",\"target_url\":\"${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}\"}"
 
   # ===========================================================================
-  # VM CLEANUP: Reset all VMs to base snapshot
+  # VM CLEANUP: reset the VMs this run acquired
   # ===========================================================================
 
+  # Ne reinitialise QUE les VM prises par CE run — jamais la bande entiere.
+  #
+  # Avant : ce job listait les VMID 200-215 via l'API et appelait `ci-vm-down`
+  # sur chacune, en `if: always()`, sans aucune connaissance des autres
+  # pipelines. supervizio/agent acquiert les MEMES VM pour ses jobs natifs (via
+  # `ci-vm-up`, sous bail transactionnel cote banc) : le balayage les ramenait au
+  # snapshot en plein milieu de leurs tests, et ~/build disparaissait sous le job
+  # d'en face. Trace sur agent run 34877484899 — "P3 NetBSD (native)" tenait la
+  # VM 211 depuis 18:31:21 ; le `vm-cleanup` du run 34880124602 de CE depot l'a
+  # reinitialisee ; le scp suivant a rendu `dest open "build/..." : No such file
+  # or directory`. Meme signature pour les echecs "aleatoires" OpenBSD/NetBSD et
+  # pour la VM Windows qui "se tait".
+  #
+  # Le flock par VM ne protegeait pas de ca : il ne couvre que la duree du
+  # `ci-vm-down` lui-meme, pas celle du job qui detient la VM. Et `ci-vm-down` ne
+  # consulte aucun bail — c'est le chemin de LIBERATION, il efface le bail qu'il
+  # trouve, y compris celui d'un autre depot.
+  #
+  # Desormais chaque leg publie la VM qu'il a reellement acquise (artefact
+  # `vm-claim-<name>`, ecrit par l'etape "Record VM claim") et ce job ne touche
+  # que cette liste. Une VM que ce run n'a jamais prise n'est jamais reinitialisee.
   vm-cleanup:
     name: VM Cleanup
-    needs: [e2e-vm]
+    # e2e-macos et e2e-windows tiennent aussi des VM de la bande (215 sequoia,
+    # 214 windows) : elles etaient reinitialisees par le balayage. Il faut donc
+    # les attendre, sinon leur claim n'existe pas encore au telechargement et
+    # leur VM ne serait jamais rendue propre.
+    needs: [e2e-vm, e2e-macos, e2e-windows]
     if: always() && github.event.inputs.arm_only != 'true'
     runs-on: supervizio-runner
     timeout-minutes: 10
     env:
-      # PROXMOX_API_URL est volontairement absent : depuis un pod, le litteral
-      # 192.168.100.1 resout sur le Proxmox de l'hote CI, pas sur le banc (les
-      # deux hotes ont un 192.168.100.0/24 identique et jamais route). L'action
-      # `bench-api-tunnel` ci-dessous forwarde un port loopback vers le banc et
-      # exporte le vrai PROXMOX_API_URL. Voir kodflow/labs#185.
-      PVE_AUTH: "PVEAPIToken=${{ secrets.CI_RUNNER_API_TOKEN_ID }}=${{ secrets.CI_RUNNER_API_TOKEN_SECRET }}"
-      NODE: ${{ secrets.PROXMOX_NODE }}
+      # Plus de PVE_AUTH/NODE/PROXMOX_API_URL : ce job ne DECOUVRE plus de VM, il
+      # lit la liste de celles qu'il a prises. L'action `bench-api-tunnel` et le
+      # token PVE n'ont donc plus lieu d'etre ici — moins de surface, et plus
+      # aucun chemin capable de designer une VM tierce.
       SSH_OPTS: "-o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o ConnectTimeout=10"
     steps:
-      - name: Checkout runner-template (pour l'action bench-api-tunnel)
-        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
-        with:
-          path: runner-template
-
       - name: Setup SSH key
         run: |
           mkdir -p ~/.ssh && chmod 700 ~/.ssh
           echo "${{ secrets.CI_SSH_PRIVATE_KEY }}" > ~/.ssh/id_ed25519
           chmod 600 ~/.ssh/id_ed25519
 
-      # Le listing des VMs passe encore par l'API : c'est la seule chose que ce
-      # job lit, et VM.Audit suffit. Le reset, lui, ne passe plus par l'API.
-      - name: Open bench API tunnel
-        uses: ./runner-template/.github/actions/bench-api-tunnel
+      # continue-on-error : un run ou aucun leg n'a acquis de VM (skip, annulation
+      # avant l'acquisition) ne publie aucun claim, et download-artifact echoue
+      # quand le motif ne correspond a rien. L'etape suivante traite l'absence de
+      # repertoire comme "rien a reinitialiser".
+      - name: Download VM claims
+        continue-on-error: true
+        uses: actions/download-artifact@70fc10c6e5e1ce46ad2ea6f2b72d43f7d47b13c3 # v8.0.0
+        with:
+          pattern: vm-claim-*
+          path: vm-claims
+          merge-multiple: true
 
-      - name: Reset all VMs to base snapshot
+      - name: Reset claimed VMs to their restore point
         run: |
-          echo "=== VM Cleanup: Resetting all VMs to base snapshot ==="
+          echo "=== VM Cleanup: resetting the VMs acquired by this run ==="
 
-          # Validate Proxmox credentials
-          if [ -z "$NODE" ] || [ "$PVE_AUTH" = "PVEAPIToken==" ]; then
-            echo "WARNING: Proxmox secrets not configured, skipping VM cleanup"
+          if [ ! -d vm-claims ]; then
+            echo "No claim artifact: this run acquired no VM. Nothing to reset."
             exit 0
           fi
 
-          # Dynamically discover test VM VMIDs via Proxmox API.
-          # Test VMs live in the 200-215 band (template_VMID + 100). We hard-scope
-          # the reset to that band so infra VMs can NEVER be caught in the sweep:
-          #   - ci-artifacts-zot (250): the CI artifact registry — stopping it makes
-          #     zot "no route to host" and breaks agent CI + this very workflow.
-          #   - mcp-service (301), runner-k3s (300): stateful infra.
-          #   - dynamic/e2e (400-499), staging (500-522).
-          # Name-prefix excludes (runner-/tpl-/e2e-/ci-artifacts-/mcp-/zot) are kept
-          # as defense-in-depth in case the band ever changes.
-          echo "Discovering test VMs (VMID 200-215)..."
-          ALL_VMS=$(curl -sf -k --max-time 30 \
-            -H "Authorization: ${PVE_AUTH}" \
-            "${PROXMOX_API_URL}/nodes/${NODE}/qemu" 2>/dev/null) || {
-            echo "ERROR: Failed to list VMs from Proxmox API"
-            exit 1
-          }
-
-          # Filter: test-VM band 200-215 only, excluding infra/runner/template names
-          VMIDS=$(echo "$ALL_VMS" | jq -r '
-            .data[]
-            | select((.vmid | tonumber) >= 200 and (.vmid | tonumber) <= 215)
-            | select(.name | test("^(runner-|tpl-|e2e-|ci-artifacts-|mcp-)") | not)
-            | select(.name | test("zot") | not)
-            | select(.name | test("^[0-9]+$") | not)
-            | .vmid
-          ' 2>/dev/null | sort -n)
+          # Une ligne = un VMID. `sort -u` parce qu'aucun leg ne partage une VM,
+          # mais un re-run partiel peut republier un claim deja present.
+          VMIDS=$(cat vm-claims/*.txt 2>/dev/null | tr -d '\r' | grep -E '^[0-9]+$' | sort -nu)
 
           if [ -z "$VMIDS" ]; then
-            echo "WARNING: No test VMs found to reset"
+            echo "Claim artifacts present but empty. Nothing to reset."
             exit 0
           fi
 
-          echo "Found test VMs:"
-          echo "$ALL_VMS" | jq -r '
-            .data[]
-            | select((.vmid | tonumber) >= 200 and (.vmid | tonumber) <= 215)
-            | select(.name | test("^(runner-|tpl-|e2e-|ci-artifacts-|mcp-)") | not)
-            | select(.name | test("zot") | not)
-            | select(.name | test("^[0-9]+$") | not)
-            | "  \(.vmid) \(.name) (\(.status))"
-          ' 2>/dev/null
+          echo "Claimed by this run: $(echo "$VMIDS" | tr '\n' ' ')"
 
           TOTAL=0
           FAILED=0
           for VMID in $VMIDS; do
-            TOTAL=$((TOTAL + 1))
-            VM_NAME=$(echo "$ALL_VMS" | jq -r ".data[] | select(.vmid == ${VMID}) | .name")
-            echo ""
-            echo "--- ${VM_NAME} (VMID ${VMID}) ---"
+            # Defense en profondeur : `ci-vm-updown.sh` garde deja la bande
+            # 200-215 cote hote, mais un claim corrompu ne doit meme pas partir.
+            if [ "$VMID" -lt 200 ] || [ "$VMID" -gt 215 ]; then
+              echo "  SKIP ${VMID}: hors bande test 200-215"
+              continue
+            fi
 
-            # `ci-vm-down` fait stop + rollback base cote hote, en root, SOUS LE
-            # FLOCK PAR VM (kodflow/labs#159). Deux gains sur l'appel API direct :
-            #  - aucun privilege PVE requis : le token est privsep=1 et l'ACL de
-            #    ci-runner@pve a ete reduite a CIRunner (labs#195), donc il n'a
-            #    PAS VM.Snapshot.Rollback — l'appel API rendait 403 ;
-            #  - le flock empeche d'arracher une VM a un leg concurrent. La
-            #    version API n'avait aucun verrou et tourne en `if: always()`,
-            #    donc elle pouvait reinitialiser une VM qu'un autre depot venait
-            #    d'acquerir (la classe de panne decrite dans agent#115).
-            echo "  Reset via ci-vm-down (flock cote hote)..."
+            TOTAL=$((TOTAL + 1))
+            echo ""
+            echo "--- VMID ${VMID} ---"
+
+            # `ci-vm-down` fait stop + rollback (dev, repli base) + enforce +
+            # start cote hote, en root, SOUS LE FLOCK PAR VM (kodflow/labs#159),
+            # et efface le bail. Aucun privilege PVE requis : le token est
+            # privsep=1 et l'ACL de ci-runner@pve, reduite a CIRunner (labs#195),
+            # n'a PAS VM.Snapshot.Rollback — l'appel API rendait 403.
             if ssh ${SSH_OPTS} -i ~/.ssh/id_ed25519 root@192.168.100.1 \
                  "ci-vm-down ${VMID}" >/dev/null 2>&1; then
-              echo "  OK: ${VM_NAME} reset to base"
+              echo "  OK: ${VMID} reset to its restore point"
             else
-              echo "  WARNING: Failed to reset ${VM_NAME} (VMID ${VMID})"
+              echo "  WARNING: failed to reset ${VMID}"
               FAILED=$((FAILED + 1))
             fi
           done
 
           echo ""
           echo "=== VM Cleanup Complete ==="
-          echo "  Total VMs: ${TOTAL}"
+          echo "  VMs claimed by this run: ${TOTAL}"
           echo "  Failed: ${FAILED}"
 
           if [ "$FAILED" -gt 0 ]; then
