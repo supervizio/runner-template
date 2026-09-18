@@ -37,6 +37,22 @@ name: Init-swap proof
 # therefore take effect too: Alpine's s6 / runit / dinit legs CAN move to
 # vmactions, and the qemu-vm action is not needed for them.
 #
+# ALSO ANSWERED — run 35398438742, experiment 2. The swap itself worked:
+#
+#   INIT_TARGET now: /usr/sbin/init          (was /usr/lib/systemd/systemd)
+#   ...then: Boot probe timed out; sweeping guest IPs ...
+#            Boot timed out after 180 seconds. Killing QEMU and retrying...
+#            Error: Boot timed out after retry. Giving up.
+#
+# apt replaced /sbin/init correctly and the guest NEVER CAME BACK. SysVinit alone
+# does not bring up networking in an image built around systemd — there are no
+# sysv-rc network scripts to run. So `debian-sysvinit` is NOT one `apt install`
+# away, and the bench's hand-built VM was hand-built for a reason.
+#
+# Conclusion for the migration: the bootloader path is open (experiment 3), but
+# each non-default init still needs its own working boot configuration. Swapping
+# the init binary is necessary and nowhere near sufficient.
+#
 # MEASURED (run 35396732254, 2026-09-18):
 #   alpine 3.23 -> PID1=init (/bin/busybox), uptime 18s,
 #                  CMDLINE=BOOT_IMAGE=vmlinuz-virt root=LABEL=/ ...
