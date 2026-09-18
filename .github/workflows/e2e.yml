@@ -1581,6 +1581,11 @@ jobs:
         uses: vmactions/freebsd-vm@4469451fe39bee80be4066836c5170362e9349f3 # v1.5.7
         with:
           usesh: true
+          # Pinned, for the same reason the Windows leg pins its image: an
+          # unpinned guest floats with the action's default and moves coverage
+          # with no diff. agent/e2e/expected-matrix.json expects "FreeBSD 15"; the bench builds 15.0-RELEASE.
+          # The action's default here is 15.1.
+          release: '15.0'
           copyback: false
           prepare: pkg install -y jq
           run: |
@@ -1678,6 +1683,11 @@ jobs:
         uses: vmactions/netbsd-vm@20ee93a005c9fc78743e6e05269f4cb023b87413 # v1.5.0
         with:
           usesh: true
+          # Pinned, for the same reason the Windows leg pins its image: an
+          # unpinned guest floats with the action's default and moves coverage
+          # with no diff. expected-matrix.json expects "NetBSD 10\\.1"; the action now defaults to 11.0, a different MAJOR.
+          # The action's default here is 11.0.
+          release: '10.1'
           copyback: false
           prepare: /usr/sbin/pkg_add jq
           run: |
@@ -1798,6 +1808,11 @@ jobs:
         uses: vmactions/openbsd-vm@86cdc08415d9d0865267e686561e276c52d62530 # v1.4.7
         with:
           usesh: true
+          # Pinned, for the same reason the Windows leg pins its image: an
+          # unpinned guest floats with the action's default and moves coverage
+          # with no diff. matches the bench (packer pins install79.iso) and expected-matrix.json.
+          # The action's default here is 7.9.
+          release: '7.9'
           copyback: false
           prepare: pkg_add -I jq
           run: |
