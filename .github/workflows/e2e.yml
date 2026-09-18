@@ -43,6 +43,8 @@ jobs:
     steps:
       - name: Resolve dispatch parameters
         id: resolve
+        env:
+          PAYLOAD_SOURCE_REPO: ${{ github.event.client_payload.source_repo }}
         run: |
           if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
             echo "ref=${{ inputs.ref }}" >> "$GITHUB_OUTPUT"
@@ -58,8 +60,28 @@ jobs:
           # Read it now (the artifact download needs it), defaulting to that
           # same value so in-flight dispatches and workflow_dispatch runs, which
           # send no such field, behave exactly as before.
-          SOURCE_REPO="${{ github.event.client_payload.source_repo }}"
-          echo "source_repo=${SOURCE_REPO:-supervizio/agent}" >> "$GITHUB_OUTPUT"
+          #
+          # ALLOWLISTED, and that is load-bearing. This value steers both the
+          # private `actions/checkout` and the cross-repo artifact download, and
+          # the jobs that consume it then EXECUTE scripts out of that checkout --
+          # setup/install.sh as root in a guest, and setup/fetch-libprobe.sh with
+          # LIBPROBE_REPO_TOKEN in its step env. Left unconstrained it would turn
+          # "can dispatch a test run" into "can run arbitrary code next to a
+          # private-repo credential". Checked once here rather than trusted at
+          # each of the ten use sites.
+          #
+          # Read through env, not interpolated into the script: a repository name
+          # is attacker-supplied text and ${{ }} pastes it verbatim into the shell
+          # (and into $GITHUB_OUTPUT, where a newline would let it set other
+          # outputs).
+          SOURCE_REPO="${PAYLOAD_SOURCE_REPO:-supervizio/agent}"
+          case "$SOURCE_REPO" in
+            supervizio/agent|supervizio/libprobe) ;;
+            *)
+              echo "::error::refusing source_repo '$SOURCE_REPO' - not in the allowlist" >&2
+              exit 1 ;;
+          esac
+          echo "source_repo=$SOURCE_REPO" >> "$GITHUB_OUTPUT"
 
       - name: Display resolved parameters
         run: |
@@ -114,6 +136,10 @@ jobs:
           repository: supervizio/agent
           ref: ${{ needs.resolve.outputs.ref }}
           token: ${{ secrets.AGENT_REPO_TOKEN }}
+          # The workspace is synced wholesale into guests and read by later
+          # steps; a persisted credential would travel with it as a base64
+          # AUTHORIZATION header that Actions log-masking does not cover.
+          persist-credentials: false
 
       - name: Init libprobe submodule (needs its own token; AGENT_REPO_TOKEN can't reach the private libprobe repo)
         env:
@@ -333,6 +359,10 @@ jobs:
           repository: supervizio/agent
           ref: ${{ needs.resolve.outputs.ref }}
           token: ${{ secrets.AGENT_REPO_TOKEN }}
+          # The workspace is synced wholesale into guests and read by later
+          # steps; a persisted credential would travel with it as a base64
+          # AUTHORIZATION header that Actions log-masking does not cover.
+          persist-credentials: false
 
       - name: Init libprobe submodule (needs its own token; AGENT_REPO_TOKEN can't reach the private libprobe repo)
         env:
@@ -631,6 +661,10 @@ jobs:
           repository: supervizio/agent
           ref: ${{ needs.resolve.outputs.ref }}
           token: ${{ secrets.AGENT_REPO_TOKEN }}
+          # The workspace is synced wholesale into guests and read by later
+          # steps; a persisted credential would travel with it as a base64
+          # AUTHORIZATION header that Actions log-masking does not cover.
+          persist-credentials: false
 
       - name: Init libprobe submodule (needs its own token; AGENT_REPO_TOKEN can't reach the private libprobe repo)
         env:
@@ -976,6 +1010,10 @@ jobs:
         uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
         with:
           path: runner-template
+          # The workspace is synced wholesale into guests and read by later
+          # steps; a persisted credential would travel with it as a base64
+          # AUTHORIZATION header that Actions log-masking does not cover.
+          persist-credentials: false
 
       - name: Checkout agent code
         uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
@@ -984,6 +1022,10 @@ jobs:
           ref: ${{ needs.resolve.outputs.ref }}
           token: ${{ secrets.AGENT_REPO_TOKEN }}
           path: agent
+          # The workspace is synced wholesale into guests and read by later
+          # steps; a persisted credential would travel with it as a base64
+          # AUTHORIZATION header that Actions log-masking does not cover.
+          persist-credentials: false
 
       - name: Init libprobe submodule (needs its own token; AGENT_REPO_TOKEN can't reach the private libprobe repo)
         working-directory: agent
