@@ -18,12 +18,24 @@ permissions:
 
 jobs:
   selftest:
-    name: qemu ${{ matrix.name }}
-    runs-on: ubuntu-24.04
+    name: qemu ${{ matrix.name }} on ${{ matrix.host }}
+    runs-on: ${{ matrix.host }}
     timeout-minutes: 20
     strategy:
       fail-fast: false
       matrix:
+        # BOTH host images, on purpose. ubuntu-latest migrates to 26.04 between
+        # 19 Oct and 19 Nov 2026, so this repo moves either way -- the only
+        # choice is whether it moves on evidence or on GitHub's calendar.
+        #
+        # 26.04 had exactly one real blocker: it enforces a disk quota on /tmp,
+        # and the vmactions actions cached their guest image there (EDQUOT,
+        # vmactions/freebsd-vm#148). The pins in e2e.yml are now past that fix,
+        # so the blocker is gone. KVM itself is present and usable on 26.04
+        # x86_64, and this action writes to $RUNNER_TEMP rather than /tmp, so it
+        # should be unaffected -- "should" being exactly what this matrix is
+        # here to replace with a result.
+        host: [ubuntu-24.04, ubuntu-26.04]
         include:
           # The four legs whose init ships in a STOCK upstream cloud image, so
           # no guest-side package install is needed. alpine-s6, alpine-runit and
@@ -89,6 +101,14 @@ jobs:
             payload.txt:/tmp/payload.txt
           run: |
             echo "=== uname ==="; uname -srm
+            # Guards against a silent TCG fallback. Measured: a KVM guest
+            # reaches a shell in 22-45s, the same guest under TCG in 80-240s.
+            # If /dev/kvm ever stops being usable on a host image, the legs do
+            # not fail -- they just get ~23x slower, which is the kind of
+            # regression nobody notices until a bill or a timeout arrives.
+            UP=$(cut -d. -f1 /proc/uptime)
+            echo "guest uptime at first command: ${UP}s"
+            [ "$UP" -lt 70 ] || echo "::warning::guest took ${UP}s to reach this point - KVM may not be active on ${{ matrix.host }}"
             echo "=== PID 1 ==="
             # /proc/1/comm, NOT `ps -p 1 -o comm=`: BusyBox ps has no -p
             # ("ps: unrecognized option: p") and procps is not installed on the
