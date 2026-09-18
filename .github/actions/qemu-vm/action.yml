@@ -55,6 +55,15 @@ inputs:
     description: Seconds allowed for the guest script before it is killed
     required: false
     default: "1800"
+  envs:
+    description: >
+      Space-separated NAMES of environment variables to carry into the guest,
+      exactly like vmactions' input of the same name. SSH does not forward the
+      environment, so a caller setting `env:` on the step reaches the host and
+      nothing else -- the variable is simply empty inside the guest. Without
+      this the action could only run scripts with no parameters at all.
+    required: false
+    default: ""
   files:
     description: Newline-separated "src:dest" pairs copied into the guest before `run`
     required: false
@@ -208,10 +217,25 @@ runs:
       env:
         GUEST_SCRIPT: ${{ inputs.run }}
         GUEST_TIMEOUT: ${{ inputs.timeout }}
+        GUEST_ENVS: ${{ inputs.envs }}
       run: |
         set -euo pipefail
         cd "$VMDIR"
-        printf '%s' "$GUEST_SCRIPT" > guest.sh
+        # Carry the named variables across the SSH boundary by writing them into
+        # the script itself. `ssh` sends no environment (and `AcceptEnv` on the
+        # guest would have to allow each name anyway), so a step-level `env:`
+        # block stops at the host: the guest saw an empty string and the
+        # assertion built on it failed with `expected ''` -- measured, run
+        # 35400445441, all eight legs.
+        #
+        # Quoted with printf %q so a value containing spaces, quotes or a
+        # newline survives; missing names are written as empty rather than
+        # skipped, so the guest fails on a wrong VALUE instead of a syntax error.
+        : > guest.sh
+        for _n in $GUEST_ENVS; do
+          printf 'export %s=%q\n' "$_n" "${!_n-}" >> guest.sh
+        done
+        printf '%s' "$GUEST_SCRIPT" >> guest.sh
         scp -i vmkey -P "$SSH_PORT" -o StrictHostKeyChecking=no \
             -o UserKnownHostsFile=/dev/null -o LogLevel=ERROR \
             guest.sh root@127.0.0.1:/tmp/guest.sh

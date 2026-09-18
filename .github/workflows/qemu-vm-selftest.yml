@@ -110,6 +110,11 @@ jobs:
           LEG_NAME: ${{ matrix.name }}
           MANAGER_PROBE: ${{ matrix.probe }}
         with:
+          # `env:` above reaches the HOST only. ssh forwards no environment, so
+          # without naming them here the guest saw EXPECTED_INIT='' and every
+          # leg failed "PID 1 is 'systemd', expected ''" -- run 35400445441,
+          # eight legs, one cause.
+          envs: EXPECTED_INIT LEG_NAME MANAGER_PROBE
           image-url: ${{ matrix.url }}
           # Every image is checksum-pinned, each from its own upstream published
           # file -- Debian and Alpine publish sha512 only, Fedora and openSUSE
