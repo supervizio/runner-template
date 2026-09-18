@@ -1584,7 +1584,10 @@ jobs:
 
   report:
     name: Report Results
-    needs: [resolve, e2e-docker, e2e-docker-arm64, e2e-macos, e2e-macos-arm64, e2e-vm]
+    # e2e-windows belongs here. Without it the aggregate reports green while
+    # the Windows leg is red: it is not in needs, so its result is never read
+    # and the job does not even wait for it.
+    needs: [resolve, e2e-docker, e2e-docker-arm64, e2e-macos, e2e-macos-arm64, e2e-vm, e2e-windows]
     if: always()
     runs-on: ubuntu-24.04
     steps:
@@ -1596,6 +1599,7 @@ jobs:
           echo "e2e-macos:        ${{ needs.e2e-macos.result }}"
           echo "e2e-macos-arm64:  ${{ needs.e2e-macos-arm64.result }}"
           echo "e2e-vm:           ${{ needs.e2e-vm.result }}"
+          echo "e2e-windows:      ${{ needs.e2e-windows.result }}"
 
       - name: Report final status
         if: needs.resolve.outputs.sha != ''
@@ -1606,11 +1610,14 @@ jobs:
           [ -z "$GH_TOKEN" ] && { echo "AGENT_REPO_TOKEN not set, skipping"; exit 0; }
           RESULTS=("${{ needs.e2e-docker.result }}" "${{ needs.e2e-docker-arm64.result }}" \
                    "${{ needs.e2e-macos.result }}" "${{ needs.e2e-macos-arm64.result }}" \
-                   "${{ needs.e2e-vm.result }}")
+                   "${{ needs.e2e-vm.result }}" "${{ needs.e2e-windows.result }}")
           STATE="success"
           DESC="All E2E tests passed"
           for r in "${RESULTS[@]}"; do
-            if [ "$r" = "failure" ]; then
+            # cancelled counts as failed, exactly as agent's own CI Summary
+            # treats it: a leg cancelled mid-flight proved nothing, and must not
+            # read as green on the verdict reported back.
+            if [ "$r" = "failure" ] || [ "$r" = "cancelled" ]; then
               STATE="failure"
               DESC="E2E tests failed"
               break
@@ -1631,10 +1638,13 @@ jobs:
           [ -z "$GH_TOKEN" ] && { echo "AGENT_REPO_TOKEN not set, skipping"; exit 0; }
           RESULTS=("${{ needs.e2e-docker.result }}" "${{ needs.e2e-docker-arm64.result }}" \
                    "${{ needs.e2e-macos.result }}" "${{ needs.e2e-macos-arm64.result }}" \
-                   "${{ needs.e2e-vm.result }}")
+                   "${{ needs.e2e-vm.result }}" "${{ needs.e2e-windows.result }}")
           STATE="success"
           for r in "${RESULTS[@]}"; do
-            if [ "$r" = "failure" ]; then
+            # cancelled counts as failed, exactly as agent's own CI Summary
+            # treats it: a leg cancelled mid-flight proved nothing, and must not
+            # read as green on the verdict reported back.
+            if [ "$r" = "failure" ] || [ "$r" = "cancelled" ]; then
               STATE="failure"
               break
             fi
@@ -1669,9 +1679,12 @@ jobs:
         run: |
           RESULTS=("${{ needs.e2e-docker.result }}" "${{ needs.e2e-docker-arm64.result }}" \
                    "${{ needs.e2e-macos.result }}" "${{ needs.e2e-macos-arm64.result }}" \
-                   "${{ needs.e2e-vm.result }}")
+                   "${{ needs.e2e-vm.result }}" "${{ needs.e2e-windows.result }}")
           for r in "${RESULTS[@]}"; do
-            if [ "$r" = "failure" ]; then
+            # cancelled counts as failed, exactly as agent's own CI Summary
+            # treats it: a leg cancelled mid-flight proved nothing, and must not
+            # read as green on the verdict reported back.
+            if [ "$r" = "failure" ] || [ "$r" = "cancelled" ]; then
               echo "FAILED: At least one E2E job failed"
               exit 1
             fi
