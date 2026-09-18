@@ -194,6 +194,33 @@ jobs:
             update-rc.d ssh enable          >/dev/null 2>&1 || true
             # udev under sysvinit, so device naming and hotplug still happen.
             [ -x /etc/init.d/udev ] && { update-rc.d udev defaults >/dev/null 2>&1 || true; }
+            # THE missing piece, and the diagnostic below is what found it.
+            # SysVinit PID 1 reads /etc/inittab to learn what to run, and
+            # Debian's sysvinit-core does not ship one -- so the guest booted an
+            # init with an empty instruction set: no rcS, no getty, no
+            # networking, hence slirp's "no guest-originated traffic". Nothing
+            # was wrong with the swap, the reboot, or the interface names.
+            #
+            # This is the stock Debian inittab: sysinit runs rcS, each runlevel
+            # runs /etc/init.d/rc N, and a serial getty on ttyS0 matches the
+            # console the guest is actually given.
+            if [ ! -f /etc/inittab ]; then
+              cat > /etc/inittab <<EOF
+            id:2:initdefault:
+            si::sysinit:/etc/init.d/rcS
+            l0:0:wait:/etc/init.d/rc 0
+            l1:1:wait:/etc/init.d/rc 1
+            l2:2:wait:/etc/init.d/rc 2
+            l3:3:wait:/etc/init.d/rc 3
+            l4:4:wait:/etc/init.d/rc 4
+            l5:5:wait:/etc/init.d/rc 5
+            l6:6:wait:/etc/init.d/rc 6
+            ca:12345:ctrlaltdel:/sbin/shutdown -t1 -a -r now
+            1:2345:respawn:/sbin/getty 38400 tty1
+            T0:23:respawn:/sbin/getty -L ttyS0 115200 vt100
+            EOF
+              echo "wrote /etc/inittab"
+            fi
             echo "--- runlevel links ---"
             ls -1 /etc/rc2.d/ 2>/dev/null | head -20
             echo "--- inittab present? ---"
