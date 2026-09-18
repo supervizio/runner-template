@@ -944,18 +944,10 @@ jobs:
             binary_artifact: supervizio-linux-amd64-musl
             pkg_artifact: supervizio-amd64.apk
             pkg_ext: apk
-          - name: freebsd
-            binary_artifact: supervizio-freebsd-amd64
-            pkg_artifact: ""
-            pkg_ext: ""
-          - name: openbsd
-            binary_artifact: supervizio-openbsd-amd64
-            pkg_artifact: ""
-            pkg_ext: ""
-          - name: netbsd
-            binary_artifact: supervizio-netbsd-amd64
-            pkg_artifact: ""
-            pkg_ext: ""
+          # freebsd/openbsd/netbsd left this matrix: they now run on
+          # ubuntu-24.04 under vmactions (jobs e2e-bsd-*), which needs no bench
+          # VM. openbsd builds natively there rather than consuming an artifact,
+          # because the cross-linked binary cannot start at all.
     env:
       # PROXMOX_API_URL est volontairement absent : depuis un pod, le litteral
       # 192.168.100.1 resout sur le Proxmox de l'hote CI, pas sur le banc (les
@@ -1365,6 +1357,301 @@ jobs:
             "https://api.github.com/repos/supervizio/agent/statuses/${{ needs.resolve.outputs.sha }}" \
             -d "{\"state\":\"$STATE\",\"context\":\"e2e/vm/${{ matrix.name }}\",\"description\":\"$DESC\",\"target_url\":\"${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}\"}"
 
+  e2e-bsd-freebsd:
+    name: E2E BSD freebsd
+    needs: [resolve]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    if: ${{ github.event.inputs.arm_only != 'true' }}
+    steps:
+      - name: Report status (pending)
+        if: needs.resolve.outputs.sha != ''
+        continue-on-error: true
+        env:
+          GH_TOKEN: ${{ secrets.AGENT_REPO_TOKEN }}
+        run: |
+          [ -z "$GH_TOKEN" ] && exit 0
+          curl -sf -X POST -H "Authorization: Bearer $GH_TOKEN" -H "Accept: application/vnd.github+json" \
+            "https://api.github.com/repos/supervizio/agent/statuses/${{ needs.resolve.outputs.sha }}" \
+            -d '{"state":"pending","context":"e2e/bsd/freebsd","description":"Running...","target_url":"${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"}'
+
+      - name: Checkout agent code
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          repository: ${{ needs.resolve.outputs.source_repo }}
+          ref: ${{ needs.resolve.outputs.ref }}
+          token: ${{ secrets.AGENT_REPO_TOKEN }}
+          persist-credentials: false
+
+      # The bench pulled this from zot; the hosted runner takes the same bytes
+      # from the GitHub artifact agent's CI mirrors. Downloaded on the HOST and
+      # synced into the guest by vmactions -- the token never enters the VM.
+      - name: Download binary from the agent run (cross-repo)
+        uses: actions/download-artifact@70fc10c6e5e1ce46ad2ea6f2b72d43f7d47b13c3 # v8.0.0
+        with:
+          name: supervizio-freebsd-amd64
+          path: bin
+          repository: ${{ needs.resolve.outputs.source_repo }}
+          run-id: ${{ needs.resolve.outputs.run_id }}
+          github-token: ${{ secrets.AGENT_REPO_TOKEN }}
+
+      - name: Verify the binary arrived
+        run: |
+          set -euo pipefail
+          ls -la bin/
+          [ -s "bin/supervizio-freebsd-amd64" ] || {
+            echo "::error::supervizio-freebsd-amd64 missing or empty — did agent's CI publish it? (E2E_BRIDGE_PLATFORMS)" >&2
+            exit 1
+          }
+          mv "bin/supervizio-freebsd-amd64" bin/supervizio
+
+      - name: Install, validate and uninstall in a freebsd guest
+        uses: vmactions/freebsd-vm@5a72679103d223925653750faa878a143340fbd0 # v1.5.0
+        with:
+          usesh: true
+          copyback: false
+          prepare: pkg install -y jq
+          run: |
+            set -e
+            WS="$(pwd)"
+            echo "=== Platform ==="; uname -a
+            export SUPERVIZIO_LOCAL_BIN="$WS/bin/supervizio"
+            chmod +x "$SUPERVIZIO_LOCAL_BIN"
+
+            echo "=== Install ==="
+            sh "$WS/setup/install.sh"
+
+            echo "=== Verify install ==="
+            [ -x /usr/local/bin/supervizio ] || { echo "binary not installed"; exit 1; }
+            /usr/local/bin/supervizio --version
+
+            echo "=== Validate probe ==="
+            sh "$WS/e2e/validate-probe.sh" /usr/local/bin/supervizio
+
+            echo "=== Supervision scenarios ==="
+            sh "$WS/e2e/scenario-battery.sh" /usr/local/bin/supervizio
+
+            echo "=== Uninstall ==="
+            sh "$WS/setup/uninstall.sh" || echo "::warning::uninstall reported a failure"
+            [ -x /usr/local/bin/supervizio ] && echo "::warning::binary still present after uninstall" || true
+
+      - name: Report status (result)
+        if: always() && needs.resolve.outputs.sha != ''
+        continue-on-error: true
+        env:
+          GH_TOKEN: ${{ secrets.AGENT_REPO_TOKEN }}
+        run: |
+          [ -z "$GH_TOKEN" ] && exit 0
+          STATE="success"; DESC="Passed"
+          if [ "${{ job.status }}" != "success" ]; then STATE="failure"; DESC="Failed"; fi
+          curl -sf -X POST -H "Authorization: Bearer $GH_TOKEN" -H "Accept: application/vnd.github+json" \
+            "https://api.github.com/repos/supervizio/agent/statuses/${{ needs.resolve.outputs.sha }}" \
+            -d "{\"state\":\"$STATE\",\"context\":\"e2e/bsd/freebsd\",\"description\":\"$DESC\",\"target_url\":\"${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}\"}"
+
+  e2e-bsd-netbsd:
+    name: E2E BSD netbsd
+    needs: [resolve]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    if: ${{ github.event.inputs.arm_only != 'true' }}
+    steps:
+      - name: Report status (pending)
+        if: needs.resolve.outputs.sha != ''
+        continue-on-error: true
+        env:
+          GH_TOKEN: ${{ secrets.AGENT_REPO_TOKEN }}
+        run: |
+          [ -z "$GH_TOKEN" ] && exit 0
+          curl -sf -X POST -H "Authorization: Bearer $GH_TOKEN" -H "Accept: application/vnd.github+json" \
+            "https://api.github.com/repos/supervizio/agent/statuses/${{ needs.resolve.outputs.sha }}" \
+            -d '{"state":"pending","context":"e2e/bsd/netbsd","description":"Running...","target_url":"${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"}'
+
+      - name: Checkout agent code
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          repository: ${{ needs.resolve.outputs.source_repo }}
+          ref: ${{ needs.resolve.outputs.ref }}
+          token: ${{ secrets.AGENT_REPO_TOKEN }}
+          persist-credentials: false
+
+      # The bench pulled this from zot; the hosted runner takes the same bytes
+      # from the GitHub artifact agent's CI mirrors. Downloaded on the HOST and
+      # synced into the guest by vmactions -- the token never enters the VM.
+      - name: Download binary from the agent run (cross-repo)
+        uses: actions/download-artifact@70fc10c6e5e1ce46ad2ea6f2b72d43f7d47b13c3 # v8.0.0
+        with:
+          name: supervizio-netbsd-amd64
+          path: bin
+          repository: ${{ needs.resolve.outputs.source_repo }}
+          run-id: ${{ needs.resolve.outputs.run_id }}
+          github-token: ${{ secrets.AGENT_REPO_TOKEN }}
+
+      - name: Verify the binary arrived
+        run: |
+          set -euo pipefail
+          ls -la bin/
+          [ -s "bin/supervizio-netbsd-amd64" ] || {
+            echo "::error::supervizio-netbsd-amd64 missing or empty — did agent's CI publish it? (E2E_BRIDGE_PLATFORMS)" >&2
+            exit 1
+          }
+          mv "bin/supervizio-netbsd-amd64" bin/supervizio
+
+      - name: Install, validate and uninstall in a netbsd guest
+        uses: vmactions/netbsd-vm@1d9767765fd3f986e6de3aff4b1148f0c3a45f01 # v1.4.1
+        with:
+          usesh: true
+          copyback: false
+          prepare: /usr/sbin/pkg_add jq
+          run: |
+            set -e
+            WS="$(pwd)"
+            echo "=== Platform ==="; uname -a
+            export SUPERVIZIO_LOCAL_BIN="$WS/bin/supervizio"
+            chmod +x "$SUPERVIZIO_LOCAL_BIN"
+
+            echo "=== Install ==="
+            sh "$WS/setup/install.sh"
+
+            echo "=== Verify install ==="
+            [ -x /usr/local/bin/supervizio ] || { echo "binary not installed"; exit 1; }
+            /usr/local/bin/supervizio --version
+
+            echo "=== Validate probe ==="
+            sh "$WS/e2e/validate-probe.sh" /usr/local/bin/supervizio
+
+            echo "=== Supervision scenarios ==="
+            sh "$WS/e2e/scenario-battery.sh" /usr/local/bin/supervizio
+
+            echo "=== Uninstall ==="
+            sh "$WS/setup/uninstall.sh" || echo "::warning::uninstall reported a failure"
+            [ -x /usr/local/bin/supervizio ] && echo "::warning::binary still present after uninstall" || true
+
+      - name: Report status (result)
+        if: always() && needs.resolve.outputs.sha != ''
+        continue-on-error: true
+        env:
+          GH_TOKEN: ${{ secrets.AGENT_REPO_TOKEN }}
+        run: |
+          [ -z "$GH_TOKEN" ] && exit 0
+          STATE="success"; DESC="Passed"
+          if [ "${{ job.status }}" != "success" ]; then STATE="failure"; DESC="Failed"; fi
+          curl -sf -X POST -H "Authorization: Bearer $GH_TOKEN" -H "Accept: application/vnd.github+json" \
+            "https://api.github.com/repos/supervizio/agent/statuses/${{ needs.resolve.outputs.sha }}" \
+            -d "{\"state\":\"$STATE\",\"context\":\"e2e/bsd/netbsd\",\"description\":\"$DESC\",\"target_url\":\"${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}\"}"
+
+  e2e-bsd-openbsd:
+    name: E2E BSD openbsd
+    needs: [resolve]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 40
+    if: ${{ github.event.inputs.arm_only != 'true' }}
+    env:
+      GO_VERSION: '1.27.1'
+      WIRE_VERSION: 'v0.7.0'
+    steps:
+      - name: Report status (pending)
+        if: needs.resolve.outputs.sha != ''
+        continue-on-error: true
+        env:
+          GH_TOKEN: ${{ secrets.AGENT_REPO_TOKEN }}
+        run: |
+          [ -z "$GH_TOKEN" ] && exit 0
+          curl -sf -X POST -H "Authorization: Bearer $GH_TOKEN" -H "Accept: application/vnd.github+json" \
+            "https://api.github.com/repos/supervizio/agent/statuses/${{ needs.resolve.outputs.sha }}" \
+            -d '{"state":"pending","context":"e2e/bsd/openbsd","description":"Running...","target_url":"${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"}'
+
+      - name: Checkout agent code
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          repository: ${{ needs.resolve.outputs.source_repo }}
+          ref: ${{ needs.resolve.outputs.ref }}
+          token: ${{ secrets.AGENT_REPO_TOKEN }}
+          persist-credentials: false
+
+      # OpenBSD is the one platform that cannot consume a prebuilt binary.
+      # build-bsd-cross links it with upstream lld, which lacks OpenBSD's linker
+      # patches, and the result SIGSEGVs in ld.so before main() on every
+      # invocation -- a trivial three-line cgo program cross-compiled the same
+      # way segfaults on a real 7.9 guest too. That is why the artifact is
+      # deliberately NOT in agent's E2E_BRIDGE_PLATFORMS, and why this leg builds
+      # inside the guest instead: vmactions gives a genuinely native OpenBSD
+      # toolchain, which is exactly what the bug requires.
+      - name: Stage libprobe for openbsd-amd64
+        env:
+          GH_TOKEN: ${{ secrets.LIBPROBE_REPO_TOKEN }}
+        run: |
+          set -euo pipefail
+          # Fetched on the HOST: the archive is a plain release asset, but the
+          # token that reads it has no business inside a VM that then executes a
+          # freshly built binary. agent's own script speaks the REST API over
+          # curl, with no gh and no zot -- the shape a public runner needs.
+          bash setup/fetch-libprobe.sh "$(cat LIBPROBE_VERSION)" openbsd-amd64
+          ls -l dist/lib/openbsd-amd64/libprobe.a
+
+      - name: Build natively, then install, validate and uninstall
+        uses: vmactions/openbsd-vm@18edb32f4e48dae5865d7b8b3a9587bc01218a20 # v1.4.4
+        with:
+          usesh: true
+          copyback: false
+          envs: 'GO_VERSION WIRE_VERSION'
+          prepare: pkg_add -I jq
+          run: |
+            set -e
+            WS="$(pwd)"
+
+            echo "=== Installing Go ${GO_VERSION} (openbsd-amd64) ==="
+            ftp -o /tmp/go.tar.gz "https://go.dev/dl/go${GO_VERSION}.openbsd-amd64.tar.gz"
+            cd /usr/local && tar xzf /tmp/go.tar.gz && rm -f /tmp/go.tar.gz
+            PATH="/usr/local/go/bin:$HOME/go/bin:$PATH"; export PATH
+            go version
+            # OpenBSD's default login class caps data size below what a
+            # cgo-enabled Go link needs.
+            ulimit -d unlimited 2>/dev/null || true
+
+            cd "$WS/src"
+            echo "=== Generating wire code ==="
+            CGO_ENABLED=1 go install "github.com/google/wire/cmd/wire@${WIRE_VERSION}"
+            CGO_ENABLED=1 wire ./internal/bootstrap/
+
+            echo "=== Building agent natively ==="
+            CGO_ENABLED=1 CGO_CFLAGS="" \
+            CGO_LDFLAGS="-L${WS}/dist/lib/openbsd-amd64 -lprobe -lm -lc++abi" \
+            go build -ldflags="-s -w" -o "${WS}/bin-supervizio" ./cmd/agent
+
+            # Merely building proves nothing here: the cross binary builds fine
+            # and dies before main(). Executing it is the assertion.
+            echo "=== Does it start? ==="
+            "${WS}/bin-supervizio" --version
+
+            cd "$WS"
+            export SUPERVIZIO_LOCAL_BIN="${WS}/bin-supervizio"
+            echo "=== Install ==="
+            sh setup/install.sh
+            [ -x /usr/local/bin/supervizio ] || { echo "binary not installed"; exit 1; }
+            /usr/local/bin/supervizio --version
+
+            echo "=== Validate probe ==="
+            sh e2e/validate-probe.sh /usr/local/bin/supervizio
+
+            echo "=== Supervision scenarios ==="
+            sh e2e/scenario-battery.sh /usr/local/bin/supervizio
+
+            echo "=== Uninstall ==="
+            sh setup/uninstall.sh || echo "::warning::uninstall reported a failure"
+
+      - name: Report status (result)
+        if: always() && needs.resolve.outputs.sha != ''
+        continue-on-error: true
+        env:
+          GH_TOKEN: ${{ secrets.AGENT_REPO_TOKEN }}
+        run: |
+          [ -z "$GH_TOKEN" ] && exit 0
+          STATE="success"; DESC="Passed"
+          if [ "${{ job.status }}" != "success" ]; then STATE="failure"; DESC="Failed"; fi
+          curl -sf -X POST -H "Authorization: Bearer $GH_TOKEN" -H "Accept: application/vnd.github+json" \
+            "https://api.github.com/repos/supervizio/agent/statuses/${{ needs.resolve.outputs.sha }}" \
+            -d "{\"state\":\"$STATE\",\"context\":\"e2e/bsd/openbsd\",\"description\":\"$DESC\",\"target_url\":\"${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}\"}"
+
   # ===========================================================================
   # VM CLEANUP: reset the VMs this run acquired
   # ===========================================================================
@@ -1492,7 +1779,8 @@ jobs:
     # e2e-windows belongs here. Without it the aggregate reports green while
     # the Windows leg is red: it is not in needs, so its result is never read
     # and the job does not even wait for it.
-    needs: [resolve, e2e-docker, e2e-docker-arm64, e2e-macos, e2e-macos-arm64, e2e-vm, e2e-windows]
+    needs: [resolve, e2e-docker, e2e-docker-arm64, e2e-macos, e2e-macos-arm64, e2e-vm, e2e-windows,
+             e2e-bsd-freebsd, e2e-bsd-netbsd, e2e-bsd-openbsd]
     if: always()
     runs-on: ubuntu-24.04
     steps:
@@ -1505,6 +1793,9 @@ jobs:
           echo "e2e-macos-arm64:  ${{ needs.e2e-macos-arm64.result }}"
           echo "e2e-vm:           ${{ needs.e2e-vm.result }}"
           echo "e2e-windows:      ${{ needs.e2e-windows.result }}"
+          echo "e2e-bsd-freebsd:  ${{ needs.e2e-bsd-freebsd.result }}"
+          echo "e2e-bsd-netbsd:   ${{ needs.e2e-bsd-netbsd.result }}"
+          echo "e2e-bsd-openbsd:  ${{ needs.e2e-bsd-openbsd.result }}"
 
       - name: Report final status
         if: needs.resolve.outputs.sha != ''
@@ -1515,7 +1806,9 @@ jobs:
           [ -z "$GH_TOKEN" ] && { echo "AGENT_REPO_TOKEN not set, skipping"; exit 0; }
           RESULTS=("${{ needs.e2e-docker.result }}" "${{ needs.e2e-docker-arm64.result }}" \
                    "${{ needs.e2e-macos.result }}" "${{ needs.e2e-macos-arm64.result }}" \
-                   "${{ needs.e2e-vm.result }}" "${{ needs.e2e-windows.result }}")
+                   "${{ needs.e2e-vm.result }}" "${{ needs.e2e-windows.result }}" \
+                   "${{ needs.e2e-bsd-freebsd.result }}" "${{ needs.e2e-bsd-netbsd.result }}" \
+                   "${{ needs.e2e-bsd-openbsd.result }}")
           STATE="success"
           DESC="All E2E tests passed"
           for r in "${RESULTS[@]}"; do
@@ -1543,7 +1836,9 @@ jobs:
           [ -z "$GH_TOKEN" ] && { echo "AGENT_REPO_TOKEN not set, skipping"; exit 0; }
           RESULTS=("${{ needs.e2e-docker.result }}" "${{ needs.e2e-docker-arm64.result }}" \
                    "${{ needs.e2e-macos.result }}" "${{ needs.e2e-macos-arm64.result }}" \
-                   "${{ needs.e2e-vm.result }}" "${{ needs.e2e-windows.result }}")
+                   "${{ needs.e2e-vm.result }}" "${{ needs.e2e-windows.result }}" \
+                   "${{ needs.e2e-bsd-freebsd.result }}" "${{ needs.e2e-bsd-netbsd.result }}" \
+                   "${{ needs.e2e-bsd-openbsd.result }}")
           STATE="success"
           for r in "${RESULTS[@]}"; do
             # cancelled counts as failed, exactly as agent's own CI Summary
@@ -1584,7 +1879,9 @@ jobs:
         run: |
           RESULTS=("${{ needs.e2e-docker.result }}" "${{ needs.e2e-docker-arm64.result }}" \
                    "${{ needs.e2e-macos.result }}" "${{ needs.e2e-macos-arm64.result }}" \
-                   "${{ needs.e2e-vm.result }}" "${{ needs.e2e-windows.result }}")
+                   "${{ needs.e2e-vm.result }}" "${{ needs.e2e-windows.result }}" \
+                   "${{ needs.e2e-bsd-freebsd.result }}" "${{ needs.e2e-bsd-netbsd.result }}" \
+                   "${{ needs.e2e-bsd-openbsd.result }}")
           for r in "${RESULTS[@]}"; do
             # cancelled counts as failed, exactly as agent's own CI Summary
             # treats it: a leg cancelled mid-flight proved nothing, and must not
