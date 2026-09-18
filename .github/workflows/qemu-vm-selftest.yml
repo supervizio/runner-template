@@ -47,6 +47,14 @@ jobs:
         # should be unaffected -- "should" being exactly what this matrix is
         # here to replace with a result.
         host: [ubuntu-24.04, ubuntu-26.04]
+        # `guest` must be a real dimension. With only `host` as a dimension and
+        # the guests supplied purely through `include`, GitHub merges EVERY
+        # include entry into EVERY existing combination, so each one overwrites
+        # the last and only the final entry survives: run 35400147725 produced
+        # 2 jobs, both opensuse, instead of 8. The includes below now attach
+        # per-guest fields to an existing host x guest combination rather than
+        # trying to create one.
+        guest: [alpine-openrc, debian-systemd, fedora-systemd, opensuse-systemd]
         include:
           # The four legs whose init ships in a STOCK upstream cloud image, so
           # no guest-side package install is needed. alpine-s6, alpine-runit and
@@ -55,7 +63,8 @@ jobs:
           # generic_, not nocloud_: Alpine publishes generic_ for every point
           # release but nocloud_ only for some (3.23.5 nocloud_ is a 404), so a
           # nocloud_ pin breaks on a routine version bump for no visible reason.
-          - name: alpine-openrc
+          - guest: alpine-openrc
+            name: alpine-openrc
             init: init
             probe: "rc-status -s >/dev/null && echo openrc-ok"
             url: https://dl-cdn.alpinelinux.org/alpine/v3.23/releases/cloud/generic_alpine-3.23.5-x86_64-bios-cloudinit-r0.qcow2
@@ -64,19 +73,22 @@ jobs:
           # genericcloud, not generic: virtio-only, 88 MiB smaller, boots
           # identically under -machine q35. And a DATED path, not latest/:
           # latest/ rolls and would silently invalidate the checksum below.
-          - name: debian-systemd
+          - guest: debian-systemd
+            name: debian-systemd
             init: systemd
             probe: "systemctl is-system-running || true"
             url: https://cloud.debian.org/images/cloud/trixie/20260914-2601/debian-13-genericcloud-amd64-20260914-2601.qcow2
             sha512: 95e110dfcdbd0ed8a82a75ed9579802f9950cabf51a810dcc6388e81bc778188713878b9f28d583a0ea602fbf48b35996ae9ad37f584166d8fbd6489df248f53
             sha256: ""
-          - name: fedora-systemd
+          - guest: fedora-systemd
+            name: fedora-systemd
             init: systemd
             probe: "systemctl is-system-running || true"
             url: https://dl.fedoraproject.org/pub/fedora/linux/releases/43/Cloud/x86_64/images/Fedora-Cloud-Base-Generic-43-1.6.x86_64.qcow2
             sha512: ""
             sha256: 846574c8a97cd2d8dc1f231062d73107cc85cbbbda56335e264a46e3a6c8ab2f
-          - name: opensuse-systemd
+          - guest: opensuse-systemd
+            name: opensuse-systemd
             init: systemd
             probe: "systemctl is-system-running || true"
             url: https://download.opensuse.org/distribution/leap/16.0/appliances/Leap-16.0-Minimal-VM.x86_64-Cloud.qcow2
