@@ -1392,11 +1392,12 @@ jobs:
   # que cette liste. Une VM que ce run n'a jamais prise n'est jamais reinitialisee.
   vm-cleanup:
     name: VM Cleanup
-    # e2e-macos et e2e-windows tiennent aussi des VM de la bande (215 sequoia,
-    # 214 windows) : elles etaient reinitialisees par le balayage. Il faut donc
-    # les attendre, sinon leur claim n'existe pas encore au telechargement et
-    # leur VM ne serait jamais rendue propre.
-    needs: [e2e-vm, e2e-macos, e2e-windows]
+    # e2e-macos (215 sequoia) et e2e-windows (214) tenaient aussi des VM de la
+    # bande, d'ou leur presence ici : sans les attendre, leur claim n'existait
+    # pas encore au telechargement. Les deux tournent desormais sur des runners
+    # GitHub et ne prennent plus rien, donc seul e2e-vm reste a attendre.
+    # Ce job disparait entierement le jour ou e2e-vm quitte le banc a son tour.
+    needs: [e2e-vm]
     if: always() && github.event.inputs.arm_only != 'true'
     runs-on: supervizio-runner
     timeout-minutes: 10
