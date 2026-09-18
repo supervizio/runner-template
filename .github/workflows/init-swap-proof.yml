@@ -24,7 +24,20 @@ name: Init-swap proof
 # disk rather than passing -kernel/-append from outside. If (B) fails, Alpine's
 # three init legs cannot move to vmactions and need the qemu-vm action instead.
 #
-# MEASURED so far (run 35396732254, 2026-09-18):
+# ANSWERED — run 35398249387, 2026-09-18. Experiment 3 settled BOTH questions
+# at once:
+#
+#   CMDLINE=BOOT_IMAGE=vmlinuz-virt root=LABEL=/ modules=... console=...
+#           svz_bootloader_probe=1 initrd=initramfs-virt
+#
+# The marker was written into /boot/extlinux.conf during `prepare` and came back
+# in /proc/cmdline during `run`. A kernel command line can only be set at boot,
+# so its presence proves (A) a real reboot happened and the prepared image was
+# reused, and (B) that boot went through the GUEST's bootloader. `init=` would
+# therefore take effect too: Alpine's s6 / runit / dinit legs CAN move to
+# vmactions, and the qemu-vm action is not needed for them.
+#
+# MEASURED (run 35396732254, 2026-09-18):
 #   alpine 3.23 -> PID1=init (/bin/busybox), uptime 18s,
 #                  CMDLINE=BOOT_IMAGE=vmlinuz-virt root=LABEL=/ ...
 #   debian 13   -> PID1=systemd, uptime 11s,
@@ -124,12 +137,18 @@ jobs:
             echo "--- BEFORE (inside prepare) ---"
             echo "PID1=$(cat /proc/1/comm)"
             apt-get update -qq
-            # systemd-sysv Conflicts sysvinit-core, and apt's resolver will NOT
-            # pick the removal on its own -- it reports "two conflicting
-            # decisions" and exits 100. The trailing dash is apt's syntax for
-            # "remove this in the same transaction", which is what makes the
-            # swap resolvable.
-            apt-get install -y -qq sysvinit-core systemd-sysv-
+            # BOTH options are required, and each was found the hard way:
+            #
+            #  * `systemd-sysv-` (trailing dash = remove in the same
+            #    transaction). Without it apt refuses to choose the removal
+            #    itself: "Reached two conflicting decisions", exit 100.
+            #  * `--allow-remove-essential`. systemd-sysv is Essential, and with
+            #    -y apt will not drop an Essential package silently:
+            #    "Essential packages were removed and -y was used without
+            #    --allow-remove-essential", exit 100 again.
+            #
+            # Either flag alone fails, which is why this took three runs.
+            apt-get install -y -qq --allow-remove-essential sysvinit-core systemd-sysv-
             echo "INIT_TARGET now: $(readlink -f /sbin/init)"
             echo "sysvinit installed: $(dpkg -l sysvinit-core 2>/dev/null | tail -1)"
           run: |
