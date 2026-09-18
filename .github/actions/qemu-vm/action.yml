@@ -38,9 +38,17 @@ inputs:
     default: "2"
   image-sha256:
     description: >-
-      sha256 of the image at image-url. Strongly recommended: without it the
-      action boots an unverified multi-hundred-MB blob from whatever mirror the
-      URL redirects to, and gives it a root shell.
+      sha256 of the image at image-url. Give this or image-sha512: without one
+      the action boots an unverified multi-hundred-MB blob from whatever mirror
+      the URL redirects to, and hands it a root shell.
+    required: false
+    default: ""
+  image-sha512:
+    description: >-
+      sha512 of the image, for distributions that publish only that. Debian and
+      Alpine both do, so pinning their images by sha256 would mean carrying a
+      hand-derived value and re-deriving it on every image bump -- this takes
+      their published checksum as-is.
     required: false
     default: ""
   timeout:
@@ -86,6 +94,7 @@ runs:
       env:
         IMAGE_URL: ${{ inputs.image-url }}
         IMAGE_SHA256: ${{ inputs.image-sha256 }}
+        IMAGE_SHA512: ${{ inputs.image-sha512 }}
         MEM: ${{ inputs.memory }}
         CPUS: ${{ inputs.cpus }}
       run: |
@@ -105,8 +114,10 @@ runs:
         curl -fsSL --retry 5 --retry-all-errors --max-time 900 -o base.qcow2 "$IMAGE_URL"
         if [ -n "${IMAGE_SHA256:-}" ]; then
           echo "${IMAGE_SHA256}  base.qcow2" | sha256sum -c -
+        elif [ -n "${IMAGE_SHA512:-}" ]; then
+          echo "${IMAGE_SHA512}  base.qcow2" | sha512sum -c -
         else
-          echo "::warning::no image-sha256 given - booting an unverified image and giving it a root shell"
+          echo "::warning::no image checksum given - booting an unverified image and handing it a root shell"
         fi
         # Copy-on-write overlay: the base stays pristine and the guest's writes
         # cost tens of MiB, not the image size.

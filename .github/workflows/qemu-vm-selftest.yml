@@ -29,22 +29,36 @@ jobs:
           # no guest-side package install is needed. alpine-s6, alpine-runit and
           # debian-sysvinit each need an extra package, and artix has no cloud
           # image at all -- those are a separate problem, deliberately not here.
+          # generic_, not nocloud_: Alpine publishes generic_ for every point
+          # release but nocloud_ only for some (3.23.5 nocloud_ is a 404), so a
+          # nocloud_ pin breaks on a routine version bump for no visible reason.
           - name: alpine-openrc
             init: init
             probe: "rc-status -s >/dev/null && echo openrc-ok"
-            url: https://dl-cdn.alpinelinux.org/alpine/v3.23/releases/cloud/nocloud_alpine-3.23.3-x86_64-bios-cloudinit-r0.qcow2
+            url: https://dl-cdn.alpinelinux.org/alpine/v3.23/releases/cloud/generic_alpine-3.23.5-x86_64-bios-cloudinit-r0.qcow2
+            sha512: a4c1c301b2972e805df318a0b1f5effb3db7106932ecedc0222456aefe18453b5126ebee3f550db5ef9000c644f79a4394c6d3a8906d0ceb05350593e9c4a1c7
+            sha256: ""
+          # genericcloud, not generic: virtio-only, 88 MiB smaller, boots
+          # identically under -machine q35. And a DATED path, not latest/:
+          # latest/ rolls and would silently invalidate the checksum below.
           - name: debian-systemd
             init: systemd
             probe: "systemctl is-system-running || true"
-            url: https://cloud.debian.org/images/cloud/trixie/latest/debian-13-generic-amd64.qcow2
+            url: https://cloud.debian.org/images/cloud/trixie/20260914-2601/debian-13-genericcloud-amd64-20260914-2601.qcow2
+            sha512: 95e110dfcdbd0ed8a82a75ed9579802f9950cabf51a810dcc6388e81bc778188713878b9f28d583a0ea602fbf48b35996ae9ad37f584166d8fbd6489df248f53
+            sha256: ""
           - name: fedora-systemd
             init: systemd
             probe: "systemctl is-system-running || true"
-            url: https://download.fedoraproject.org/pub/fedora/linux/releases/43/Cloud/x86_64/images/Fedora-Cloud-Base-Generic-43-1.6.x86_64.qcow2
+            url: https://dl.fedoraproject.org/pub/fedora/linux/releases/43/Cloud/x86_64/images/Fedora-Cloud-Base-Generic-43-1.6.x86_64.qcow2
+            sha512: ""
+            sha256: 846574c8a97cd2d8dc1f231062d73107cc85cbbbda56335e264a46e3a6c8ab2f
           - name: opensuse-systemd
             init: systemd
             probe: "systemctl is-system-running || true"
             url: https://download.opensuse.org/distribution/leap/16.0/appliances/Leap-16.0-Minimal-VM.x86_64-Cloud.qcow2
+            sha512: ""
+            sha256: c5cd6904632c86d5368dea3896da8c17571c238ef96a0e2c8b0ca1835d796e07
     steps:
       - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
 
@@ -62,6 +76,13 @@ jobs:
           MANAGER_PROBE: ${{ matrix.probe }}
         with:
           image-url: ${{ matrix.url }}
+          # Every image is checksum-pinned, each from its own upstream published
+          # file -- Debian and Alpine publish sha512 only, Fedora and openSUSE
+          # sha256. The URLs redirect to arbitrary mirrors (Debian landed on a
+          # Swedish one when checked), and the guest gets a root shell, so an
+          # unverified blob is not acceptable here.
+          image-sha256: ${{ matrix.sha256 }}
+          image-sha512: ${{ matrix.sha512 }}
           memory: "2048"
           # Exercises the `files` path, which nothing else here would.
           files: |
