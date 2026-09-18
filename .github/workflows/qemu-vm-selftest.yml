@@ -1,0 +1,69 @@
+# Exercises .github/actions/qemu-vm against the upstream cloud images that would
+# back the remaining e2e-vm legs, BEFORE anything in e2e.yml depends on it.
+#
+# The mechanism is measured (Debian 13 and Alpine both boot to a usable SSH
+# shell in 22-33s under nested KVM, with PID 1 verified and the service manager
+# proven live). What is NOT yet proven is this action's wiring on a real hosted
+# runner, which is what this workflow establishes.
+#
+# Each leg asserts the thing that actually matters for a supervisor under test:
+# that PID 1 is the expected init and that its service manager answers.
+name: QEMU VM self-test
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  selftest:
+    name: qemu ${{ matrix.name }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          # The four legs whose init ships in a STOCK upstream cloud image, so
+          # no guest-side package install is needed. alpine-s6, alpine-runit and
+          # debian-sysvinit each need an extra package, and artix has no cloud
+          # image at all -- those are a separate problem, deliberately not here.
+          - name: alpine-openrc
+            init: init
+            probe: "rc-status -s >/dev/null && echo openrc-ok"
+            url: https://dl-cdn.alpinelinux.org/alpine/v3.23/releases/cloud/nocloud_alpine-3.23.3-x86_64-bios-cloudinit-r0.qcow2
+          - name: debian-systemd
+            init: systemd
+            probe: "systemctl is-system-running || true"
+            url: https://cloud.debian.org/images/cloud/trixie/latest/debian-13-generic-amd64.qcow2
+          - name: fedora-systemd
+            init: systemd
+            probe: "systemctl is-system-running || true"
+            url: https://download.fedoraproject.org/pub/fedora/linux/releases/43/Cloud/x86_64/images/Fedora-Cloud-Base-Generic-43-1.6.x86_64.qcow2
+          - name: opensuse-systemd
+            init: systemd
+            probe: "systemctl is-system-running || true"
+            url: https://download.opensuse.org/distribution/leap/16.0/appliances/Leap-16.0-Minimal-VM.x86_64-Cloud.qcow2
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+
+      - name: Boot ${{ matrix.name }} and assert its init
+        uses: ./.github/actions/qemu-vm
+        with:
+          image-url: ${{ matrix.url }}
+          memory: "2048"
+          run: |
+            echo "=== uname ==="; uname -srm
+            echo "=== PID 1 ==="
+            pid1=$(ps -p 1 -o comm= | tr -d ' ')
+            echo "comm=$pid1  exe=$(readlink -f /proc/1/exe 2>/dev/null || echo '?')"
+            # The assertion the whole migration rests on: a REAL init, not a
+            # container entrypoint pretending to be one.
+            [ "$pid1" = "${{ matrix.init }}" ] || {
+              echo "::error::PID 1 is '$pid1', expected '${{ matrix.init }}'"
+              exit 1
+            }
+            echo "=== service manager ==="
+            ${{ matrix.probe }}
+            echo "OK ${{ matrix.name }}: real init, manager answering"

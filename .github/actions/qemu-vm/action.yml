@@ -1,0 +1,163 @@
+name: Throwaway QEMU VM
+description: >-
+  Boots an upstream cloud image under QEMU+KVM on a GitHub-hosted x86_64 runner,
+  pushes files in, runs a script as root, and tears the VM down.
+
+# Replaces a persistent Proxmox bench VM with a disposable one, so a leg that
+# needs a REAL PID 1 no longer needs the bench.
+#
+# Why a VM and not a privileged container: the legs this serves run
+# e2e/validate-probe.sh, whose disk-io, thermal and PSI assertions read the
+# host's values inside a container, and agent's e2e/expected-matrix.json is
+# calibrated for `environment: "vm"`. A container would silently change what is
+# measured; a VM keeps the semantics the bench had.
+#
+# Measured on nested virt (the same shape as a hosted runner): Debian 13 boots
+# to a usable SSH shell in 22-33s, Alpine in ~32s, each overlay costing 11-23MiB.
+# Four concurrent VMs on 4 vCPU reach ready in 52s. QEMU install is ~34s.
+#
+# Two landmines this action exists to keep closed:
+#   * Alpine's sshd is built WITHOUT PAM, so a cloud-init `lock_passwd: true`
+#     root is refused regardless of a valid authorized_keys -- the failure looks
+#     exactly like a bad key. The seed below sets lock_passwd: false.
+#   * Guest egress through SLIRP measures 864 KB/s against 66.5 MB/s for scp
+#     over the same hostfwd. NEVER apt/apk/dnf from inside the guest: push what
+#     you need with `files`, which uses scp.
+
+inputs:
+  image-url:
+    description: URL of an upstream cloud image (qcow2)
+    required: true
+  memory:
+    description: Guest RAM in MiB
+    required: false
+    default: "2048"
+  cpus:
+    description: Guest vCPU count
+    required: false
+    default: "2"
+  files:
+    description: Newline-separated "src:dest" pairs copied into the guest before `run`
+    required: false
+    default: ""
+  run:
+    description: Shell script executed as root inside the guest
+    required: true
+
+runs:
+  using: composite
+  steps:
+    - name: Install QEMU
+      shell: bash
+      run: |
+        set -euo pipefail
+        # Not preinstalled on the runner images (checked against the ubuntu24
+        # readme: no qemu/kvm entry). ~93MB for the x86-only stack.
+        sudo apt-get update -qq
+        sudo apt-get install -y -qq --no-install-recommends \
+          qemu-system-x86 qemu-utils cloud-image-utils >/dev/null
+        # KVM is present on hosted x86_64 runners but the device is not group-
+        # accessible by default; without this every guest silently falls back to
+        # TCG and the 22s boot becomes minutes.
+        sudo chmod 666 /dev/kvm
+        kvm-ok 2>/dev/null || true
+
+    - name: Boot the guest
+      id: boot
+      shell: bash
+      env:
+        IMAGE_URL: ${{ inputs.image-url }}
+        MEM: ${{ inputs.memory }}
+        CPUS: ${{ inputs.cpus }}
+      run: |
+        set -euo pipefail
+        mkdir -p "$RUNNER_TEMP/vm" && cd "$RUNNER_TEMP/vm"
+
+        curl -fsSL -o base.qcow2 "$IMAGE_URL"
+        # Copy-on-write overlay: the base stays pristine and the guest's writes
+        # cost tens of MiB, not the image size.
+        qemu-img create -f qcow2 -F qcow2 -b base.qcow2 disk.qcow2 10G >/dev/null
+
+        ssh-keygen -t ed25519 -N '' -f vmkey -q
+        cat > user-data <<CLOUDCFG
+        #cloud-config
+        users:
+          - name: root
+            ssh_authorized_keys:
+              - $(cat vmkey.pub)
+            # false on purpose: Alpine's sshd has no PAM, and a locked shadow
+            # entry makes it refuse root even with a valid key.
+            lock_passwd: false
+        ssh_pwauth: false
+        disable_root: false
+        CLOUDCFG
+        printf 'instance-id: e2e\nlocal-hostname: e2e\n' > meta-data
+        cloud-localds seed.iso user-data meta-data
+
+        qemu-system-x86_64 -enable-kvm -cpu host -machine q35 \
+          -smp "$CPUS" -m "$MEM" \
+          -drive file=disk.qcow2,if=virtio,format=qcow2 \
+          -drive file=seed.iso,if=virtio,format=raw,readonly=on \
+          -netdev user,id=n0,hostfwd=tcp:127.0.0.1:2222-:22 \
+          -device virtio-net-pci,netdev=n0 \
+          -display none -serial file:console.log -daemonize
+
+        SSH="ssh -i vmkey -p 2222 -o StrictHostKeyChecking=no \
+             -o UserKnownHostsFile=/dev/null -o ConnectTimeout=5 -o LogLevel=ERROR"
+        echo "SSH_CMD=$SSH" >> "$GITHUB_ENV"
+
+        # 22-33s is the measured range; 180s leaves room for a cold image and a
+        # contended runner without masking a guest that never comes up.
+        for i in $(seq 1 90); do
+          if $SSH root@127.0.0.1 true 2>/dev/null; then
+            echo "guest up after ~$((i*2))s"
+            $SSH root@127.0.0.1 'echo "PID1: $(ps -p 1 -o comm= 2>/dev/null)"; uname -srm'
+            exit 0
+          fi
+          sleep 2
+        done
+        echo "::error::guest never reached SSH — console tail follows" >&2
+        tail -40 console.log >&2 || true
+        exit 1
+
+    - name: Push files into the guest
+      if: inputs.files != ''
+      shell: bash
+      env:
+        FILES: ${{ inputs.files }}
+      run: |
+        set -euo pipefail
+        cd "$RUNNER_TEMP/vm"
+        printf '%s\n' "$FILES" | while IFS= read -r pair; do
+          [ -n "$pair" ] || continue
+          src="${pair%%:*}"; dst="${pair#*:}"
+          # scp, never a guest-side download: SLIRP egress is 77x slower.
+          scp -i vmkey -P 2222 -o StrictHostKeyChecking=no \
+              -o UserKnownHostsFile=/dev/null -o LogLevel=ERROR \
+              "$GITHUB_WORKSPACE/$src" "root@127.0.0.1:$dst"
+        done
+
+    - name: Run the script in the guest
+      shell: bash
+      env:
+        GUEST_SCRIPT: ${{ inputs.run }}
+      run: |
+        set -euo pipefail
+        cd "$RUNNER_TEMP/vm"
+        printf '%s' "$GUEST_SCRIPT" > guest.sh
+        scp -i vmkey -P 2222 -o StrictHostKeyChecking=no \
+            -o UserKnownHostsFile=/dev/null -o LogLevel=ERROR \
+            guest.sh root@127.0.0.1:/tmp/guest.sh
+        $SSH_CMD root@127.0.0.1 'sh -e /tmp/guest.sh'
+
+    - name: Tear the guest down
+      if: always()
+      shell: bash
+      run: |
+        cd "$RUNNER_TEMP/vm" 2>/dev/null || exit 0
+        # Graceful first (2.2s measured), then make sure nothing is left holding
+        # the port for a sibling job on the same runner.
+        ${SSH_CMD:-true} root@127.0.0.1 'poweroff' 2>/dev/null || true
+        sleep 3
+        pkill -f 'qemu-system-x86_64.*disk.qcow2' 2>/dev/null || true
+        echo "=== guest console (tail) ==="; tail -20 console.log 2>/dev/null || true
