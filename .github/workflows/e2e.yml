@@ -322,16 +322,19 @@ jobs:
           - name: debian-glibc
             dockerfile: Dockerfile.debian-script
             libc: glibc
+            artifact: supervizio-linux-arm64
             binary_name: supervizio-linux-amd64
             description: "Debian ARM64 with glibc (systemd)"
           - name: alpine-musl
             dockerfile: Dockerfile.alpine-script
             libc: musl
+            artifact: supervizio-linux-arm64-musl
             binary_name: supervizio-linux-amd64
             description: "Alpine ARM64 with musl (OpenRC)"
           - name: scratch
             dockerfile: Dockerfile.scratch
             libc: musl
+            artifact: supervizio-linux-arm64-musl
             binary_name: supervizio
             description: "Scratch ARM64 (static binary, no OS)"
     steps:
@@ -359,84 +362,44 @@ jobs:
           # AUTHORIZATION header that Actions log-masking does not cover.
           persist-credentials: false
 
-      - name: Init libprobe submodule (needs its own token; AGENT_REPO_TOKEN can't reach the private libprobe repo)
-        env:
-          GH_TOKEN: ${{ secrets.LIBPROBE_REPO_TOKEN }}
-        run: |
-          git -c url."https://x-access-token:${GH_TOKEN}@github.com/".insteadOf="https://github.com/" \
-            submodule update --init --force --depth=1
-
-      - name: Set up Go
-        uses: actions/setup-go@4b73464bb391d4059bd26b0524d20df3927bd417 # v6.3.0
+      # This leg used to install Go, Rust and Zig and compile the agent from
+      # source before testing it -- so what it validated was a rebuild on a
+      # different toolchain, not the binary the release ships. That is the exact
+      # thing this migration exists to remove, and it survived here only because
+      # zot was unreachable from a hosted runner. agent now bridges the arm64
+      # binaries, so this consumes the shipped bytes like every other leg.
+      #
+      # The libprobe submodule init went with the build: nothing in the three
+      # Dockerfiles reads third_party/libprobe, they copy bin/ and setup/.
+      - name: Download binary from the agent run (cross-repo)
+        uses: actions/download-artifact@70fc10c6e5e1ce46ad2ea6f2b72d43f7d47b13c3 # v8.0.0
         with:
-          # Track the agent's own requirement instead of pinning a literal. A
-          # hardcoded '1.27.0' here silently broke every from-source leg the day
-          # the agent bumped go.work to 1.27.1: the toolchain is GOTOOLCHAIN=local
-          # on hosted runners, so `wire` died with "go.work requires go >= 1.27.1
-          # (running go 1.27.0)" before any of the real test work started.
-          go-version-file: go.work
+          name: ${{ matrix.artifact }}
+          path: bin
+          repository: ${{ needs.resolve.outputs.source_repo }}
+          run-id: ${{ needs.resolve.outputs.run_id }}
+          github-token: ${{ secrets.AGENT_REPO_TOKEN }}
 
-      - name: Set up Rust
-        uses: dtolnay/rust-toolchain@fa04a1451ff1842e2626ccb99004d0195b455a88 # stable
-        with:
-          toolchain: stable
-          components: rust-src
-
-      - name: Generate Wire code
+      - name: Verify and place the binary
         run: |
           set -euo pipefail
-          # wire_gen.go (InitializeApp) is generated, not checked in — the agent
-          # CI runs this before every build. Mirror it here.
-          go install github.com/google/wire/cmd/wire@v0.7.0
-          export PATH="$(go env GOPATH)/bin:$PATH"
-          cd src && wire ./internal/bootstrap/
-
-      - name: Install Zig (musl static link)
-        if: matrix.libc == 'musl'
-        run: |
-          set -euo pipefail
-          # Mirror the agent CI: zig acts as the musl cross-cc, identical recipe
-          # (just on a native aarch64 host instead of cross from x86).
-          ZIG_VER=0.13.0
-          curl -fsSL "https://ziglang.org/download/${ZIG_VER}/zig-linux-aarch64-${ZIG_VER}.tar.xz" | sudo tar -xJ -C /opt
-          sudo ln -sf "/opt/zig-linux-aarch64-${ZIG_VER}/zig" /usr/local/bin/zig
-          # The `ring` crate's build (via cc-rs) appends --target=<rust-triple>
-          # (aarch64-unknown-linux-musl), which zig 0.13 cannot parse
-          # ("UnknownOperatingSystem"). Our `-target aarch64-linux-musl` is the
-          # authoritative one, so strip any incoming --target= before calling zig.
-          sudo tee /usr/local/bin/zig-cc >/dev/null <<'ZCC'
-          #!/bin/sh
-          n=$#
-          while [ "$n" -gt 0 ]; do a=$1; shift; case "$a" in --target=*) : ;; *) set -- "$@" "$a" ;; esac; n=$((n-1)); done
-          exec zig cc -target aarch64-linux-musl "$@"
-          ZCC
-          sudo chmod +x /usr/local/bin/zig-cc
-          zig version
-
-      - name: Build supervizio natively (linux-arm64 ${{ matrix.libc }})
-        run: |
-          set -euo pipefail
-          mkdir -p bin
-          if [ "${{ matrix.libc }}" = "glibc" ]; then
-            # Native aarch64 glibc — the Makefile defaults are correct here.
-            make build
-            cp "dist/bin/linux-arm64/supervizio" "bin/${{ matrix.binary_name }}"
+          ls -la bin/
+          [ -s "bin/${{ matrix.artifact }}" ] || {
+            echo "::error::${{ matrix.artifact }} missing or empty - did agent's CI publish it? (E2E_BRIDGE_PLATFORMS)" >&2
+            exit 1
+          }
+          chmod +x "bin/${{ matrix.artifact }}"
+          # The three Dockerfiles hardcode `COPY bin/supervizio-linux-amd64`
+          # (and bin/supervizio for scratch) regardless of architecture -- they
+          # are shared with the amd64 leg. So an arm64 binary has to land under
+          # the amd64 name. Ugly, but it is the existing contract, and the
+          # previous build-from-source step did exactly the same rename.
+          if [ "${{ matrix.dockerfile }}" = "Dockerfile.scratch" ]; then
+            mv "bin/${{ matrix.artifact }}" bin/supervizio
           else
-            # Native aarch64 musl static — same recipe as the agent CI build-cross
-            # (zig-cc + build-std + external static link).
-            ( cd third_party/libprobe && RUSTC_BOOTSTRAP=1 CC=zig-cc cargo build \
-                -Z build-std=std,panic_abort --release \
-                --target aarch64-unknown-linux-musl --package probe-ffi )
-            mkdir -p dist/lib/linux-arm64-musl
-            cp third_party/libprobe/target/aarch64-unknown-linux-musl/release/libprobe.a dist/lib/linux-arm64-musl/
-            ( cd src && CGO_ENABLED=1 CC=zig-cc \
-                CGO_CFLAGS="-I${GITHUB_WORKSPACE}/third_party/libprobe/include" \
-                CGO_LDFLAGS="-L${GITHUB_WORKSPACE}/dist/lib/linux-arm64-musl -lprobe -lm -lunwind" \
-                go build -ldflags="-s -w -linkmode external -extldflags '-static'" \
-                  -o "${GITHUB_WORKSPACE}/bin/${{ matrix.binary_name }}" ./cmd/agent )
+            mv "bin/${{ matrix.artifact }}" bin/supervizio-linux-amd64
           fi
-          chmod +x "bin/${{ matrix.binary_name }}"
-          file "bin/${{ matrix.binary_name }}"
+          file bin/supervizio* | head -3
 
       - name: Build container
         run: |
@@ -664,52 +627,35 @@ jobs:
           # AUTHORIZATION header that Actions log-masking does not cover.
           persist-credentials: false
 
-      - name: Init libprobe submodule (needs its own token; AGENT_REPO_TOKEN can't reach the private libprobe repo)
-        env:
-          GH_TOKEN: ${{ secrets.LIBPROBE_REPO_TOKEN }}
-        run: |
-          git -c url."https://x-access-token:${GH_TOKEN}@github.com/".insteadOf="https://github.com/" \
-            submodule update --init --force --depth=1
-
-      - name: Set up Go
-        uses: actions/setup-go@4b73464bb391d4059bd26b0524d20df3927bd417 # v6.3.0
+      # This leg used to install Go and Rust and build darwin-arm64 from source,
+      # so it validated a rebuild rather than the binary the release ships --
+      # the one thing this migration exists to remove. It survived here because
+      # zot is unreachable from a hosted runner; agent now bridges the artifact.
+      #
+      # The libprobe submodule init goes with the build: nothing left in this
+      # job reads third_party/libprobe.
+      - name: Download binary from the agent run (cross-repo)
+        uses: actions/download-artifact@70fc10c6e5e1ce46ad2ea6f2b72d43f7d47b13c3 # v8.0.0
         with:
-          # Track the agent's own requirement instead of pinning a literal. A
-          # hardcoded '1.27.0' here silently broke every from-source leg the day
-          # the agent bumped go.work to 1.27.1: the toolchain is GOTOOLCHAIN=local
-          # on hosted runners, so `wire` died with "go.work requires go >= 1.27.1
-          # (running go 1.27.0)" before any of the real test work started.
-          go-version-file: go.work
+          name: supervizio-darwin-arm64
+          path: bin
+          repository: ${{ needs.resolve.outputs.source_repo }}
+          run-id: ${{ needs.resolve.outputs.run_id }}
+          github-token: ${{ secrets.AGENT_REPO_TOKEN }}
 
-      - name: Set up Rust
-        uses: dtolnay/rust-toolchain@fa04a1451ff1842e2626ccb99004d0195b455a88 # stable
-        with:
-          toolchain: stable
-          components: rust-src
-
-      - name: Generate Wire code
+      - name: Verify and place the binary
         run: |
           set -euo pipefail
-          # wire_gen.go (InitializeApp) is generated, not checked in.
-          go install github.com/google/wire/cmd/wire@v0.7.0
-          export PATH="$(go env GOPATH)/bin:$PATH"
-          cd src && wire ./internal/bootstrap/
-
-      - name: Build supervizio natively (darwin-arm64)
-        run: |
-          set -euo pipefail
-          # macos-15 is real Apple Silicon — build libprobe.a + the Go agent
-          # NATIVELY for darwin-arm64. No GitHub artifacts (the agent CI publishes
-          # only to the lab zot store, unreachable from this hosted runner) and no
-          # cross-compilation. Frameworks are passed explicitly because the
-          # Makefile's default CGO_LDFLAGS is linux-only (-ldl etc.).
-          make build-probe
-          mkdir -p bin
-          cd src && CGO_ENABLED=1 \
-            CGO_CFLAGS="-I${GITHUB_WORKSPACE}/third_party/libprobe/include" \
-            CGO_LDFLAGS="-L${GITHUB_WORKSPACE}/dist/lib/darwin-arm64 -lprobe -framework IOKit -framework CoreFoundation -framework Metal" \
-            go build -ldflags="-s -w" -o "${GITHUB_WORKSPACE}/bin/supervizio" ./cmd/agent
-          file "${GITHUB_WORKSPACE}/bin/supervizio"
+          ls -la bin/
+          [ -s bin/supervizio-darwin-arm64 ] || {
+            echo "::error::supervizio-darwin-arm64 missing or empty - did agent's CI publish it? (E2E_BRIDGE_PLATFORMS)" >&2
+            exit 1
+          }
+          # The steps below expect $GITHUB_WORKSPACE/bin/supervizio, which is
+          # where the build step used to put it.
+          mv bin/supervizio-darwin-arm64 bin/supervizio
+          chmod +x bin/supervizio
+          file bin/supervizio
 
       - name: Run macOS ARM64 E2E test
         run: |
