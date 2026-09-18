@@ -141,18 +141,13 @@ jobs:
           # AUTHORIZATION header that Actions log-masking does not cover.
           persist-credentials: false
 
-      - name: Init libprobe submodule (needs its own token; AGENT_REPO_TOKEN can't reach the private libprobe repo)
-        env:
-          GH_TOKEN: ${{ secrets.LIBPROBE_REPO_TOKEN }}
-        run: |
-          git -c url."https://x-access-token:${GH_TOKEN}@github.com/".insteadOf="https://github.com/" \
-            submodule update --init --force --depth=1
+      # e2e-docker used to init the libprobe submodule because it BUILT the
+      # binary. It now downloads one, and none of the three Dockerfiles reads
+      # third_party/libprobe -- they copy bin/ and setup/ only. Keeping the
+      # step meant an unset or expired LIBPROBE_REPO_TOKEN reddened a job with
+      # no dependency on it, and fattened the docker build context, since
+      # .dockerignore excludes **/target but not third_party.
 
-      # zot lives on the lab network (192.168.100.250) and is unreachable from a
-      # GitHub-hosted runner, which is why this leg used to need the bench. Agent
-      # CI now mirrors the E2E-consumed binaries to GitHub artifacts
-      # (E2E_BRIDGE_PLATFORMS in its ci.yml), so the same binary is fetchable
-      # cross-repo — same bytes the bench built, no rebuild, no lab route.
       - name: Download binary from the agent run (cross-repo)
         uses: actions/download-artifact@70fc10c6e5e1ce46ad2ea6f2b72d43f7d47b13c3 # v8.0.0
         with:
@@ -599,8 +594,11 @@ jobs:
           echo "=== probe ==="
           OUT=$(bin/supervizio --probe 2>&1) || { echo "::error::probe failed: $OUT"; exit 1; }
           echo "$OUT" | jq -e 'type=="object"' >/dev/null
-          echo "$OUT" | jq -e '.timestamp and .os.platform and .cpu.cores > 0' >/dev/null \
-            && echo "OK probe validation passed on macOS x86_64"
+          # Not `<assert> && echo ...`: a failing left operand that is not the
+          # last command in the step does NOT trip `set -e`, so a probe
+          # reporting cpu.cores == 0 would pass.
+          echo "$OUT" | jq -e '.timestamp and .os.platform and .cpu.cores > 0' >/dev/null
+          echo "OK probe validation passed on macOS x86_64"
           echo "$OUT" | jq --arg p darwin-amd64 '. + {"_platform":$p}' > probe-cap-darwin-amd64.json
 
       - name: Upload probe capabilities
@@ -890,7 +888,9 @@ jobs:
           ls -la bin/
           # An empty download would otherwise surface as an opaque PowerShell
           # error deep inside the battery; fail where the cause is legible.
-          BIN=$(find bin -name 'supervizio-windows-amd64*' | head -1)
+          # Absolute: the battery is invoked from pwsh, and a relative path only
+          # resolves because pwsh happens to inherit the workspace cwd.
+          BIN=$(find "$PWD/bin" -name 'supervizio-windows-amd64*' | head -1)
           [ -n "$BIN" ] && [ -s "$BIN" ] || {
             echo "::error::supervizio-windows-amd64 missing or empty — did agent's CI publish it? (E2E_BRIDGE_PLATFORMS)" >&2
             exit 1
@@ -902,9 +902,15 @@ jobs:
           set -euo pipefail
           # Ran over SSH against a bench VM before; it runs here directly. The
           # battery is the same file, invoked with the same two arguments.
+          # Converted on their own lines, not inline: a failing command
+          # substitution inside an argument does NOT trip `set -e`, and
+          # scenario-battery.ps1 runs with ErrorActionPreference=Continue, so a
+          # missing cygpath would surface as "every scenario count=0" rather
+          # than as an error.
+          SV_W=$(cygpath -w "$SVZ_BIN")
+          CRASHER_W=$(cygpath -w "${GITHUB_WORKSPACE}/crasher.exe")
           pwsh -NoProfile -ExecutionPolicy Bypass -File agent/e2e/scenario-battery.ps1 \
-            -Sv "$(cygpath -w "$SVZ_BIN")" \
-            -Crasher "$(cygpath -w "${GITHUB_WORKSPACE}/crasher.exe")"
+            -Sv "$SV_W" -Crasher "$CRASHER_W"
 
       - name: Report status (result)
         if: always() && needs.resolve.outputs.sha != ''
@@ -1474,7 +1480,13 @@ jobs:
             sh "$WS/e2e/scenario-battery.sh" /usr/local/bin/supervizio
 
             echo "=== Uninstall ==="
-            sh "$WS/setup/uninstall.sh" || echo "::warning::uninstall reported a failure"
+            # uninstall.sh PROMPTS before removing the config dir unless this is
+            # set, and there is no tty here: the read either takes EOF and trips
+            # `set -e`, or blocks until the job timeout. The bench leg this
+            # replaces sets it; the BSDs need it most, because install.sh puts
+            # their config under /usr/local/etc where the prompt actually fires.
+            SUPERVIZIO_NON_INTERACTIVE=true; export SUPERVIZIO_NON_INTERACTIVE
+            sh "$WS/setup/uninstall.sh"
             [ -x /usr/local/bin/supervizio ] && echo "::warning::binary still present after uninstall" || true
 
       - name: Report status (result)
@@ -1565,7 +1577,13 @@ jobs:
             sh "$WS/e2e/scenario-battery.sh" /usr/local/bin/supervizio
 
             echo "=== Uninstall ==="
-            sh "$WS/setup/uninstall.sh" || echo "::warning::uninstall reported a failure"
+            # uninstall.sh PROMPTS before removing the config dir unless this is
+            # set, and there is no tty here: the read either takes EOF and trips
+            # `set -e`, or blocks until the job timeout. The bench leg this
+            # replaces sets it; the BSDs need it most, because install.sh puts
+            # their config under /usr/local/etc where the prompt actually fires.
+            SUPERVIZIO_NON_INTERACTIVE=true; export SUPERVIZIO_NON_INTERACTIVE
+            sh "$WS/setup/uninstall.sh"
             [ -x /usr/local/bin/supervizio ] && echo "::warning::binary still present after uninstall" || true
 
       - name: Report status (result)
@@ -1645,7 +1663,12 @@ jobs:
             ftp -o /tmp/go.tar.gz "https://go.dev/dl/go${GO_VERSION}.openbsd-amd64.tar.gz"
             cd /usr/local && tar xzf /tmp/go.tar.gz && rm -f /tmp/go.tar.gz
             PATH="/usr/local/go/bin:$HOME/go/bin:$PATH"; export PATH
+            # run executes as root, so $HOME is /root -- on OpenBSD a small
+            # partition. The rsynced workspace has the room; put the module and
+            # build caches there so a cold cgo build cannot ENOSPC the guest.
+            GOPATH="$WS/.go"; GOCACHE="$WS/.gocache"; export GOPATH GOCACHE
             go version
+            df -h "$WS" / 2>/dev/null || true
             # OpenBSD's default login class caps data size below what a
             # cgo-enabled Go link needs.
             ulimit -d unlimited 2>/dev/null || true
@@ -1679,7 +1702,10 @@ jobs:
             sh e2e/scenario-battery.sh /usr/local/bin/supervizio
 
             echo "=== Uninstall ==="
-            sh setup/uninstall.sh || echo "::warning::uninstall reported a failure"
+            # See the freebsd/netbsd legs: no tty, so the config-dir prompt
+            # must be suppressed or the step hangs.
+            SUPERVIZIO_NON_INTERACTIVE=true; export SUPERVIZIO_NON_INTERACTIVE
+            sh setup/uninstall.sh
 
       - name: Report status (result)
         if: always() && needs.resolve.outputs.sha != ''
@@ -1840,7 +1866,11 @@ jobs:
           echo "e2e-bsd-openbsd:  ${{ needs.e2e-bsd-openbsd.result }}"
 
       - name: Report final status
-        if: needs.resolve.outputs.sha != ''
+        # !cancelled() matters now that `cancelled` counts as a failure below:
+        # `if: always()` on this job makes it run even when the whole run was
+        # cancelled by cancel-in-progress, and it would then post a red verdict
+        # for a SHA whose superseding run goes green half an hour later.
+        if: ${{ !cancelled() && needs.resolve.outputs.sha != '' }}
         continue-on-error: true
         env:
           GH_TOKEN: ${{ secrets.AGENT_REPO_TOKEN }}
@@ -1870,7 +1900,9 @@ jobs:
             -d "{\"state\":\"$STATE\",\"context\":\"e2e/runner-template\",\"description\":\"$DESC\",\"target_url\":\"${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}\"}"
 
       - name: Dispatch callback to agent repo
-        if: needs.resolve.outputs.sha != ''
+        # Same reason as the status above: a cancelled run must not tell agent
+        # its E2E failed.
+        if: ${{ !cancelled() && needs.resolve.outputs.sha != '' }}
         continue-on-error: true
         env:
           GH_TOKEN: ${{ secrets.AGENT_REPO_TOKEN }}
@@ -1911,6 +1943,10 @@ jobs:
             echo "| macOS x86_64 | \`${{ needs.e2e-macos.result }}\` |"
             echo "| macOS ARM64 | \`${{ needs.e2e-macos-arm64.result }}\` |"
             echo "| VM E2E | \`${{ needs.e2e-vm.result }}\` |"
+            echo "| Windows | \`${{ needs.e2e-windows.result }}\` |"
+            echo "| BSD freebsd | \`${{ needs.e2e-bsd-freebsd.result }}\` |"
+            echo "| BSD netbsd | \`${{ needs.e2e-bsd-netbsd.result }}\` |"
+            echo "| BSD openbsd | \`${{ needs.e2e-bsd-openbsd.result }}\` |"
             echo ""
             echo "**Agent ref:** \`${{ needs.resolve.outputs.ref }}\`"
             echo "**Agent SHA:** \`${{ needs.resolve.outputs.sha }}\`"
