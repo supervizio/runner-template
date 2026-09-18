@@ -74,11 +74,20 @@ jobs:
           # is attacker-supplied text and ${{ }} pastes it verbatim into the shell
           # (and into $GITHUB_OUTPUT, where a newline would let it set other
           # outputs).
+          # The allowlist is agent-only, deliberately. An earlier revision also
+          # accepted supervizio/libprobe, which was wrong twice over: this
+          # workflow's checkouts and every status post authenticate with
+          # AGENT_REPO_TOKEN, which cannot reach libprobe, so a libprobe-sourced
+          # dispatch would have 404'd on checkout after posting a run's worth of
+          # statuses against a SHA that does not exist in agent. libprobe has its
+          # own lane, external-e2e.yml, with its own token and its own contract.
+          # Widening this list is not a config change -- it needs a token and a
+          # status target to match.
           SOURCE_REPO="${PAYLOAD_SOURCE_REPO:-supervizio/agent}"
           case "$SOURCE_REPO" in
-            supervizio/agent|supervizio/libprobe) ;;
+            supervizio/agent) ;;
             *)
-              echo "::error::refusing source_repo '$SOURCE_REPO' - not in the allowlist" >&2
+              echo "::error::refusing source_repo '$SOURCE_REPO' - e2e.yml serves supervizio/agent only (libprobe uses external-e2e.yml)" >&2
               exit 1 ;;
           esac
           echo "source_repo=$SOURCE_REPO" >> "$GITHUB_OUTPUT"
@@ -127,13 +136,13 @@ jobs:
           curl -sf -X POST \
             -H "Authorization: Bearer $GH_TOKEN" \
             -H "Accept: application/vnd.github+json" \
-            "https://api.github.com/repos/supervizio/agent/statuses/${{ needs.resolve.outputs.sha }}" \
+            "https://api.github.com/repos/${{ needs.resolve.outputs.source_repo }}/statuses/${{ needs.resolve.outputs.sha }}" \
             -d '{"state":"pending","context":"e2e/docker/${{ matrix.name }}","description":"Running...","target_url":"${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"}'
 
       - name: Checkout agent code
         uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
         with:
-          repository: supervizio/agent
+          repository: ${{ needs.resolve.outputs.source_repo }}
           ref: ${{ needs.resolve.outputs.ref }}
           token: ${{ secrets.AGENT_REPO_TOKEN }}
           # The workspace is synced wholesale into guests and read by later
@@ -300,7 +309,7 @@ jobs:
           curl -sf -X POST \
             -H "Authorization: Bearer $GH_TOKEN" \
             -H "Accept: application/vnd.github+json" \
-            "https://api.github.com/repos/supervizio/agent/statuses/${{ needs.resolve.outputs.sha }}" \
+            "https://api.github.com/repos/${{ needs.resolve.outputs.source_repo }}/statuses/${{ needs.resolve.outputs.sha }}" \
             -d "{\"state\":\"$STATE\",\"context\":\"e2e/docker/${{ matrix.name }}\",\"description\":\"$DESC\",\"target_url\":\"${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}\"}"
 
   # ===========================================================================
@@ -348,13 +357,13 @@ jobs:
           curl -sf -X POST \
             -H "Authorization: Bearer $GH_TOKEN" \
             -H "Accept: application/vnd.github+json" \
-            "https://api.github.com/repos/supervizio/agent/statuses/${{ needs.resolve.outputs.sha }}" \
+            "https://api.github.com/repos/${{ needs.resolve.outputs.source_repo }}/statuses/${{ needs.resolve.outputs.sha }}" \
             -d '{"state":"pending","context":"e2e/docker-arm64/${{ matrix.name }}","description":"Running...","target_url":"${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"}'
 
       - name: Checkout agent code
         uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
         with:
-          repository: supervizio/agent
+          repository: ${{ needs.resolve.outputs.source_repo }}
           ref: ${{ needs.resolve.outputs.ref }}
           token: ${{ secrets.AGENT_REPO_TOKEN }}
           # The workspace is synced wholesale into guests and read by later
@@ -485,7 +494,7 @@ jobs:
           curl -sf -X POST \
             -H "Authorization: Bearer $GH_TOKEN" \
             -H "Accept: application/vnd.github+json" \
-            "https://api.github.com/repos/supervizio/agent/statuses/${{ needs.resolve.outputs.sha }}" \
+            "https://api.github.com/repos/${{ needs.resolve.outputs.source_repo }}/statuses/${{ needs.resolve.outputs.sha }}" \
             -d "{\"state\":\"$STATE\",\"context\":\"e2e/docker-arm64/${{ matrix.name }}\",\"description\":\"$DESC\",\"target_url\":\"${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}\"}"
 
   # ===========================================================================
@@ -514,7 +523,7 @@ jobs:
         run: |
           [ -z "$GH_TOKEN" ] && exit 0
           curl -sf -X POST -H "Authorization: Bearer $GH_TOKEN" -H "Accept: application/vnd.github+json" \
-            "https://api.github.com/repos/supervizio/agent/statuses/${{ needs.resolve.outputs.sha }}" \
+            "https://api.github.com/repos/${{ needs.resolve.outputs.source_repo }}/statuses/${{ needs.resolve.outputs.sha }}" \
             -d '{"state":"pending","context":"e2e/macos-x86_64","description":"Running...","target_url":"${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"}'
 
       - name: Checkout agent code
@@ -594,7 +603,7 @@ jobs:
           STATE="success"; DESC="Passed"
           if [ "${{ job.status }}" != "success" ]; then STATE="failure"; DESC="Failed"; fi
           curl -sf -X POST -H "Authorization: Bearer $GH_TOKEN" -H "Accept: application/vnd.github+json" \
-            "https://api.github.com/repos/supervizio/agent/statuses/${{ needs.resolve.outputs.sha }}" \
+            "https://api.github.com/repos/${{ needs.resolve.outputs.source_repo }}/statuses/${{ needs.resolve.outputs.sha }}" \
             -d "{\"state\":\"$STATE\",\"context\":\"e2e/macos-x86_64\",\"description\":\"$DESC\",\"target_url\":\"${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}\"}"
 
   e2e-macos-arm64:
@@ -613,13 +622,13 @@ jobs:
           curl -sf -X POST \
             -H "Authorization: Bearer $GH_TOKEN" \
             -H "Accept: application/vnd.github+json" \
-            "https://api.github.com/repos/supervizio/agent/statuses/${{ needs.resolve.outputs.sha }}" \
+            "https://api.github.com/repos/${{ needs.resolve.outputs.source_repo }}/statuses/${{ needs.resolve.outputs.sha }}" \
             -d '{"state":"pending","context":"e2e/macos-arm64","description":"Running...","target_url":"${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"}'
 
       - name: Checkout agent code
         uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
         with:
-          repository: supervizio/agent
+          repository: ${{ needs.resolve.outputs.source_repo }}
           ref: ${{ needs.resolve.outputs.ref }}
           token: ${{ secrets.AGENT_REPO_TOKEN }}
           # The workspace is synced wholesale into guests and read by later
@@ -744,7 +753,7 @@ jobs:
           curl -sf -X POST \
             -H "Authorization: Bearer $GH_TOKEN" \
             -H "Accept: application/vnd.github+json" \
-            "https://api.github.com/repos/supervizio/agent/statuses/${{ needs.resolve.outputs.sha }}" \
+            "https://api.github.com/repos/${{ needs.resolve.outputs.source_repo }}/statuses/${{ needs.resolve.outputs.sha }}" \
             -d "{\"state\":\"$STATE\",\"context\":\"e2e/macos-arm64\",\"description\":\"$DESC\",\"target_url\":\"${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}\"}"
 
   # ===========================================================================
@@ -790,7 +799,7 @@ jobs:
         run: |
           [ -z "$GH_TOKEN" ] && exit 0
           curl -sf -X POST -H "Authorization: Bearer $GH_TOKEN" -H "Accept: application/vnd.github+json" \
-            "https://api.github.com/repos/supervizio/agent/statuses/${{ needs.resolve.outputs.sha }}" \
+            "https://api.github.com/repos/${{ needs.resolve.outputs.source_repo }}/statuses/${{ needs.resolve.outputs.sha }}" \
             -d '{"state":"pending","context":"e2e/windows/amd64","description":"Running...","target_url":"${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"}'
 
       - name: Checkout agent code
@@ -871,7 +880,7 @@ jobs:
           STATE="success"; DESC="Passed"
           if [ "${{ job.status }}" != "success" ]; then STATE="failure"; DESC="Failed"; fi
           curl -sf -X POST -H "Authorization: Bearer $GH_TOKEN" -H "Accept: application/vnd.github+json" \
-            "https://api.github.com/repos/supervizio/agent/statuses/${{ needs.resolve.outputs.sha }}" \
+            "https://api.github.com/repos/${{ needs.resolve.outputs.source_repo }}/statuses/${{ needs.resolve.outputs.sha }}" \
             -d "{\"state\":\"$STATE\",\"context\":\"e2e/windows/amd64\",\"description\":\"$DESC\",\"target_url\":\"${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}\"}"
 
   e2e-windows-arm64:
@@ -911,7 +920,7 @@ jobs:
         run: |
           [ -z "$GH_TOKEN" ] && exit 0
           curl -sf -X POST -H "Authorization: Bearer $GH_TOKEN" -H "Accept: application/vnd.github+json" \
-            "https://api.github.com/repos/supervizio/agent/statuses/${{ needs.resolve.outputs.sha }}" \
+            "https://api.github.com/repos/${{ needs.resolve.outputs.source_repo }}/statuses/${{ needs.resolve.outputs.sha }}" \
             -d '{"state":"pending","context":"e2e/windows/arm64","description":"Running...","target_url":"${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"}'
 
       - name: Checkout agent code
@@ -992,7 +1001,7 @@ jobs:
           STATE="success"; DESC="Passed"
           if [ "${{ job.status }}" != "success" ]; then STATE="failure"; DESC="Failed"; fi
           curl -sf -X POST -H "Authorization: Bearer $GH_TOKEN" -H "Accept: application/vnd.github+json" \
-            "https://api.github.com/repos/supervizio/agent/statuses/${{ needs.resolve.outputs.sha }}" \
+            "https://api.github.com/repos/${{ needs.resolve.outputs.source_repo }}/statuses/${{ needs.resolve.outputs.sha }}" \
             -d "{\"state\":\"$STATE\",\"context\":\"e2e/windows/arm64\",\"description\":\"$DESC\",\"target_url\":\"${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}\"}"
 
   # ===========================================================================
@@ -1079,7 +1088,7 @@ jobs:
           curl -sf -X POST \
             -H "Authorization: Bearer $GH_TOKEN" \
             -H "Accept: application/vnd.github+json" \
-            "https://api.github.com/repos/supervizio/agent/statuses/${{ needs.resolve.outputs.sha }}" \
+            "https://api.github.com/repos/${{ needs.resolve.outputs.source_repo }}/statuses/${{ needs.resolve.outputs.sha }}" \
             -d '{"state":"pending","context":"e2e/vm/${{ matrix.name }}","description":"Running...","target_url":"${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"}'
 
       - name: Checkout runner-template (for VM scripts)
@@ -1094,7 +1103,7 @@ jobs:
       - name: Checkout agent code
         uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
         with:
-          repository: supervizio/agent
+          repository: ${{ needs.resolve.outputs.source_repo }}
           ref: ${{ needs.resolve.outputs.ref }}
           token: ${{ secrets.AGENT_REPO_TOKEN }}
           path: agent
@@ -1472,7 +1481,7 @@ jobs:
           curl -sf -X POST \
             -H "Authorization: Bearer $GH_TOKEN" \
             -H "Accept: application/vnd.github+json" \
-            "https://api.github.com/repos/supervizio/agent/statuses/${{ needs.resolve.outputs.sha }}" \
+            "https://api.github.com/repos/${{ needs.resolve.outputs.source_repo }}/statuses/${{ needs.resolve.outputs.sha }}" \
             -d "{\"state\":\"$STATE\",\"context\":\"e2e/vm/${{ matrix.name }}\",\"description\":\"$DESC\",\"target_url\":\"${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}\"}"
 
   e2e-bsd-freebsd-amd64:
@@ -1490,7 +1499,7 @@ jobs:
         run: |
           [ -z "$GH_TOKEN" ] && exit 0
           curl -sf -X POST -H "Authorization: Bearer $GH_TOKEN" -H "Accept: application/vnd.github+json" \
-            "https://api.github.com/repos/supervizio/agent/statuses/${{ needs.resolve.outputs.sha }}" \
+            "https://api.github.com/repos/${{ needs.resolve.outputs.source_repo }}/statuses/${{ needs.resolve.outputs.sha }}" \
             -d '{"state":"pending","context":"e2e/bsd/freebsd-amd64","description":"Running...","target_url":"${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"}'
 
       - name: Checkout agent code
@@ -1574,7 +1583,7 @@ jobs:
           STATE="success"; DESC="Passed"
           if [ "${{ job.status }}" != "success" ]; then STATE="failure"; DESC="Failed"; fi
           curl -sf -X POST -H "Authorization: Bearer $GH_TOKEN" -H "Accept: application/vnd.github+json" \
-            "https://api.github.com/repos/supervizio/agent/statuses/${{ needs.resolve.outputs.sha }}" \
+            "https://api.github.com/repos/${{ needs.resolve.outputs.source_repo }}/statuses/${{ needs.resolve.outputs.sha }}" \
             -d "{\"state\":\"$STATE\",\"context\":\"e2e/bsd/freebsd-amd64\",\"description\":\"$DESC\",\"target_url\":\"${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}\"}"
 
   e2e-bsd-netbsd-amd64:
@@ -1592,7 +1601,7 @@ jobs:
         run: |
           [ -z "$GH_TOKEN" ] && exit 0
           curl -sf -X POST -H "Authorization: Bearer $GH_TOKEN" -H "Accept: application/vnd.github+json" \
-            "https://api.github.com/repos/supervizio/agent/statuses/${{ needs.resolve.outputs.sha }}" \
+            "https://api.github.com/repos/${{ needs.resolve.outputs.source_repo }}/statuses/${{ needs.resolve.outputs.sha }}" \
             -d '{"state":"pending","context":"e2e/bsd/netbsd-amd64","description":"Running...","target_url":"${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"}'
 
       - name: Checkout agent code
@@ -1676,7 +1685,7 @@ jobs:
           STATE="success"; DESC="Passed"
           if [ "${{ job.status }}" != "success" ]; then STATE="failure"; DESC="Failed"; fi
           curl -sf -X POST -H "Authorization: Bearer $GH_TOKEN" -H "Accept: application/vnd.github+json" \
-            "https://api.github.com/repos/supervizio/agent/statuses/${{ needs.resolve.outputs.sha }}" \
+            "https://api.github.com/repos/${{ needs.resolve.outputs.source_repo }}/statuses/${{ needs.resolve.outputs.sha }}" \
             -d "{\"state\":\"$STATE\",\"context\":\"e2e/bsd/netbsd-amd64\",\"description\":\"$DESC\",\"target_url\":\"${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}\"}"
 
   e2e-bsd-openbsd-amd64:
@@ -1694,7 +1703,7 @@ jobs:
         run: |
           [ -z "$GH_TOKEN" ] && exit 0
           curl -sf -X POST -H "Authorization: Bearer $GH_TOKEN" -H "Accept: application/vnd.github+json" \
-            "https://api.github.com/repos/supervizio/agent/statuses/${{ needs.resolve.outputs.sha }}" \
+            "https://api.github.com/repos/${{ needs.resolve.outputs.source_repo }}/statuses/${{ needs.resolve.outputs.sha }}" \
             -d '{"state":"pending","context":"e2e/bsd/openbsd-amd64","description":"Running...","target_url":"${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"}'
 
       - name: Checkout agent code
@@ -1801,7 +1810,7 @@ jobs:
           STATE="success"; DESC="Passed"
           if [ "${{ job.status }}" != "success" ]; then STATE="failure"; DESC="Failed"; fi
           curl -sf -X POST -H "Authorization: Bearer $GH_TOKEN" -H "Accept: application/vnd.github+json" \
-            "https://api.github.com/repos/supervizio/agent/statuses/${{ needs.resolve.outputs.sha }}" \
+            "https://api.github.com/repos/${{ needs.resolve.outputs.source_repo }}/statuses/${{ needs.resolve.outputs.sha }}" \
             -d "{\"state\":\"$STATE\",\"context\":\"e2e/bsd/openbsd-amd64\",\"description\":\"$DESC\",\"target_url\":\"${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}\"}"
 
   e2e-bsd-freebsd-arm64:
@@ -1819,7 +1828,7 @@ jobs:
         run: |
           [ -z "$GH_TOKEN" ] && exit 0
           curl -sf -X POST -H "Authorization: Bearer $GH_TOKEN" -H "Accept: application/vnd.github+json" \
-            "https://api.github.com/repos/supervizio/agent/statuses/${{ needs.resolve.outputs.sha }}" \
+            "https://api.github.com/repos/${{ needs.resolve.outputs.source_repo }}/statuses/${{ needs.resolve.outputs.sha }}" \
             -d '{"state":"pending","context":"e2e/bsd/freebsd-arm64","description":"Running...","target_url":"${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"}'
 
       - name: Checkout agent code
@@ -1912,7 +1921,7 @@ jobs:
           STATE="success"; DESC="Passed"
           if [ "${{ job.status }}" != "success" ]; then STATE="failure"; DESC="Failed"; fi
           curl -sf -X POST -H "Authorization: Bearer $GH_TOKEN" -H "Accept: application/vnd.github+json" \
-            "https://api.github.com/repos/supervizio/agent/statuses/${{ needs.resolve.outputs.sha }}" \
+            "https://api.github.com/repos/${{ needs.resolve.outputs.source_repo }}/statuses/${{ needs.resolve.outputs.sha }}" \
             -d "{\"state\":\"$STATE\",\"context\":\"e2e/bsd/freebsd-arm64\",\"description\":\"$DESC\",\"target_url\":\"${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}\"}"
 
   e2e-bsd-netbsd-arm64:
@@ -1930,7 +1939,7 @@ jobs:
         run: |
           [ -z "$GH_TOKEN" ] && exit 0
           curl -sf -X POST -H "Authorization: Bearer $GH_TOKEN" -H "Accept: application/vnd.github+json" \
-            "https://api.github.com/repos/supervizio/agent/statuses/${{ needs.resolve.outputs.sha }}" \
+            "https://api.github.com/repos/${{ needs.resolve.outputs.source_repo }}/statuses/${{ needs.resolve.outputs.sha }}" \
             -d '{"state":"pending","context":"e2e/bsd/netbsd-arm64","description":"Running...","target_url":"${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"}'
 
       - name: Checkout agent code
@@ -2023,7 +2032,7 @@ jobs:
           STATE="success"; DESC="Passed"
           if [ "${{ job.status }}" != "success" ]; then STATE="failure"; DESC="Failed"; fi
           curl -sf -X POST -H "Authorization: Bearer $GH_TOKEN" -H "Accept: application/vnd.github+json" \
-            "https://api.github.com/repos/supervizio/agent/statuses/${{ needs.resolve.outputs.sha }}" \
+            "https://api.github.com/repos/${{ needs.resolve.outputs.source_repo }}/statuses/${{ needs.resolve.outputs.sha }}" \
             -d "{\"state\":\"$STATE\",\"context\":\"e2e/bsd/netbsd-arm64\",\"description\":\"$DESC\",\"target_url\":\"${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}\"}"
 
   # ===========================================================================
@@ -2159,88 +2168,104 @@ jobs:
     if: always()
     runs-on: ubuntu-24.04
     steps:
-      - name: Aggregate results
+      # One verdict, computed once. The three consumers below (commit status,
+      # dispatch callback, fail-the-job) used to each carry their own copy of
+      # the same twelve-element array and the same loop — three places to keep
+      # in sync, and the `skipped` bug lived in all three at once.
+      - name: Compute verdict
+        id: verdict
         run: |
+          LEGS=(
+            "docker-amd64=${{ needs.e2e-docker-amd64.result }}"
+            "docker-arm64=${{ needs.e2e-docker-arm64.result }}"
+            "macos-x86_64=${{ needs.e2e-macos.result }}"
+            "macos-arm64=${{ needs.e2e-macos-arm64.result }}"
+            "vm=${{ needs.e2e-vm.result }}"
+            "windows-amd64=${{ needs.e2e-windows-amd64.result }}"
+            "windows-arm64=${{ needs.e2e-windows-arm64.result }}"
+            "bsd-freebsd-amd64=${{ needs.e2e-bsd-freebsd-amd64.result }}"
+            "bsd-freebsd-arm64=${{ needs.e2e-bsd-freebsd-arm64.result }}"
+            "bsd-netbsd-amd64=${{ needs.e2e-bsd-netbsd-amd64.result }}"
+            "bsd-netbsd-arm64=${{ needs.e2e-bsd-netbsd-arm64.result }}"
+            "bsd-openbsd-amd64=${{ needs.e2e-bsd-openbsd-amd64.result }}"
+          )
+
           echo "=== E2E Results ==="
-          echo "e2e-docker-amd64: ${{ needs.e2e-docker-amd64.result }}"
-          echo "e2e-docker-arm64: ${{ needs.e2e-docker-arm64.result }}"
-          echo "e2e-macos:        ${{ needs.e2e-macos.result }}"
-          echo "e2e-macos-arm64:  ${{ needs.e2e-macos-arm64.result }}"
-          echo "e2e-vm:           ${{ needs.e2e-vm.result }}"
-          echo "e2e-windows-amd64:${{ needs.e2e-windows-amd64.result }}"
-          echo "e2e-windows-arm64:${{ needs.e2e-windows-arm64.result }}"
-          echo "e2e-bsd-freebsd-amd64: ${{ needs.e2e-bsd-freebsd-amd64.result }}"
-          echo "e2e-bsd-freebsd-arm64: ${{ needs.e2e-bsd-freebsd-arm64.result }}"
-          echo "e2e-bsd-netbsd-amd64:  ${{ needs.e2e-bsd-netbsd-amd64.result }}"
-          echo "e2e-bsd-netbsd-arm64:  ${{ needs.e2e-bsd-netbsd-arm64.result }}"
-          echo "e2e-bsd-openbsd:  ${{ needs.e2e-bsd-openbsd-amd64.result }}"
+          BAD=0
+          OFFENDERS=""
+          for entry in "${LEGS[@]}"; do
+            leg="${entry%%=*}"
+            res="${entry#*=}"
+            printf '  %-22s %s\n' "$leg" "$res"
+            # Only "success" passes — `skipped` included.
+            #
+            # The old loop tested failure/cancelled only, so any leg that never
+            # ran counted as fine. An `arm_only` dispatch skips 11 of these 12
+            # and still produced a green `e2e/runner-template` on the agent SHA:
+            # a verdict asserting the artifact was validated on twelve platforms
+            # when it ran on one.
+            if [ "$res" != "success" ]; then
+              BAD=$((BAD + 1))
+              OFFENDERS="${OFFENDERS}${leg}:${res} "
+            fi
+          done
+
+          if [ "$BAD" -gt 0 ]; then
+            echo "state=failure" >> "$GITHUB_OUTPUT"
+            echo "description=$BAD/${#LEGS[@]} legs did not pass: ${OFFENDERS%% }" >> "$GITHUB_OUTPUT"
+            echo ""
+            echo "VERDICT: failure — $BAD of ${#LEGS[@]} legs did not succeed"
+            echo "  $OFFENDERS"
+          else
+            echo "state=success" >> "$GITHUB_OUTPUT"
+            echo "description=All ${#LEGS[@]} E2E legs passed" >> "$GITHUB_OUTPUT"
+            echo ""
+            echo "VERDICT: success — all ${#LEGS[@]} legs passed"
+          fi
 
       - name: Report final status
         # !cancelled() matters now that `cancelled` counts as a failure below:
         # `if: always()` on this job makes it run even when the whole run was
         # cancelled by cancel-in-progress, and it would then post a red verdict
         # for a SHA whose superseding run goes green half an hour later.
-        if: ${{ !cancelled() && needs.resolve.outputs.sha != '' }}
+        # A debug `arm_only` dispatch runs 4 of 26 legs. It must not write a
+        # verdict at all — green would be a lie, and red would blame the SHA for
+        # legs the operator chose not to run.
+        if: ${{ !cancelled() && needs.resolve.outputs.sha != '' && github.event.inputs.arm_only != 'true' }}
         continue-on-error: true
         env:
           GH_TOKEN: ${{ secrets.AGENT_REPO_TOKEN }}
+          STATE: ${{ steps.verdict.outputs.state }}
+          DESC: ${{ steps.verdict.outputs.description }}
         run: |
           [ -z "$GH_TOKEN" ] && { echo "AGENT_REPO_TOKEN not set, skipping"; exit 0; }
-          RESULTS=("${{ needs.e2e-docker-amd64.result }}" "${{ needs.e2e-docker-arm64.result }}" \
-                   "${{ needs.e2e-macos.result }}" "${{ needs.e2e-macos-arm64.result }}" \
-                   "${{ needs.e2e-vm.result }}" "${{ needs.e2e-windows-amd64.result }}" "${{ needs.e2e-windows-arm64.result }}" \
-                   "${{ needs.e2e-bsd-freebsd-amd64.result }}" "${{ needs.e2e-bsd-netbsd-amd64.result }}" \
-                   "${{ needs.e2e-bsd-openbsd-amd64.result }}" \
-                   "${{ needs.e2e-bsd-freebsd-arm64.result }}" "${{ needs.e2e-bsd-netbsd-arm64.result }}")
-          STATE="success"
-          DESC="All E2E tests passed"
-          for r in "${RESULTS[@]}"; do
-            # cancelled counts as failed, exactly as agent's own CI Summary
-            # treats it: a leg cancelled mid-flight proved nothing, and must not
-            # read as green on the verdict reported back.
-            if [ "$r" = "failure" ] || [ "$r" = "cancelled" ]; then
-              STATE="failure"
-              DESC="E2E tests failed"
-              break
-            fi
-          done
           curl -sf -X POST \
             -H "Authorization: Bearer $GH_TOKEN" \
             -H "Accept: application/vnd.github+json" \
-            "https://api.github.com/repos/supervizio/agent/statuses/${{ needs.resolve.outputs.sha }}" \
-            -d "{\"state\":\"$STATE\",\"context\":\"e2e/runner-template\",\"description\":\"$DESC\",\"target_url\":\"${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}\"}"
+            "https://api.github.com/repos/${{ needs.resolve.outputs.source_repo }}/statuses/${{ needs.resolve.outputs.sha }}" \
+            -d "$(jq -nc --arg s "$STATE" --arg d "$DESC" --arg u "${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}" \
+                  '{state:$s, context:"e2e/runner-template", description:$d, target_url:$u}')"
 
       - name: Dispatch callback to agent repo
         # Same reason as the status above: a cancelled run must not tell agent
         # its E2E failed.
-        if: ${{ !cancelled() && needs.resolve.outputs.sha != '' }}
+        if: ${{ !cancelled() && needs.resolve.outputs.sha != '' && github.event.inputs.arm_only != 'true' }}
         continue-on-error: true
         env:
           GH_TOKEN: ${{ secrets.AGENT_REPO_TOKEN }}
+          STATE: ${{ steps.verdict.outputs.state }}
+          SOURCE_REPO: ${{ needs.resolve.outputs.source_repo }}
         run: |
           [ -z "$GH_TOKEN" ] && { echo "AGENT_REPO_TOKEN not set, skipping"; exit 0; }
-          RESULTS=("${{ needs.e2e-docker-amd64.result }}" "${{ needs.e2e-docker-arm64.result }}" \
-                   "${{ needs.e2e-macos.result }}" "${{ needs.e2e-macos-arm64.result }}" \
-                   "${{ needs.e2e-vm.result }}" "${{ needs.e2e-windows-amd64.result }}" "${{ needs.e2e-windows-arm64.result }}" \
-                   "${{ needs.e2e-bsd-freebsd-amd64.result }}" "${{ needs.e2e-bsd-netbsd-amd64.result }}" \
-                   "${{ needs.e2e-bsd-openbsd-amd64.result }}" \
-                   "${{ needs.e2e-bsd-freebsd-arm64.result }}" "${{ needs.e2e-bsd-netbsd-arm64.result }}")
-          STATE="success"
-          for r in "${RESULTS[@]}"; do
-            # cancelled counts as failed, exactly as agent's own CI Summary
-            # treats it: a leg cancelled mid-flight proved nothing, and must not
-            # read as green on the verdict reported back.
-            if [ "$r" = "failure" ] || [ "$r" = "cancelled" ]; then
-              STATE="failure"
-              break
-            fi
-          done
           curl -sf -X POST \
             -H "Authorization: Bearer $GH_TOKEN" \
             -H "Accept: application/vnd.github+json" \
-            "https://api.github.com/repos/supervizio/agent/dispatches" \
-            -d "{\"event_type\":\"e2e-result\",\"client_payload\":{\"state\":\"$STATE\",\"sha\":\"${{ needs.resolve.outputs.sha }}\",\"run_id\":\"${{ github.run_id }}\",\"target_url\":\"${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}\"}}"
-          echo "Dispatched e2e-result to supervizio/agent (state=$STATE)"
+            "https://api.github.com/repos/${SOURCE_REPO}/dispatches" \
+            -d "$(jq -nc --arg s "$STATE" --arg sha "${{ needs.resolve.outputs.sha }}" \
+                  --arg rid "${{ github.run_id }}" \
+                  --arg u "${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}" \
+                  '{event_type:"e2e-result", client_payload:{state:$s, sha:$sha, run_id:$rid, target_url:$u}}')"
+          echo "Dispatched e2e-result to ${SOURCE_REPO} (state=$STATE)"
 
       - name: Summary
         if: always()
@@ -2269,20 +2294,17 @@ jobs:
           } >> "$GITHUB_STEP_SUMMARY"
 
       - name: Fail if any E2E failed
+        # !cancelled() for the same reason the two posting steps carry it: this
+        # step used to have no guard at all, so a run superseded by
+        # cancel-in-progress went red here while the posting steps deliberately
+        # declined to report it — a failed job with no status explaining why.
+        if: ${{ !cancelled() }}
+        env:
+          STATE: ${{ steps.verdict.outputs.state }}
+          DESC: ${{ steps.verdict.outputs.description }}
         run: |
-          RESULTS=("${{ needs.e2e-docker-amd64.result }}" "${{ needs.e2e-docker-arm64.result }}" \
-                   "${{ needs.e2e-macos.result }}" "${{ needs.e2e-macos-arm64.result }}" \
-                   "${{ needs.e2e-vm.result }}" "${{ needs.e2e-windows-amd64.result }}" "${{ needs.e2e-windows-arm64.result }}" \
-                   "${{ needs.e2e-bsd-freebsd-amd64.result }}" "${{ needs.e2e-bsd-netbsd-amd64.result }}" \
-                   "${{ needs.e2e-bsd-openbsd-amd64.result }}" \
-                   "${{ needs.e2e-bsd-freebsd-arm64.result }}" "${{ needs.e2e-bsd-netbsd-arm64.result }}")
-          for r in "${RESULTS[@]}"; do
-            # cancelled counts as failed, exactly as agent's own CI Summary
-            # treats it: a leg cancelled mid-flight proved nothing, and must not
-            # read as green on the verdict reported back.
-            if [ "$r" = "failure" ] || [ "$r" = "cancelled" ]; then
-              echo "FAILED: At least one E2E job failed"
-              exit 1
-            fi
-          done
-          echo "SUCCESS: All E2E tests passed"
+          if [ "$STATE" != "success" ]; then
+            echo "::error::$DESC"
+            exit 1
+          fi
+          echo "SUCCESS: $DESC"
