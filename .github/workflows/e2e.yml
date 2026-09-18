@@ -39,6 +39,7 @@ jobs:
       ref: ${{ steps.resolve.outputs.ref }}
       run_id: ${{ steps.resolve.outputs.run_id }}
       sha: ${{ steps.resolve.outputs.sha }}
+      source_repo: ${{ steps.resolve.outputs.source_repo }}
     steps:
       - name: Resolve dispatch parameters
         id: resolve
@@ -52,12 +53,20 @@ jobs:
             echo "run_id=${{ github.event.client_payload.run_id }}" >> "$GITHUB_OUTPUT"
             echo "sha=${{ github.event.client_payload.sha }}" >> "$GITHUB_OUTPUT"
           fi
+          # The dispatch payload has carried source_repo from the start but
+          # nothing ever read it -- every consumer hardcoded supervizio/agent.
+          # Read it now (the artifact download needs it), defaulting to that
+          # same value so in-flight dispatches and workflow_dispatch runs, which
+          # send no such field, behave exactly as before.
+          SOURCE_REPO="${{ github.event.client_payload.source_repo }}"
+          echo "source_repo=${SOURCE_REPO:-supervizio/agent}" >> "$GITHUB_OUTPUT"
 
       - name: Display resolved parameters
         run: |
           echo "Agent ref:    ${{ steps.resolve.outputs.ref }}"
           echo "Agent run ID: ${{ steps.resolve.outputs.run_id }}"
           echo "Agent SHA:    ${{ steps.resolve.outputs.sha }}"
+          echo "Source repo:  ${{ steps.resolve.outputs.source_repo }}"
 
   # ===========================================================================
   # E2E DOCKER (amd64)
@@ -67,7 +76,7 @@ jobs:
     name: E2E Docker ${{ matrix.name }}
     needs: [resolve]
     if: ${{ github.event.inputs.arm_only != 'true' }}
-    runs-on: supervizio-runner
+    runs-on: ubuntu-24.04
     timeout-minutes: 10
     strategy:
       fail-fast: false
@@ -113,25 +122,32 @@ jobs:
           git -c url."https://x-access-token:${GH_TOKEN}@github.com/".insteadOf="https://github.com/" \
             submodule update --init --force --depth=1
 
-      - name: Download binary from zot (cross-repo)
-        env:
-          ARTIFACT_REGISTRY: 192.168.100.250:5000
-          RUN_ID: ${{ needs.resolve.outputs.run_id }}
-          ARTIFACT: ${{ matrix.artifact }}
+      # zot lives on the lab network (192.168.100.250) and is unreachable from a
+      # GitHub-hosted runner, which is why this leg used to need the bench. Agent
+      # CI now mirrors the E2E-consumed binaries to GitHub artifacts
+      # (E2E_BRIDGE_PLATFORMS in its ci.yml), so the same binary is fetchable
+      # cross-repo — same bytes the bench built, no rebuild, no lab route.
+      - name: Download binary from the agent run (cross-repo)
+        uses: actions/download-artifact@70fc10c6e5e1ce46ad2ea6f2b72d43f7d47b13c3 # v8.0.0
+        with:
+          name: ${{ matrix.artifact }}
+          path: bin
+          repository: ${{ needs.resolve.outputs.source_repo }}
+          run-id: ${{ needs.resolve.outputs.run_id }}
+          # Needs actions:read on the agent repo, on top of the contents:read
+          # this token already carries for the checkout above.
+          github-token: ${{ secrets.AGENT_REPO_TOKEN }}
+
+      - name: Verify the binary arrived
         run: |
           set -euo pipefail
-          mkdir -p bin
-          # Agent CI publishes binaries to the self-hosted zot store (no GitHub
-          # artifacts). This runner (supervizio-runner) is on the lab network.
-          command -v oras >/dev/null 2>&1 || {
-            v=1.2.0; a=$(uname -m); case "$a" in x86_64) oa=amd64;; aarch64|arm64) oa=arm64;; *) oa=amd64;; esac
-            curl -fsSL "https://github.com/oras-project/oras/releases/download/v${v}/oras_${v}_linux_${oa}.tar.gz" | sudo tar xz -C /usr/local/bin oras
-          }
-          n=0; until oras pull --plain-http "$ARTIFACT_REGISTRY/run-${RUN_ID}/${ARTIFACT}:latest" -o bin; do
-            n=$((n+1)); [ "$n" -ge 5 ] && { echo "::error::zot pull failed for ${ARTIFACT}"; exit 1; }
-            echo "retry $n"; sleep $((n*8))
-          done
           ls -la bin/
+          # A silently-empty download would surface much later as a confusing
+          # docker build error; fail here, where the cause is obvious.
+          [ -s "bin/${{ matrix.artifact }}" ] || {
+            echo "::error::${{ matrix.artifact }} missing or empty — did agent's CI publish it? (E2E_BRIDGE_PLATFORMS)" >&2
+            exit 1
+          }
 
       - name: Prepare binary
         run: |
@@ -144,20 +160,13 @@ jobs:
           fi
           file bin/supervizio* | head -5
 
-      - name: Wait for Docker daemon (DinD)
-        run: |
-          # The dind sidecar's dockerd needs a few seconds to open
-          # tcp://localhost:2375. Without this wait the first `docker build`
-          # races dockerd startup and dies with "Cannot connect to the Docker
-          # daemon" (issue #15). Probe `docker info` for up to 60s.
-          for i in $(seq 1 30); do
-            if docker info >/dev/null 2>&1; then
-              echo "Docker daemon ready (attempt $i)"; exit 0
-            fi
-            echo "waiting for dockerd... ($i/30)"; sleep 2
-          done
-          echo "::error::Docker daemon (DinD) not reachable at ${DOCKER_HOST:-tcp://localhost:2375} after 60s"
-          exit 1
+      # The dind-sidecar wait this replaced (issue #15) was about the ARC pod's
+      # dockerd racing the first build on tcp://localhost:2375. A GitHub-hosted
+      # runner ships a local dockerd that is already up, so there is nothing to
+      # race; one assertion is enough to keep the failure legible if that ever
+      # stops being true.
+      - name: Check Docker is available
+        run: docker info >/dev/null
 
       - name: Build container
         run: |
