@@ -12,6 +12,17 @@ name: QEMU VM self-test
 
 on:
   workflow_dispatch:
+  # workflow_dispatch alone made this unrunnable: dispatching requires the file
+  # to exist on the DEFAULT branch, so a self-test that only lives on a feature
+  # branch can never be triggered — and this one never had a single run.
+  #
+  # Scoped to its own two files, so it fires when the action or the test changes
+  # and stays silent otherwise. Cheap on a public repo, and it can live here
+  # permanently instead of being added and reverted around each attempt.
+  push:
+    paths:
+      - '.github/workflows/qemu-vm-selftest.yml'
+      - '.github/actions/qemu-vm/action.yml'
 
 permissions:
   contents: read
