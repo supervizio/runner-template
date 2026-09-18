@@ -1,0 +1,194 @@
+# =============================================================================
+# agent — native OpenBSD build on a free public runner (proof)
+# =============================================================================
+# Question this answers: does the supervizio/agent bench still need to exist?
+#
+# agent's OpenBSD binary is the one platform the bench is said to be mandatory
+# for. release.yml cross-links it with upstream lld, which lacks OpenBSD's
+# linker patches, and native-platform.yml documents the result: it SIGSEGVs in
+# ld.so at startup on EVERY invocation, even --version. The bench's OpenBSD VM
+# exists to rebuild it natively.
+#
+# But "native" and "private" are different requirements, and only the first one
+# is real. vmactions/openbsd-vm gives a genuinely native OpenBSD toolchain on a
+# free GitHub-hosted runner, which is exactly what the cross-linker bug needs.
+# external-e2e.yml already runs libprobe's private source on these runners, so
+# the pattern -- and its token -- are established here.
+#
+# The leg proves three things, in order, and fails loudly on any of them:
+#   1. agent builds natively on OpenBSD, off the bench
+#   2. the binary it produces actually STARTS (the cross one cannot)
+#   3. the probe FFI tests pass against the real libprobe archive
+#
+# arm64 is included on purpose: it is the platform with no bench VM at all, so
+# today nothing anywhere proves it. Expect it to be slow -- ubuntu-24.04-arm
+# exposes no /dev/kvm, so the aarch64 guest is TCG-emulated, not accelerated.
+# =============================================================================
+name: agent OpenBSD native (proof)
+
+on:
+  # TEMPORARY, drop before merging. workflow_dispatch only becomes dispatchable
+  # once the file is on the default branch, so the very first run -- the one
+  # that has to produce the proof -- has nowhere to come from. This trigger is
+  # scoped to the proof branch and exists solely to bootstrap that run.
+  push:
+    branches: ['proof/**']
+  workflow_dispatch:
+    inputs:
+      source_repo:
+        description: 'Private source repository to build'
+        required: false
+        default: 'supervizio/agent'
+        type: string
+      source_ref:
+        description: 'Ref (branch, tag or SHA) to build'
+        required: false
+        default: 'main'
+        type: string
+      arches:
+        description: 'Which arches to prove'
+        required: false
+        default: 'both'
+        type: choice
+        options: [both, amd64, arm64]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: agent-openbsd-native-${{ github.event.inputs.source_ref || 'main' }}
+  cancel-in-progress: true
+
+env:
+  SOURCE_REPO: ${{ github.event.inputs.source_repo || 'supervizio/agent' }}
+  SOURCE_REF: ${{ github.event.inputs.source_ref || 'main' }}
+  # Kept in lockstep with agent's own CI (ci.yml GO_VERSION / WIRE_VERSION).
+  GO_VERSION: '1.27.1'
+  WIRE_VERSION: 'v0.7.0'
+
+jobs:
+  openbsd-native:
+    name: agent openbsd-${{ matrix.arch }}
+    runs-on: ${{ matrix.runner }}
+    # amd64 finishes in minutes; the emulated arm64 guest needs hours.
+    timeout-minutes: 330
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { arch: amd64, runner: ubuntu-24.04,     vmarch: x86_64 }
+          - { arch: arm64, runner: ubuntu-24.04-arm, vmarch: aarch64 }
+    steps:
+      - name: Check out the private agent source
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          repository: ${{ env.SOURCE_REPO }}
+          ref: ${{ env.SOURCE_REF }}
+          token: ${{ secrets.AGENT_REPO_TOKEN }}
+          # The workspace is synced wholesale into the guest. Leaving the token
+          # in .git/config would hand a repo-scoped credential to everything
+          # running in the VM, including the build's own dependency tree.
+          persist-credentials: false
+
+      - name: Skip arches not requested
+        id: gate
+        run: |
+          set -eu
+          WANT='${{ github.event.inputs.arches }}'
+          [ -n "$WANT" ] || WANT=both
+          if [ "$WANT" = both ] || [ "$WANT" = '${{ matrix.arch }}' ]; then
+            echo "run=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "run=false" >> "$GITHUB_OUTPUT"
+            echo "arch ${{ matrix.arch }} not requested ($WANT) — skipping"
+          fi
+
+      # Fetch libprobe on the HOST, never in the guest: the archive is a plain
+      # release asset, but the token that reads it is a repo credential and has
+      # no business inside a VM that then executes a freshly built binary.
+      # agent's own setup/fetch-libprobe.sh is used verbatim -- it speaks the
+      # REST API over curl with no gh/zot dependency, which is precisely the
+      # shape a public runner needs -- and it stages into dist/lib/<platform>/,
+      # the path CGO_LDFLAGS already expects.
+      - name: Stage libprobe for openbsd-${{ matrix.arch }}
+        if: steps.gate.outputs.run == 'true'
+        env:
+          GH_TOKEN: ${{ secrets.LIBPROBE_REPO_TOKEN }}
+        run: |
+          set -eu
+          VERSION="$(cat LIBPROBE_VERSION)"
+          echo "libprobe pin: $VERSION"
+          bash setup/fetch-libprobe.sh "$VERSION" "openbsd-${{ matrix.arch }}"
+          ls -l "dist/lib/openbsd-${{ matrix.arch }}/libprobe.a"
+
+      - name: Build natively in an OpenBSD guest, then run what it built
+        if: steps.gate.outputs.run == 'true'
+        uses: vmactions/openbsd-vm@18edb32f4e48dae5865d7b8b3a9587bc01218a20 # v1.4.4
+        with:
+          usesh: true
+          arch: ${{ matrix.vmarch }}
+          copyback: false
+          envs: 'GO_VERSION WIRE_VERSION'
+          run: |
+            set -e
+            ARCH='${{ matrix.arch }}'
+            WS="$(pwd)"
+
+            # Go's own OpenBSD builds, not pkg_add's: go.mod pins 1.27.1 and the
+            # ports tree tracks its own cadence. Both openbsd-amd64 and
+            # openbsd-arm64 are published upstream.
+            echo "=== Installing Go ${GO_VERSION} (openbsd-${ARCH}) ==="
+            ftp -o /tmp/go.tar.gz "https://go.dev/dl/go${GO_VERSION}.openbsd-${ARCH}.tar.gz"
+            cd /usr/local && tar xzf /tmp/go.tar.gz && rm -f /tmp/go.tar.gz
+            PATH="/usr/local/go/bin:$HOME/go/bin:$PATH"
+            export PATH
+            go version
+
+            # OpenBSD's default login class caps data size well below what a
+            # cgo-enabled Go link needs; the bench VMs are tuned for this.
+            ulimit -d unlimited 2>/dev/null || true
+
+            cd "$WS/src"
+            echo "=== Generating wire code ==="
+            go install "github.com/google/wire/cmd/wire@${WIRE_VERSION}"
+            wire ./internal/bootstrap/
+
+            echo "=== Building agent natively ==="
+            CGO_ENABLED=1 \
+            CGO_CFLAGS="" \
+            CGO_LDFLAGS="-L${WS}/dist/lib/openbsd-${ARCH} -lprobe -lm -lc++abi" \
+            go build -ldflags="-s -w" -o /tmp/supervizio ./cmd/agent
+            file /tmp/supervizio || true
+
+            # The whole point. The cross-linked binary dies here, in ld.so,
+            # before main() -- so a plain successful build proves nothing and
+            # only executing it separates a working toolchain from a broken one.
+            echo "=== Does it start? ==="
+            /tmp/supervizio --version
+            echo "native openbsd-${ARCH} binary started cleanly"
+
+            # A binary that starts can still be linked against the wrong probe.
+            # These are the same FFI tests the bench's OpenBSD leg runs.
+            echo "=== Probe FFI tests (native, no -race: unsupported on OpenBSD) ==="
+            CGO_ENABLED=1 \
+            CGO_CFLAGS="" \
+            CGO_LDFLAGS="-L${WS}/dist/lib/openbsd-${ARCH} -lprobe -lm -lc++abi" \
+            go test -count=1 ./internal/infrastructure/probe/...
+
+      - name: Verdict
+        if: always() && steps.gate.outputs.run == 'true'
+        run: |
+          set -eu
+          {
+            echo "### agent openbsd-${{ matrix.arch }} — native build on a public runner"
+            echo ""
+            if [ '${{ job.status }}' = 'success' ]; then
+              echo "Built natively, started cleanly, probe FFI tests passed — with no bench involved."
+            else
+              echo "Failed. See the guest log above: the build, the start, or the FFI tests."
+            fi
+            echo ""
+            echo "- runner: \`${{ matrix.runner }}\` (GitHub-hosted, free on this public repo)"
+            echo "- guest: OpenBSD/${{ matrix.vmarch }} via vmactions"
+            echo "- source: \`${{ env.SOURCE_REPO }}@${{ env.SOURCE_REF }}\`"
+          } >> "$GITHUB_STEP_SUMMARY"
