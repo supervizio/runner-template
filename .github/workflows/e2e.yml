@@ -823,27 +823,29 @@ jobs:
   e2e-windows:
     name: E2E Windows ${{ matrix.name }}
     needs: [resolve]
-    runs-on: supervizio-runner
+    # windows-2022, not windows-latest: the bench VM this replaces is Windows
+    # Server 2022 (agent's e2e/expected-matrix.json pins windows-server-amd64 to
+    # it), and windows-latest drifts to a newer Server release on GitHub's
+    # schedule. Pinning keeps the migration a like-for-like swap instead of a
+    # silent change of what is covered.
+    runs-on: windows-2022
     timeout-minutes: 20
+    # The three other VM legs carry this guard; this one did not, so an
+    # arm_only dispatch used to acquire a bench VM while vm-cleanup was
+    # skipped — a leaked lease, and the bench does not reclaim those
+    # implicitly. Harmless now that no VM is taken, kept for consistency.
+    if: ${{ github.event.inputs.arm_only != 'true' }}
     strategy:
       fail-fast: false
       matrix:
         include:
           - name: windows-server
-    env:
-      # PROXMOX_API_URL est volontairement absent : depuis un pod, le litteral
-      # 192.168.100.1 resout sur le Proxmox de l'hote CI, pas sur le banc (les
-      # deux hotes ont un 192.168.100.0/24 identique et jamais route). L'action
-      # `bench-api-tunnel` ci-dessous forwarde un port loopback vers le banc et
-      # exporte le vrai PROXMOX_API_URL. Voir kodflow/labs#185.
-      PVE_AUTH: "PVEAPIToken=${{ secrets.CI_RUNNER_API_TOKEN_ID }}=${{ secrets.CI_RUNNER_API_TOKEN_SECRET }}"
-      NODE: ${{ secrets.PROXMOX_NODE }}
-      # Keepalive: the supervision battery runs S1-S8 in one long SSH session
-      # (S6 backoff sleeps, S7 rotation, S8 health all add idle time); without it
-      # the Windows OpenSSH server drops the idle session ("closed by remote host",
-      # exit 255) even though the scenarios pass.
-      SSH_OPTS: "-o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o ConnectTimeout=15 -o ServerAliveInterval=15 -o ServerAliveCountMax=8"
-      GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+    defaults:
+      run:
+        # Git Bash ships on the Windows runners. The status-reporting steps are
+        # shared verbatim with the other legs, so keep one shell for the job and
+        # call pwsh explicitly where PowerShell is actually wanted.
+        shell: bash
     steps:
       - name: Report status (pending)
         if: needs.resolve.outputs.sha != ''
@@ -859,114 +861,62 @@ jobs:
       - name: Checkout agent code
         uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
         with:
-          repository: supervizio/agent
+          repository: ${{ needs.resolve.outputs.source_repo }}
           ref: ${{ needs.resolve.outputs.ref }}
           token: ${{ secrets.AGENT_REPO_TOKEN }}
           path: agent
-
-      - name: Init libprobe submodule (needs its own token; AGENT_REPO_TOKEN can't reach the private libprobe repo)
-        working-directory: agent
-        env:
-          GH_TOKEN: ${{ secrets.LIBPROBE_REPO_TOKEN }}
-        run: |
-          git -c url."https://x-access-token:${GH_TOKEN}@github.com/".insteadOf="https://github.com/" \
-            submodule update --init --force --depth=1
-
-      - name: Setup SSH key
-        run: |
-          mkdir -p ~/.ssh && chmod 700 ~/.ssh
-          echo "${{ secrets.CI_SSH_PRIVATE_KEY }}" > ~/.ssh/id_ed25519
-          chmod 600 ~/.ssh/id_ed25519
+          persist-credentials: false
 
       - name: Set up Go
         uses: actions/setup-go@4b73464bb391d4059bd26b0524d20df3927bd417 # v6.3.0
         with:
-          # Same reasoning as the from-source legs above; the agent is checked
-          # out under agent/ in this job, so its go.work lives one level in.
           go-version-file: agent/go.work
 
       - name: Build Windows crasher
         run: |
           set -euo pipefail
           # The supervision battery supervises a separate crasher.exe (pure Go,
-          # CGO_ENABLED=0). Cross-build it here and ship it to the VM — otherwise
-          # supervizio can't spawn it (SPAWN_FAILED, all scenarios count=0).
+          # CGO_ENABLED=0); without it supervizio cannot spawn anything and every
+          # scenario reports count=0. Built natively now — this runner IS Windows,
+          # so the cross-build the bench leg needed is gone.
           ( cd agent/e2e/behavioral/crasher && \
-            GOOS=windows GOARCH=amd64 CGO_ENABLED=0 GOWORK=off go build -ldflags="-s -w" \
-              -o "${GITHUB_WORKSPACE}/crasher.exe" . )
+            CGO_ENABLED=0 GOWORK=off go build -ldflags="-s -w" -o "${GITHUB_WORKSPACE}/crasher.exe" . )
           ls -la "${GITHUB_WORKSPACE}/crasher.exe"
 
-      - name: Download Windows binary from zot (cross-repo)
-        env:
-          ARTIFACT_REGISTRY: 192.168.100.250:5000
-          RUN_ID: ${{ needs.resolve.outputs.run_id }}
-          ARTIFACT: supervizio-windows-amd64
+      # zot is on the lab network and unreachable from a hosted runner, which is
+      # the only reason this leg ever needed the bench. Agent CI mirrors the
+      # E2E-consumed binaries to GitHub artifacts, so the same bytes the bench
+      # built are fetchable cross-repo.
+      - name: Download binary from the agent run (cross-repo)
+        uses: actions/download-artifact@70fc10c6e5e1ce46ad2ea6f2b72d43f7d47b13c3 # v8.0.0
+        with:
+          name: supervizio-windows-amd64
+          path: bin
+          repository: ${{ needs.resolve.outputs.source_repo }}
+          run-id: ${{ needs.resolve.outputs.run_id }}
+          github-token: ${{ secrets.AGENT_REPO_TOKEN }}
+
+      - name: Verify the binary arrived
         run: |
           set -euo pipefail
-          mkdir -p bin
-          # Agent CI publishes binaries to the self-hosted zot store (no GitHub
-          # artifacts). This runner (supervizio-runner) is on the lab network.
-          command -v oras >/dev/null 2>&1 || {
-            v=1.2.0; a=$(uname -m); case "$a" in x86_64) oa=amd64;; aarch64|arm64) oa=arm64;; *) oa=amd64;; esac
-            curl -fsSL "https://github.com/oras-project/oras/releases/download/v${v}/oras_${v}_linux_${oa}.tar.gz" | sudo tar xz -C /usr/local/bin oras
-          }
-          n=0; until oras pull --plain-http "$ARTIFACT_REGISTRY/run-${RUN_ID}/${ARTIFACT}:latest" -o bin; do
-            n=$((n+1)); [ "$n" -ge 5 ] && { echo "::error::zot pull failed for ${ARTIFACT}"; exit 1; }
-            echo "retry $n"; sleep $((n*8))
-          done
           ls -la bin/
-
-      # Checkout supplementaire : ce job ne sort que le depot agent, or l'action
-      # du tunnel vit ici. Repertoire dedie pour ne pas ecraser `agent/`.
-      - name: Checkout runner-template (pour l'action bench-api-tunnel)
-        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
-        with:
-          path: runner-template
-
-      # Doit preceder toute etape qui touche l'API : c'est elle qui fait exister
-      # PROXMOX_API_URL, et elle verifie le CN du certificat puis un 200
-      # authentifie avant qu'un credential ne parte.
-      - name: Open bench API tunnel
-        uses: ./runner-template/.github/actions/bench-api-tunnel
-
-      - name: Acquire VM (lock)
-        id: vm
-        run: |
-          chmod +x agent/.github/scripts/vm-acquire.sh
-          agent/.github/scripts/vm-acquire.sh "${{ matrix.name }}" "${GITHUB_RUN_ID}_e2e-win-${{ matrix.name }}"
-
-      # Declare la VM que ce leg vient de prendre. C'est la SEULE autorite du job
-      # vm-cleanup : sans ce claim, il ne touche pas la VM. Publie tout de suite
-      # apres l'acquisition, donc avant tout test — une VM acquise est toujours
-      # reinitialisee a la fin, meme si le leg echoue ou est annule ensuite.
-      - name: Record VM claim
-        if: always() && steps.vm.outputs.VMID != ''
-        run: echo "${{ steps.vm.outputs.VMID }}" > "vm-claim-win-${{ matrix.name }}.txt"
-
-      - name: Upload VM claim
-        if: always() && steps.vm.outputs.VMID != ''
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
-        with:
-          name: vm-claim-win-${{ matrix.name }}
-          path: vm-claim-win-${{ matrix.name }}.txt
-          retention-days: 1
-          overwrite: true
-          if-no-files-found: ignore
+          # An empty download would otherwise surface as an opaque PowerShell
+          # error deep inside the battery; fail where the cause is legible.
+          BIN=$(find bin -name 'supervizio-windows-amd64*' | head -1)
+          [ -n "$BIN" ] && [ -s "$BIN" ] || {
+            echo "::error::supervizio-windows-amd64 missing or empty — did agent's CI publish it? (E2E_BRIDGE_PLATFORMS)" >&2
+            exit 1
+          }
+          echo "SVZ_BIN=$BIN" >> "$GITHUB_ENV"
 
       - name: Supervision scenarios (PowerShell)
         run: |
-          BIN=$(find bin -name 'supervizio-windows-amd64*' | head -1)
-          ssh ${SSH_OPTS} ${SSH_USER}@${VM_IP} "powershell -NoProfile -Command \"New-Item -ItemType Directory -Force -Path 'C:\\build' | Out-Null\""
-          scp ${SSH_OPTS} "$BIN" ${SSH_USER}@${VM_IP}:C:/build/supervizio.exe
-          scp ${SSH_OPTS} "${GITHUB_WORKSPACE}/crasher.exe" ${SSH_USER}@${VM_IP}:C:/build/crasher.exe
-          scp ${SSH_OPTS} agent/e2e/scenario-battery.ps1 ${SSH_USER}@${VM_IP}:C:/build/scenario-battery.ps1
-          ssh ${SSH_OPTS} ${SSH_USER}@${VM_IP} "powershell -NoProfile -ExecutionPolicy Bypass -File C:\\build\\scenario-battery.ps1 -Sv C:\\build\\supervizio.exe -Crasher C:\\build\\crasher.exe"
-
-      - name: Release VM (unlock)
-        if: always()
-        run: |
-          chmod +x agent/.github/scripts/vm-release.sh
-          agent/.github/scripts/vm-release.sh "${{ steps.vm.outputs.VMID || matrix.name }}"
+          set -euo pipefail
+          # Ran over SSH against a bench VM before; it runs here directly. The
+          # battery is the same file, invoked with the same two arguments.
+          pwsh -NoProfile -ExecutionPolicy Bypass -File agent/e2e/scenario-battery.ps1 \
+            -Sv "$(cygpath -w "$SVZ_BIN")" \
+            -Crasher "$(cygpath -w "${GITHUB_WORKSPACE}/crasher.exe")"
 
       - name: Report status (result)
         if: always() && needs.resolve.outputs.sha != ''
