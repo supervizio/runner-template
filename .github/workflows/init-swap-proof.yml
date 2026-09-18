@@ -166,16 +166,38 @@ jobs:
             # and its /etc/init.d/networking script runs under SysVinit.
             apt-get install -y -qq ifupdown isc-dhcp-client
             IFACE=$(ip -o link | awk -F': ' '$2 != "lo" {print $2; exit}')
-            echo "configuring $IFACE for ifupdown"
+            echo "configuring $IFACE (and eth0) for ifupdown"
+            # BOTH names, deliberately. Predictable interface names (ens4) are
+            # produced by systemd-udevd's net_id builtin. Removing systemd-sysv
+            # can leave udevd unstarted, in which case the kernel keeps the
+            # legacy name and the interface comes back as eth0 -- so an
+            # interfaces file naming only ens4 configures a device that does not
+            # exist, DHCP never runs, and slirp sees no guest traffic at all.
+            # That is exactly what the previous run reported.
+            # allow-hotplug rather than auto: a missing device is then skipped
+            # instead of failing the whole networking script.
             cat > /etc/network/interfaces <<EOF
             auto lo
             iface lo inet loopback
-            auto $IFACE
+            allow-hotplug $IFACE
             iface $IFACE inet dhcp
+            allow-hotplug eth0
+            iface eth0 inet dhcp
             EOF
-            # sshd must also be started by SysVinit rather than a systemd unit.
-            update-rc.d ssh defaults >/dev/null 2>&1 || true
+            # These ship /etc/init.d scripts in trixie (verified), but a cloud
+            # image leaves them disabled because systemd units drive them. Use
+            # `enable`, not `defaults`: defaults is a no-op when the links are
+            # already present but pointing at a disabled state.
             update-rc.d networking defaults >/dev/null 2>&1 || true
+            update-rc.d networking enable   >/dev/null 2>&1 || true
+            update-rc.d ssh defaults        >/dev/null 2>&1 || true
+            update-rc.d ssh enable          >/dev/null 2>&1 || true
+            # udev under sysvinit, so device naming and hotplug still happen.
+            [ -x /etc/init.d/udev ] && { update-rc.d udev defaults >/dev/null 2>&1 || true; }
+            echo "--- runlevel links ---"
+            ls -1 /etc/rc2.d/ 2>/dev/null | head -20
+            echo "--- inittab present? ---"
+            [ -f /etc/inittab ] && head -5 /etc/inittab || echo "NO /etc/inittab (SysVinit has nothing to run)"
             # BOTH options are required, and each was found the hard way:
             #
             #  * `systemd-sysv-` (trailing dash = remove in the same
