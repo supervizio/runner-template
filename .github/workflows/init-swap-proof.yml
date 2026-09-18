@@ -139,7 +139,7 @@ jobs:
   # `systemd`, the mechanism is real and debian-sysvinit can leave the bench.
   # ---------------------------------------------------------------------------
   debian-sysvinit:
-    name: 2 debian + sysvinit-core (expect PID1=init)
+    name: 2 debian + sysvinit-core + ifupdown (expect PID1=init)
     runs-on: ubuntu-24.04
     continue-on-error: true
     timeout-minutes: 25
@@ -152,7 +152,30 @@ jobs:
             export DEBIAN_FRONTEND=noninteractive
             echo "--- BEFORE (inside prepare) ---"
             echo "PID1=$(cat /proc/1/comm)"
+            ip -o link | awk -F': ' '{print "  iface: "$2}'
             apt-get update -qq
+
+            # Networking FIRST, and this is the whole lesson of the previous
+            # attempt. A Debian cloud image brings its interface up through
+            # systemd-networkd/cloud-init. Remove systemd and nothing runs them,
+            # so the guest boots with no address, sshd never answers, and the
+            # action waits until it gives up -- which is exactly what happened:
+            # the swap SUCCEEDED and the VM simply never came back.
+            #
+            # ifupdown + /etc/network/interfaces is the sysvinit-era equivalent,
+            # and its /etc/init.d/networking script runs under SysVinit.
+            apt-get install -y -qq ifupdown isc-dhcp-client
+            IFACE=$(ip -o link | awk -F': ' '$2 != "lo" {print $2; exit}')
+            echo "configuring $IFACE for ifupdown"
+            cat > /etc/network/interfaces <<EOF
+            auto lo
+            iface lo inet loopback
+            auto $IFACE
+            iface $IFACE inet dhcp
+            EOF
+            # sshd must also be started by SysVinit rather than a systemd unit.
+            update-rc.d ssh defaults >/dev/null 2>&1 || true
+            update-rc.d networking defaults >/dev/null 2>&1 || true
             # BOTH options are required, and each was found the hard way:
             #
             #  * `systemd-sysv-` (trailing dash = remove in the same
