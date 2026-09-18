@@ -37,6 +37,28 @@ name: Init-swap proof
 # therefore take effect too: Alpine's s6 / runit / dinit legs CAN move to
 # vmactions, and the qemu-vm action is not needed for them.
 #
+# CONCLUDED on debian-sysvinit — four runs, and the answer is "do not".
+#
+#   35398438742  apt refused the swap        -> needs systemd-sysv- AND
+#                                               --allow-remove-essential
+#   35402344466  swap OK, guest never back   -> "slirp reports no
+#                                               guest-originated traffic"
+#   35403696051  + ifupdown, both iface names-> same silence; diagnostic added
+#                                               here reported NO /etc/inittab
+#   35404954117  + the stock Debian inittab  -> inittab written, SAME silence
+#
+# Each fix was correct and each was necessary. None was sufficient. Converting a
+# systemd-built Debian cloud image into a working SysVinit system needs more
+# than swapping /sbin/init, restoring ifupdown and writing an inittab, and
+# whatever remains is not visible from outside the guest: vmactions gives no
+# console dump, only "no guest-originated traffic".
+#
+# So debian-sysvinit stays on the bench, and the reason is now specific rather
+# than a shrug: the bench VM was installed WITH sysvinit, not converted to it.
+# Anyone reopening this should start by getting a console, not by guessing the
+# fifth cause -- the first three were each found in one run once the right thing
+# was printed, and the fourth never was.
+#
 # ALSO ANSWERED — run 35398438742, experiment 2. The swap itself worked:
 #
 #   INIT_TARGET now: /usr/sbin/init          (was /usr/lib/systemd/systemd)
