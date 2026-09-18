@@ -36,6 +36,17 @@ inputs:
     description: Guest vCPU count
     required: false
     default: "2"
+  image-sha256:
+    description: >-
+      sha256 of the image at image-url. Strongly recommended: without it the
+      action boots an unverified multi-hundred-MB blob from whatever mirror the
+      URL redirects to, and gives it a root shell.
+    required: false
+    default: ""
+  timeout:
+    description: Seconds allowed for the guest script before it is killed
+    required: false
+    default: "1800"
   files:
     description: Newline-separated "src:dest" pairs copied into the guest before `run`
     required: false
@@ -57,23 +68,46 @@ runs:
         sudo apt-get install -y -qq --no-install-recommends \
           qemu-system-x86 qemu-utils cloud-image-utils >/dev/null
         # KVM is present on hosted x86_64 runners but the device is not group-
-        # accessible by default; without this every guest silently falls back to
-        # TCG and the 22s boot becomes minutes.
+        # accessible by default. Assert it exists first: `chmod` on a missing
+        # node aborts under `set -e` with a bare "cannot access" and no clue.
+        # Note -enable-kvm is `-machine accel=kvm`, which is FATAL when KVM is
+        # unavailable -- there is no silent TCG fallback to worry about here.
+        # (`kvm-ok` used to be called here; it ships in cpu-checker, which is
+        # not on the runner image, so it was a no-op.)
+        [ -e /dev/kvm ] || {
+          echo "::error::/dev/kvm is absent on this runner - a KVM guest cannot start" >&2
+          exit 1
+        }
         sudo chmod 666 /dev/kvm
-        kvm-ok 2>/dev/null || true
 
     - name: Boot the guest
       id: boot
       shell: bash
       env:
         IMAGE_URL: ${{ inputs.image-url }}
+        IMAGE_SHA256: ${{ inputs.image-sha256 }}
         MEM: ${{ inputs.memory }}
         CPUS: ${{ inputs.cpus }}
       run: |
         set -euo pipefail
-        mkdir -p "$RUNNER_TEMP/vm" && cd "$RUNNER_TEMP/vm"
+        # Unique per invocation: a hardcoded directory and port made the action
+        # usable at most once per job, and never twice concurrently on a
+        # self-hosted runner -- the second qemu dies on "Could not set up host
+        # forwarding rule" and clobbers the first one's disk and key.
+        VMDIR="$RUNNER_TEMP/vm-$$-$RANDOM"
+        mkdir -p "$VMDIR" && cd "$VMDIR"
+        echo "VMDIR=$VMDIR" >> "$GITHUB_ENV"
+        SSH_PORT=$(python3 -c 'import socket;s=socket.socket();s.bind(("127.0.0.1",0));print(s.getsockname()[1]);s.close()')
+        echo "SSH_PORT=$SSH_PORT" >> "$GITHUB_ENV"
 
-        curl -fsSL -o base.qcow2 "$IMAGE_URL"
+        # --retry: hosted apt/mirror flakiness is a known failure source, and a
+        # bare curl turns one transient 5xx into a red leg.
+        curl -fsSL --retry 5 --retry-all-errors --max-time 900 -o base.qcow2 "$IMAGE_URL"
+        if [ -n "${IMAGE_SHA256:-}" ]; then
+          echo "${IMAGE_SHA256}  base.qcow2" | sha256sum -c -
+        else
+          echo "::warning::no image-sha256 given - booting an unverified image and giving it a root shell"
+        fi
         # Copy-on-write overlay: the base stays pristine and the guest's writes
         # cost tens of MiB, not the image size.
         qemu-img create -f qcow2 -F qcow2 -b base.qcow2 disk.qcow2 10G >/dev/null
@@ -90,6 +124,12 @@ runs:
             lock_passwd: false
         ssh_pwauth: false
         disable_root: false
+        runcmd:
+          # lock_passwd: false only DECLINES to lock; it does not unlock. That
+          # suffices on Alpine because its stock root hash is `*`, but any
+          # non-PAM image shipping root as `!` would still refuse the key, and
+          # the symptom is an indistinguishable readiness timeout.
+          - [ sh, -c, "passwd -u root 2>/dev/null || sed -i 's/^root:!*:/root:*:/' /etc/shadow" ]
         CLOUDCFG
         printf 'instance-id: e2e\nlocal-hostname: e2e\n' > meta-data
         cloud-localds seed.iso user-data meta-data
@@ -98,25 +138,35 @@ runs:
           -smp "$CPUS" -m "$MEM" \
           -drive file=disk.qcow2,if=virtio,format=qcow2 \
           -drive file=seed.iso,if=virtio,format=raw,readonly=on \
-          -netdev user,id=n0,hostfwd=tcp:127.0.0.1:2222-:22 \
+          -netdev user,id=n0,hostfwd=tcp:127.0.0.1:${SSH_PORT}-:22 \
           -device virtio-net-pci,netdev=n0 \
-          -display none -serial file:console.log -daemonize
+          -display none -serial file:console.log \
+          -pidfile qemu.pid -daemonize
 
-        SSH="ssh -i vmkey -p 2222 -o StrictHostKeyChecking=no \
-             -o UserKnownHostsFile=/dev/null -o ConnectTimeout=5 -o LogLevel=ERROR"
+        SSH="ssh -i vmkey -p ${SSH_PORT} -o StrictHostKeyChecking=no \
+             -o UserKnownHostsFile=/dev/null -o ConnectTimeout=5 -o LogLevel=ERROR \
+             -o ServerAliveInterval=15 -o ServerAliveCountMax=4"
         echo "SSH_CMD=$SSH" >> "$GITHUB_ENV"
 
-        # 22-33s is the measured range; 180s leaves room for a cold image and a
-        # contended runner without masking a guest that never comes up.
-        for i in $(seq 1 90); do
+        # Bounded by WALL CLOCK, not by iteration count. While the hostfwd is
+        # bound but the guest's sshd is not yet listening, SLIRP accepts the TCP
+        # connection and black-holes it, so every probe costs the full
+        # ConnectTimeout. A 90-iteration loop therefore budgets ~10.5 minutes,
+        # not the 180s it reads like -- measured. Elapsed time is also what gets
+        # reported, instead of a count-derived guess that was wrong by 2-3x in
+        # every run measured.
+        started=$SECONDS
+        while [ $((SECONDS - started)) -lt 180 ]; do
           if $SSH root@127.0.0.1 true 2>/dev/null; then
-            echo "guest up after ~$((i*2))s"
-            $SSH root@127.0.0.1 'echo "PID1: $(ps -p 1 -o comm= 2>/dev/null)"; uname -srm'
+            echo "guest up after $((SECONDS - started))s"
+            # /proc/1/comm, not `ps -p 1`: BusyBox ps has no -p, so on Alpine
+            # that probe fails and a pipe to tr would swallow the status.
+            $SSH root@127.0.0.1 'echo "PID1: $(cat /proc/1/comm)"; uname -srm'
             exit 0
           fi
           sleep 2
         done
-        echo "::error::guest never reached SSH — console tail follows" >&2
+        echo "::error::guest never reached SSH within 180s - console tail follows" >&2
         tail -40 console.log >&2 || true
         exit 1
 
@@ -127,37 +177,56 @@ runs:
         FILES: ${{ inputs.files }}
       run: |
         set -euo pipefail
-        cd "$RUNNER_TEMP/vm"
+        cd "$VMDIR"
         printf '%s\n' "$FILES" | while IFS= read -r pair; do
+          pair="$(printf '%s' "$pair" | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')"
           [ -n "$pair" ] || continue
           src="${pair%%:*}"; dst="${pair#*:}"
-          # scp, never a guest-side download: SLIRP egress is 77x slower.
-          scp -i vmkey -P 2222 -o StrictHostKeyChecking=no \
+          # Absolute sources allowed: the realistic caller pushes something
+          # actions/download-artifact left under $RUNNER_TEMP, which is outside
+          # the workspace and used to resolve to "$GITHUB_WORKSPACE//abs/path".
+          case "$src" in /*) abs="$src" ;; *) abs="$GITHUB_WORKSPACE/$src" ;; esac
+          [ -e "$abs" ] || { echo "::error::files: '$abs' does not exist" >&2; exit 1; }
+          scp -i vmkey -P "$SSH_PORT" -o StrictHostKeyChecking=no \
               -o UserKnownHostsFile=/dev/null -o LogLevel=ERROR \
-              "$GITHUB_WORKSPACE/$src" "root@127.0.0.1:$dst"
+              "$abs" "root@127.0.0.1:$dst"
         done
 
     - name: Run the script in the guest
       shell: bash
       env:
         GUEST_SCRIPT: ${{ inputs.run }}
+        GUEST_TIMEOUT: ${{ inputs.timeout }}
       run: |
         set -euo pipefail
-        cd "$RUNNER_TEMP/vm"
+        cd "$VMDIR"
         printf '%s' "$GUEST_SCRIPT" > guest.sh
-        scp -i vmkey -P 2222 -o StrictHostKeyChecking=no \
+        scp -i vmkey -P "$SSH_PORT" -o StrictHostKeyChecking=no \
             -o UserKnownHostsFile=/dev/null -o LogLevel=ERROR \
             guest.sh root@127.0.0.1:/tmp/guest.sh
-        $SSH_CMD root@127.0.0.1 'sh -e /tmp/guest.sh'
+        # ConnectTimeout bounds connection setup only; a hung test would
+        # otherwise burn the whole job budget and be killed by GitHub, which is
+        # the least legible way to find out.
+        timeout "${GUEST_TIMEOUT}" $SSH_CMD root@127.0.0.1 'sh -e /tmp/guest.sh'
 
     - name: Tear the guest down
       if: always()
       shell: bash
       run: |
-        cd "$RUNNER_TEMP/vm" 2>/dev/null || exit 0
-        # Graceful first (2.2s measured), then make sure nothing is left holding
-        # the port for a sibling job on the same runner.
+        cd "${VMDIR:-$RUNNER_TEMP/nonexistent}" 2>/dev/null || exit 0
+        # Graceful first (~2-3s measured), then this VM's own pid -- never
+        # `pkill -f qemu-system-x86_64.*disk.qcow2`, which was measured killing
+        # EVERY sibling VM on the host, since every use of this action names its
+        # overlay disk.qcow2. Invisible on a hosted runner (one VM per job),
+        # destructive on a self-hosted one running legs in parallel.
         ${SSH_CMD:-true} root@127.0.0.1 'poweroff' 2>/dev/null || true
         sleep 3
-        pkill -f 'qemu-system-x86_64.*disk.qcow2' 2>/dev/null || true
+        if [ -s qemu.pid ]; then
+          pid=$(cat qemu.pid)
+          kill "$pid" 2>/dev/null || true
+          sleep 2
+          kill -0 "$pid" 2>/dev/null && kill -9 "$pid" 2>/dev/null || true
+        fi
         echo "=== guest console (tail) ==="; tail -20 console.log 2>/dev/null || true
+        # Reclaim the image: irrelevant on a hosted runner, not on a shared one.
+        rm -f base.qcow2 disk.qcow2 seed.iso 2>/dev/null || true

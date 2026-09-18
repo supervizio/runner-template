@@ -48,22 +48,43 @@ jobs:
     steps:
       - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
 
+      - name: Prepare a file to push into the guest
+        run: echo "pushed-by-selftest" > payload.txt
+
       - name: Boot ${{ matrix.name }} and assert its init
         uses: ./.github/actions/qemu-vm
+        env:
+          # Through env, not interpolated into the guest script: the action
+          # itself passes `run` via env for exactly this reason, and doing it
+          # here too keeps the property end to end.
+          EXPECTED_INIT: ${{ matrix.init }}
+          LEG_NAME: ${{ matrix.name }}
+          MANAGER_PROBE: ${{ matrix.probe }}
         with:
           image-url: ${{ matrix.url }}
           memory: "2048"
+          # Exercises the `files` path, which nothing else here would.
+          files: |
+            payload.txt:/tmp/payload.txt
           run: |
             echo "=== uname ==="; uname -srm
             echo "=== PID 1 ==="
-            pid1=$(ps -p 1 -o comm= | tr -d ' ')
+            # /proc/1/comm, NOT `ps -p 1 -o comm=`: BusyBox ps has no -p
+            # ("ps: unrecognized option: p") and procps is not installed on the
+            # stock Alpine cloud image, so that probe fails there every time --
+            # and piping it to `tr` swallowed the status, leaving an empty
+            # value and an assertion that could never pass.
+            pid1=$(cat /proc/1/comm)
             echo "comm=$pid1  exe=$(readlink -f /proc/1/exe 2>/dev/null || echo '?')"
             # The assertion the whole migration rests on: a REAL init, not a
             # container entrypoint pretending to be one.
-            [ "$pid1" = "${{ matrix.init }}" ] || {
-              echo "::error::PID 1 is '$pid1', expected '${{ matrix.init }}'"
+            [ "$pid1" = "$EXPECTED_INIT" ] || {
+              echo "::error::PID 1 is '$pid1', expected '$EXPECTED_INIT'"
               exit 1
             }
+            echo "=== file push ==="
+            grep -qx 'pushed-by-selftest' /tmp/payload.txt || {
+              echo "::error::files: payload did not arrive intact"; exit 1; }
             echo "=== service manager ==="
-            ${{ matrix.probe }}
-            echo "OK ${{ matrix.name }}: real init, manager answering"
+            sh -c "$MANAGER_PROBE"
+            echo "OK $LEG_NAME: real init, manager answering, file push works"
