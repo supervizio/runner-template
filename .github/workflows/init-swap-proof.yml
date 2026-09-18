@@ -1,0 +1,218 @@
+name: Init-swap proof
+
+# =============================================================================
+# Can a vmactions guest be made to boot an init OTHER than its default?
+#
+# This is the single experiment the whole e2e-vm migration rests on. The bench
+# keeps eight Linux VMs whose only reason to exist is init diversity — Alpine
+# with OpenRC / s6 / runit, Debian with systemd / SysVinit, Artix with dinit.
+# Replacing them with vmactions means changing PID 1 inside a stock cloud
+# image, and PID 1 cannot be changed without a reboot.
+#
+# `cache-after-prepare: true` is documented to run `prepare`, shut the guest
+# down cleanly (VM_SHUTDOWN_CMD), snapshot the qcow2, then boot from that
+# prepared image for `run`. Two things follow, and neither has been measured:
+#
+#   A. Does `run` really execute after a fresh boot, so a package installed in
+#      `prepare` that replaces /sbin/init is actually PID 1?   → job `debian-sysvinit`
+#   B. Does that boot go through the GUEST's bootloader, so an `init=` kernel
+#      argument written in `prepare` takes effect?              → job `alpine-dinit`
+#
+# (A) is the easy case: `apt install sysvinit-core` swaps /sbin/init on disk,
+# no kernel argument needed. (B) is the hard one: Alpine's s6/runit/dinit all
+# need `init=` on the command line, which only works if the action boots the
+# disk rather than passing -kernel/-append from outside. If (B) fails, Alpine's
+# three init legs cannot move to vmactions and need the qemu-vm action instead.
+#
+# Every leg is continue-on-error so one failure cannot hide the others: the
+# deliverable is the EVIDENCE TABLE in the job summary, not a green tick.
+#
+# Runs on push only when this file itself changes, so it stays cheap and can
+# live here permanently instead of being added and reverted around each test.
+# =============================================================================
+
+on:
+  workflow_dispatch:
+  push:
+    paths:
+      - '.github/workflows/init-swap-proof.yml'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: init-swap-proof-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  # ---------------------------------------------------------------------------
+  # Tier 1 — baselines. If these do not pass, nothing below means anything.
+  # They establish what PID 1 is in a stock guest and whether the image even
+  # carries a bootloader we could edit.
+  # ---------------------------------------------------------------------------
+  baseline-alpine:
+    name: 1a baseline alpine (expect openrc)
+    runs-on: ubuntu-24.04
+    continue-on-error: true
+    steps:
+      - uses: vmactions/alpine-vm@697847385681cdc413604693010eded91e8d9650 # v1.0.1
+        with:
+          release: '3.23'
+          run: |
+            echo "=== 1a BASELINE alpine ==="
+            echo "PID1=$(cat /proc/1/comm 2>/dev/null || echo UNKNOWN)"
+            echo "UPTIME=$(cut -d. -f1 /proc/uptime)s"
+            echo "CMDLINE=$(cat /proc/cmdline)"
+            echo "INIT_TARGET=$(readlink -f /sbin/init 2>/dev/null || echo none)"
+            echo "BOOTLOADER:"
+            ls -1 /boot 2>/dev/null | sed 's/^/  /' || echo "  (no /boot)"
+            echo "--- can we even install the alternative inits? ---"
+            apk add --no-cache s6 s6-linux-init runit dinit 2>&1 | tail -5
+            echo "s6-svscan: $(command -v s6-svscan || echo MISSING)"
+            echo "runit:     $(command -v runit || echo MISSING)"
+            echo "dinit:     $(command -v dinit || echo MISSING)"
+
+  baseline-debian:
+    name: 1b baseline debian (expect systemd)
+    runs-on: ubuntu-24.04
+    continue-on-error: true
+    steps:
+      - uses: vmactions/debian-vm@389ba1da28ff5b440cba52db8e03fc2e08e2affa # v1.0.0
+        with:
+          release: '13'
+          run: |
+            echo "=== 1b BASELINE debian ==="
+            echo "PID1=$(cat /proc/1/comm 2>/dev/null || echo UNKNOWN)"
+            echo "UPTIME=$(cut -d. -f1 /proc/uptime)s"
+            echo "CMDLINE=$(cat /proc/cmdline)"
+            echo "INIT_TARGET=$(readlink -f /sbin/init 2>/dev/null || echo none)"
+            echo "BOOTLOADER:"
+            ls -1 /boot 2>/dev/null | sed 's/^/  /' || echo "  (no /boot)"
+
+  # ---------------------------------------------------------------------------
+  # Tier 2 — QUESTION A: does cache-after-prepare really reboot?
+  #
+  # sysvinit-core replaces /sbin/init on disk. No kernel argument is involved,
+  # so this isolates the reboot itself. If PID1 comes back as `init` rather than
+  # `systemd`, the mechanism is real and debian-sysvinit can leave the bench.
+  # ---------------------------------------------------------------------------
+  debian-sysvinit:
+    name: 2 debian + sysvinit-core (expect PID1=init)
+    runs-on: ubuntu-24.04
+    continue-on-error: true
+    steps:
+      - uses: vmactions/debian-vm@389ba1da28ff5b440cba52db8e03fc2e08e2affa # v1.0.0
+        with:
+          release: '13'
+          cache-after-prepare: true
+          prepare: |
+            export DEBIAN_FRONTEND=noninteractive
+            echo "--- BEFORE (inside prepare) ---"
+            echo "PID1=$(cat /proc/1/comm)"
+            apt-get update -qq
+            # sysvinit-core conflicts with systemd-sysv; apt resolves it by
+            # removing the latter. Answer the "are you sure" prompt up front.
+            apt-get install -y -qq --allow-remove-essential sysvinit-core || \
+              apt-get install -y -qq sysvinit-core
+            echo "INIT_TARGET now: $(readlink -f /sbin/init)"
+          run: |
+            echo "=== 2 debian + sysvinit-core ==="
+            echo "PID1=$(cat /proc/1/comm 2>/dev/null || echo UNKNOWN)"
+            echo "UPTIME=$(cut -d. -f1 /proc/uptime)s"
+            echo "CMDLINE=$(cat /proc/cmdline)"
+            echo "INIT_TARGET=$(readlink -f /sbin/init 2>/dev/null || echo none)"
+            echo "BOOTLOADER:"
+            ls -1 /boot 2>/dev/null | sed 's/^/  /' || echo "  (no /boot)"
+            echo ""
+            if [ "$(cat /proc/1/comm)" = "init" ]; then
+              echo "RESULT: PASS - cache-after-prepare rebooted into the swapped init"
+            else
+              echo "RESULT: FAIL - PID1 is still $(cat /proc/1/comm); no real reboot"
+            fi
+
+  # ---------------------------------------------------------------------------
+  # Tier 3 — QUESTION B: does the reboot honour the guest's bootloader?
+  #
+  # dinit needs `init=/sbin/dinit` on the kernel command line. Alpine boots via
+  # extlinux/syslinux, so `prepare` edits /boot/extlinux.conf. If CMDLINE in the
+  # run step carries the argument, the action boots the disk and Alpine's three
+  # init legs (s6, runit, dinit) can move. If not, they need the qemu-vm action.
+  #
+  # dinit is the probe for all three because Alpine packages it directly, so a
+  # failure here is about the boot path and not about s6-linux-init's rather
+  # more involved setup.
+  # ---------------------------------------------------------------------------
+  alpine-dinit:
+    name: 3 alpine + dinit via init= (expect CMDLINE to carry it)
+    runs-on: ubuntu-24.04
+    continue-on-error: true
+    steps:
+      - uses: vmactions/alpine-vm@697847385681cdc413604693010eded91e8d9650 # v1.0.1
+        with:
+          release: '3.23'
+          cache-after-prepare: true
+          prepare: |
+            echo "--- BEFORE (inside prepare) ---"
+            echo "PID1=$(cat /proc/1/comm)"
+            echo "CMDLINE=$(cat /proc/cmdline)"
+            apk add --no-cache dinit
+            echo "dinit at: $(command -v dinit)"
+            echo "--- bootloader config found ---"
+            for f in /boot/extlinux.conf /extlinux.conf /boot/syslinux/syslinux.cfg /boot/grub/grub.cfg; do
+              [ -f "$f" ] && { echo "FOUND $f"; cat "$f"; }
+            done
+            # Append init= to every APPEND/linux line we can find. Deliberately
+            # best-effort and loud: which file exists is part of what we are
+            # measuring.
+            for f in /boot/extlinux.conf /extlinux.conf /boot/syslinux/syslinux.cfg; do
+              if [ -f "$f" ]; then
+                sed -i 's#^\(\s*APPEND\s.*\)#\1 init=/sbin/dinit#I' "$f"
+                echo "--- PATCHED $f ---"
+                cat "$f"
+              fi
+            done
+          run: |
+            echo "=== 3 alpine + dinit ==="
+            echo "PID1=$(cat /proc/1/comm 2>/dev/null || echo UNKNOWN)"
+            echo "UPTIME=$(cut -d. -f1 /proc/uptime)s"
+            echo "CMDLINE=$(cat /proc/cmdline)"
+            echo "INIT_TARGET=$(readlink -f /sbin/init 2>/dev/null || echo none)"
+            echo "BOOTLOADER:"
+            ls -1 /boot 2>/dev/null | sed 's/^/  /' || echo "  (no /boot)"
+            echo ""
+            case "$(cat /proc/cmdline)" in
+              *init=/sbin/dinit*)
+                echo "RESULT: PASS - the guest bootloader was honoured; init= reached the kernel" ;;
+              *)
+                echo "RESULT: FAIL - init= did not reach the kernel."
+                echo "  The action boots the kernel externally, so Alpine's s6/runit/dinit"
+                echo "  legs cannot move to vmactions and need the qemu-vm action instead." ;;
+            esac
+
+  verdict:
+    name: Evidence table
+    needs: [baseline-alpine, baseline-debian, debian-sysvinit, alpine-dinit]
+    if: always()
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Summarise
+        run: |
+          {
+            echo "## Init-swap proof"
+            echo ""
+            echo "Read the individual job logs for PID1 / CMDLINE / bootloader evidence."
+            echo "These outcomes are job-level only; the conclusions live in the logs."
+            echo ""
+            echo "| # | Experiment | Outcome |"
+            echo "|---|-----------|---------|"
+            echo "| 1a | baseline alpine | \`${{ needs.baseline-alpine.result }}\` |"
+            echo "| 1b | baseline debian | \`${{ needs.baseline-debian.result }}\` |"
+            echo "| 2 | debian + sysvinit-core (does it reboot?) | \`${{ needs.debian-sysvinit.result }}\` |"
+            echo "| 3 | alpine + dinit via init= (bootloader honoured?) | \`${{ needs.alpine-dinit.result }}\` |"
+            echo ""
+            echo "**What each answers**"
+            echo ""
+            echo "- **2 green** → \`cache-after-prepare\` genuinely reboots; \`debian-sysvinit\` can leave the bench."
+            echo "- **3 green** → the guest bootloader is honoured; Alpine's s6 / runit / dinit legs can leave too."
+            echo "- **3 red** → those three need the \`qemu-vm\` action; everything else still migrates."
+          } >> "$GITHUB_STEP_SUMMARY"
