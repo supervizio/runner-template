@@ -1499,14 +1499,24 @@ jobs:
           run-id: ${{ needs.resolve.outputs.run_id }}
           github-token: ${{ secrets.AGENT_REPO_TOKEN }}
 
-      - name: Verify the package arrived
+      # nfpm emits VERSION-qualified, packager-native names
+      # (supervizio_0.0.0_amd64.deb, supervizio-0.0.0-1.x86_64.rpm). Only
+      # release.yml renames them to the canonical supervizio-<arch>.<ext>, and
+      # that happens at RELEASE time -- a CI artifact carries the raw name. So
+      # resolve by extension and normalise, rather than asserting a name the
+      # artifact never had. This is the same drift pkg-asset-naming.bats exists
+      # to pin, seen from the consuming end.
+      - name: Resolve and normalise the package
         run: |
           set -euo pipefail
           ls -la pkg/
-          [ -s "pkg/supervizio-amd64.apk" ] || {
-            echo "::error::supervizio-amd64.apk missing or empty — did agent's packages-musl publish it? (public E2E bridge)" >&2
+          found=$(find pkg -type f -name "*.apk" | head -1)
+          [ -n "$found" ] && [ -s "$found" ] || {
+            echo "::error::no *.apk in the downloaded artifact — did agent publish it? (public E2E bridge)" >&2
             exit 1
           }
+          [ "$found" = "pkg/supervizio-amd64.apk" ] || mv "$found" "pkg/supervizio-amd64.apk"
+          ls -l "pkg/supervizio-amd64.apk"
 
       - name: Install, graft, validate and uninstall in a alpine guest
         uses: vmactions/alpine-vm@697847385681cdc413604693010eded91e8d9650 # v1.0.1
@@ -1602,14 +1612,24 @@ jobs:
           run-id: ${{ needs.resolve.outputs.run_id }}
           github-token: ${{ secrets.AGENT_REPO_TOKEN }}
 
-      - name: Verify the package arrived
+      # nfpm emits VERSION-qualified, packager-native names
+      # (supervizio_0.0.0_amd64.deb, supervizio-0.0.0-1.x86_64.rpm). Only
+      # release.yml renames them to the canonical supervizio-<arch>.<ext>, and
+      # that happens at RELEASE time -- a CI artifact carries the raw name. So
+      # resolve by extension and normalise, rather than asserting a name the
+      # artifact never had. This is the same drift pkg-asset-naming.bats exists
+      # to pin, seen from the consuming end.
+      - name: Resolve and normalise the package
         run: |
           set -euo pipefail
           ls -la pkg/
-          [ -s "pkg/supervizio-amd64.deb" ] || {
-            echo "::error::supervizio-amd64.deb missing or empty — did agent's packages-glibc publish it? (public E2E bridge)" >&2
+          found=$(find pkg -type f -name "*.deb" | head -1)
+          [ -n "$found" ] && [ -s "$found" ] || {
+            echo "::error::no *.deb in the downloaded artifact — did agent publish it? (public E2E bridge)" >&2
             exit 1
           }
+          [ "$found" = "pkg/supervizio-amd64.deb" ] || mv "$found" "pkg/supervizio-amd64.deb"
+          ls -l "pkg/supervizio-amd64.deb"
 
       - name: Install, graft, validate and uninstall in a debian guest
         uses: vmactions/debian-vm@389ba1da28ff5b440cba52db8e03fc2e08e2affa # v1.0.0
@@ -1705,14 +1725,24 @@ jobs:
           run-id: ${{ needs.resolve.outputs.run_id }}
           github-token: ${{ secrets.AGENT_REPO_TOKEN }}
 
-      - name: Verify the package arrived
+      # nfpm emits VERSION-qualified, packager-native names
+      # (supervizio_0.0.0_amd64.deb, supervizio-0.0.0-1.x86_64.rpm). Only
+      # release.yml renames them to the canonical supervizio-<arch>.<ext>, and
+      # that happens at RELEASE time -- a CI artifact carries the raw name. So
+      # resolve by extension and normalise, rather than asserting a name the
+      # artifact never had. This is the same drift pkg-asset-naming.bats exists
+      # to pin, seen from the consuming end.
+      - name: Resolve and normalise the package
         run: |
           set -euo pipefail
           ls -la pkg/
-          [ -s "pkg/supervizio-amd64.rpm" ] || {
-            echo "::error::supervizio-amd64.rpm missing or empty — did agent's packages-glibc publish it? (public E2E bridge)" >&2
+          found=$(find pkg -type f -name "*.rpm" | head -1)
+          [ -n "$found" ] && [ -s "$found" ] || {
+            echo "::error::no *.rpm in the downloaded artifact — did agent publish it? (public E2E bridge)" >&2
             exit 1
           }
+          [ "$found" = "pkg/supervizio-amd64.rpm" ] || mv "$found" "pkg/supervizio-amd64.rpm"
+          ls -l "pkg/supervizio-amd64.rpm"
 
       - name: Install, graft, validate and uninstall in a rockylinux guest
         uses: vmactions/rockylinux-vm@4d78b486fbcbfd7837c11bd7a2f0d4dc04b21464 # v1.0.1
@@ -1820,14 +1850,24 @@ jobs:
           run-id: ${{ needs.resolve.outputs.run_id }}
           github-token: ${{ secrets.AGENT_REPO_TOKEN }}
 
-      - name: Verify the package arrived
+      # nfpm emits VERSION-qualified, packager-native names
+      # (supervizio_0.0.0_amd64.deb, supervizio-0.0.0-1.x86_64.rpm). Only
+      # release.yml renames them to the canonical supervizio-<arch>.<ext>, and
+      # that happens at RELEASE time -- a CI artifact carries the raw name. So
+      # resolve by extension and normalise, rather than asserting a name the
+      # artifact never had. This is the same drift pkg-asset-naming.bats exists
+      # to pin, seen from the consuming end.
+      - name: Resolve and normalise the package
         run: |
           set -euo pipefail
           ls -la pkg/
-          [ -s "pkg/supervizio-amd64.rpm" ] || {
-            echo "::error::supervizio-amd64.rpm missing or empty — did agent's packages-glibc publish it? (public E2E bridge)" >&2
+          found=$(find pkg -type f -name "*.rpm" | head -1)
+          [ -n "$found" ] && [ -s "$found" ] || {
+            echo "::error::no *.rpm in the downloaded artifact — did agent publish it? (public E2E bridge)" >&2
             exit 1
           }
+          [ "$found" = "pkg/supervizio-amd64.rpm" ] || mv "$found" "pkg/supervizio-amd64.rpm"
+          ls -l "pkg/supervizio-amd64.rpm"
 
       - name: Install, graft, validate and uninstall in an openSUSE guest
         uses: ./.github/actions/qemu-vm
@@ -1946,14 +1986,24 @@ jobs:
           run-id: ${{ needs.resolve.outputs.run_id }}
           github-token: ${{ secrets.AGENT_REPO_TOKEN }}
 
-      - name: Verify the package arrived
+      # nfpm emits VERSION-qualified, packager-native names
+      # (supervizio_0.0.0_amd64.deb, supervizio-0.0.0-1.x86_64.rpm). Only
+      # release.yml renames them to the canonical supervizio-<arch>.<ext>, and
+      # that happens at RELEASE time -- a CI artifact carries the raw name. So
+      # resolve by extension and normalise, rather than asserting a name the
+      # artifact never had. This is the same drift pkg-asset-naming.bats exists
+      # to pin, seen from the consuming end.
+      - name: Resolve and normalise the package
         run: |
           set -euo pipefail
           ls -la pkg/
-          [ -s "pkg/supervizio-amd64.pkg.tar.zst" ] || {
-            echo "::error::supervizio-amd64.pkg.tar.zst missing or empty — did agent's packages-archlinux publish it? (public E2E bridge)" >&2
+          found=$(find pkg -type f -name "*.pkg.tar.zst" | head -1)
+          [ -n "$found" ] && [ -s "$found" ] || {
+            echo "::error::no *.pkg.tar.zst in the downloaded artifact — did agent publish it? (public E2E bridge)" >&2
             exit 1
           }
+          [ "$found" = "pkg/supervizio-amd64.pkg.tar.zst" ] || mv "$found" "pkg/supervizio-amd64.pkg.tar.zst"
+          ls -l "pkg/supervizio-amd64.pkg.tar.zst"
 
       - name: Install, graft, validate and uninstall in an Arch guest
         uses: ./.github/actions/qemu-vm
@@ -2073,14 +2123,24 @@ jobs:
           run-id: ${{ needs.resolve.outputs.run_id }}
           github-token: ${{ secrets.AGENT_REPO_TOKEN }}
 
-      - name: Verify the package arrived
+      # nfpm emits VERSION-qualified, packager-native names
+      # (supervizio_0.0.0_amd64.deb, supervizio-0.0.0-1.x86_64.rpm). Only
+      # release.yml renames them to the canonical supervizio-<arch>.<ext>, and
+      # that happens at RELEASE time -- a CI artifact carries the raw name. So
+      # resolve by extension and normalise, rather than asserting a name the
+      # artifact never had. This is the same drift pkg-asset-naming.bats exists
+      # to pin, seen from the consuming end.
+      - name: Resolve and normalise the package
         run: |
           set -euo pipefail
           ls -la pkg/
-          [ -s "pkg/supervizio-amd64.apk" ] || {
-            echo "::error::supervizio-amd64.apk missing or empty — did agent's packages-musl publish it? (public E2E bridge)" >&2
+          found=$(find pkg -type f -name "*.apk" | head -1)
+          [ -n "$found" ] && [ -s "$found" ] || {
+            echo "::error::no *.apk in the downloaded artifact — did agent publish it? (public E2E bridge)" >&2
             exit 1
           }
+          [ "$found" = "pkg/supervizio-amd64.apk" ] || mv "$found" "pkg/supervizio-amd64.apk"
+          ls -l "pkg/supervizio-amd64.apk"
 
       - name: Install, graft onto runsvdir, validate and uninstall
         uses: vmactions/alpine-vm@697847385681cdc413604693010eded91e8d9650 # v1.0.1
@@ -2191,14 +2251,24 @@ jobs:
           run-id: ${{ needs.resolve.outputs.run_id }}
           github-token: ${{ secrets.AGENT_REPO_TOKEN }}
 
-      - name: Verify the package arrived
+      # nfpm emits VERSION-qualified, packager-native names
+      # (supervizio_0.0.0_amd64.deb, supervizio-0.0.0-1.x86_64.rpm). Only
+      # release.yml renames them to the canonical supervizio-<arch>.<ext>, and
+      # that happens at RELEASE time -- a CI artifact carries the raw name. So
+      # resolve by extension and normalise, rather than asserting a name the
+      # artifact never had. This is the same drift pkg-asset-naming.bats exists
+      # to pin, seen from the consuming end.
+      - name: Resolve and normalise the package
         run: |
           set -euo pipefail
           ls -la pkg/
-          [ -s "pkg/supervizio-amd64.apk" ] || {
-            echo "::error::supervizio-amd64.apk missing or empty — did agent's packages-musl publish it? (public E2E bridge)" >&2
+          found=$(find pkg -type f -name "*.apk" | head -1)
+          [ -n "$found" ] && [ -s "$found" ] || {
+            echo "::error::no *.apk in the downloaded artifact — did agent publish it? (public E2E bridge)" >&2
             exit 1
           }
+          [ "$found" = "pkg/supervizio-amd64.apk" ] || mv "$found" "pkg/supervizio-amd64.apk"
+          ls -l "pkg/supervizio-amd64.apk"
 
       - name: Install, graft onto s6-svscan, validate and uninstall
         uses: vmactions/alpine-vm@697847385681cdc413604693010eded91e8d9650 # v1.0.1
