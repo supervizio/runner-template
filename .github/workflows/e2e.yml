@@ -2799,6 +2799,10 @@ jobs:
           prepare: pkg install -y jq
           run: |
             set -e
+            # TCG, not KVM: this guest has no physical CPU clock, so the probe
+            # reports .cpu.frequency_mhz as null. The amd64 sibling runs under
+            # KVM and reports one, which is why only the arm64 legs needed this.
+            SVZ_EMULATED_CPU=1; export SVZ_EMULATED_CPU
             WS="$(pwd)"
             echo "=== Platform ==="; uname -a
             export SUPERVIZIO_LOCAL_BIN="$WS/bin/supervizio"
@@ -2935,6 +2939,10 @@ jobs:
           prepare: /usr/sbin/pkg_add jq
           run: |
             set -e
+            # TCG, not KVM: this guest has no physical CPU clock, so the probe
+            # reports .cpu.frequency_mhz as null. The amd64 sibling runs under
+            # KVM and reports one, which is why only the arm64 legs needed this.
+            SVZ_EMULATED_CPU=1; export SVZ_EMULATED_CPU
             WS="$(pwd)"
             echo "=== Platform ==="; uname -a
             export SUPERVIZIO_LOCAL_BIN="$WS/bin/supervizio"
