@@ -2768,8 +2768,33 @@ jobs:
             cp "$WS/${OPENBSD_PKG}" "$STAGED"
             ls -l "$STAGED"
             echo "--- first entries ---"; tar tzf "$STAGED" | head -5 || true
-            echo "--- pkg_add -v ---"
+            echo "--- pkg_add -v (as published) ---"
             pkg_add -v "$STAGED" 2>&1 | head -40 || true
+
+            # With -D unsigned the install gets past the signature and dies on
+            # "archive member not found +COMMENT", for a member `tar tzf` lists.
+            # pkg_add reads the stream once and in order, so the suspicion is
+            # the ORDER build-pkg.sh writes (+CONTENTS +COMMENT +DESC): if
+            # pkg_add wants +DESC first it consumes +COMMENT looking for it and
+            # can never come back. Two alternatives, measured in this one run
+            # rather than one per run -- three round trips have already gone
+            # into this leg.
+            echo "--- variant A: +CONTENTS +DESC +COMMENT ---"
+            VA="$RUNNER_TEMP/varA"; rm -rf "$VA"; mkdir -p "$VA"
+            ( cd "$VA" && tar -xzf "$WS/${OPENBSD_PKG}" ) 2>/dev/null || true
+            ( cd "$VA" && tar czf /tmp/varA.tgz +CONTENTS +DESC +COMMENT etc usr ) 2>/dev/null || true
+            pkg_add -D unsigned -v /tmp/varA.tgz 2>&1 | tail -12 || true
+            pkg_info -q 2>/dev/null | grep -i '^supervizio' && echo "VARIANT A INSTALLED" || echo "variant A did not install"
+            for p in $(pkg_info -q 2>/dev/null | grep -i '^supervizio' || true); do pkg_delete -I "$p" >/dev/null 2>&1 || true; done
+            pkg_delete -I partial-supervizio-0.0.0 >/dev/null 2>&1 || true
+
+            echo "--- variant B: no +COMMENT member (@comment already in +CONTENTS) ---"
+            ( cd "$VA" && tar czf /tmp/varB.tgz +CONTENTS +DESC etc usr ) 2>/dev/null || true
+            pkg_add -D unsigned -v /tmp/varB.tgz 2>&1 | tail -12 || true
+            pkg_info -q 2>/dev/null | grep -i '^supervizio' && echo "VARIANT B INSTALLED" || echo "variant B did not install"
+            for p in $(pkg_info -q 2>/dev/null | grep -i '^supervizio' || true); do pkg_delete -I "$p" >/dev/null 2>&1 || true; done
+            pkg_delete -I partial-supervizio-0.0.0 >/dev/null 2>&1 || true
+            rm -rf "$VA" /tmp/varA.tgz /tmp/varB.tgz
             echo "--- installed? ---"
             # Delete by the name pkg_info reports, not a guessed stem: the
             # package is supervizio-openbsd-<ver>, so `pkg_delete supervizio`
