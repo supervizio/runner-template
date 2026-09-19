@@ -21,7 +21,8 @@ that half, which is how the workflows that matter went undocumented.
 | `cleanup-external-e2e.yml` | `workflow_run` on both of the above | Deletes each dispatched run once it finishes, so no public trace of a private-source run remains. `repository_dispatch` runs only — a `workflow_dispatch` is someone debugging on purpose. |
 | `qemu-vm-selftest.yml` | push on its own paths | Exercises `.github/actions/qemu-vm` against the upstream cloud images the Linux legs use, before those legs depend on it. |
 | `dinit-container-proof.yml` | push on its own paths | Proves dinit coverage needs no VM: a Chimera rootfs makes a container where dinit is really PID 1, a service in `/etc/dinit.d` starts, and apk-tools 3 still installs nfpm's v2 `.apk`. Kept so the result is not re-derived. |
-| `init-swap-proof.yml` | push on its own path | A recorded experiment: why `debian-sysvinit` cannot move to a hosted guest. Kept so the conclusion is not re-derived. |
+| `init-swap-proof.yml` | push on its own path | A recorded experiment: why a systemd-built Debian CLOUD IMAGE cannot be converted to SysVinit. Its conclusion stands and is still worth keeping — but it does **not** mean `debian-sysvinit` needs a VM. See `bench-leg-substrates-proof.yml`. |
+| `bench-leg-substrates-proof.yml` | push on its own paths | Proves neither remaining bench leg needs a VM: pacman and dinit together in the official Artix dinit image, and real SysVinit as PID 1 in a container. Kept so the result is not re-derived. |
 | `docker-images.yml`, `release.yml`, `post-commit.yml` | various | Inherited from the template. `post-commit.yml` is the merge gate and stays on `ubuntu-latest` **on purpose** — this repo is public, and pointing its pull requests at the fleet's self-hosted runner would let a fork run code there. |
 
 ## Where the work runs, and why it matters
@@ -31,19 +32,37 @@ Almost everything is on GitHub-hosted runners. Two jobs are not:
 - `e2e-vm` (2 legs: `artix-dinit`, `debian-sysvinit`) and `vm-cleanup` run on
   `supervizio-runner`, the ARC pod, and acquire Proxmox guests 208 and 205.
 
-  `debian-sysvinit` stays, and the reason is specific: Devuan publishes no disk
-  image at all (`files.devuan.org/devuan_excalibur/` has `installer-iso/`,
-  `desktop-live/` and `minimal-live/`; `virtual/`, `qemu/` and `cloud/` all 404,
-  checked 2026-09-19), and converting a systemd-built Debian cloud image to
-  SysVinit failed four documented times — see `init-swap-proof.yml`.
+  **Neither leg still needs a VM.** Both were measured green on hosted runners in
+  `bench-leg-substrates-proof.yml`; what remains is wiring, not research.
 
-  `artix-dinit` no longer has a reason to stay. This file used to say "Chimera
-  ships only live ISOs", which is **wrong** and closed the question one
-  distribution too early: Chimera also publishes a ROOTFS TARBALL, which is not
-  a bootable disk and so needs no cloud image and no VM.
-  `dinit-container-proof.yml` measured the whole chain green on a hosted runner
-  in about twenty seconds. Wiring the leg is what remains; see that file for the
-  two traps already paid for.
+  `debian-sysvinit` was called irreplaceable in this file, and that was wrong.
+  The reasoning was sound about `init-swap-proof.yml` — four runs failed to
+  convert a systemd-built Debian CLOUD IMAGE, and its conclusion that the bench
+  guest was INSTALLED with sysvinit rather than converted is exactly right. What
+  nobody noticed is that a Docker base image is *also* a system sysvinit gets
+  INSTALLED into. `debian:trixie` ships no init at all — no systemd-sysv, no
+  /sbin/init, no /etc/inittab — so there is nothing to remove and none of the
+  four blockers applies. Measured: PID 1 comm=init, runlevel N 2, inittab 2348
+  bytes, cron reparented to PID 1, no --privileged.
+
+  Devuan still publishes no disk image (`virtual/`, `qemu/`, `cloud/` all 404,
+  checked 2026-09-19) — that part of the old note is accurate. It simply stopped
+  being the question.
+
+  `artix-dinit` is replaced by the official Artix Docker image
+  `artixlinux/artixlinux:base-dinit`, which carries pacman AND dinit — so the
+  leg's two dimensions stay together. The earlier Chimera finding
+  (`dinit-container-proof.yml`) remains true and is kept, but it is no longer
+  the better answer: splitting across Chimera (dinit, apk) and Arch (pacman,
+  systemd) would prove "pacman installs" and "dinit starts" without ever proving
+  the seam between them, which is where packaging regressions live. Measured: a
+  .pkg.tar.zst installs, `pacman -Qo` reports it owns the service file, and
+  dinit as PID 1 takes it to STARTED.
+
+  Honest delta for both: containers cover install, start and supervision. They
+  do not cover boot ordering or clean shutdown — `dinit --container` disables
+  system management by design, and a sysvinit container never reaches runlevel
+  0. Whether that delta is worth two Proxmox guests is a judgement.
 
 Everything else — the seven Linux legs, five BSD legs, both Windows, both
 macOS, six Docker legs — is hosted and free.
