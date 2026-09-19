@@ -1,0 +1,122 @@
+name: dinit container proof
+
+# =============================================================================
+# Can dinit coverage leave the Proxmox bench?
+#
+# `e2e-vm` keeps two legs on the bench. artix-dinit (VM 208) is one of them, and
+# the reason recorded in .github/workflows/CLAUDE.md was "Artix publishes no
+# cloud image". That is true of Artix and it closed the question too early:
+# Chimera Linux also runs dinit as PID 1, and besides its live ISOs it publishes
+# a ROOTFS TARBALL -- which is not a bootable disk, so it needs no VM at all.
+#
+# Two facts make this worth measuring rather than assuming:
+#
+#   * dinit documents `-o, --container`: "Run in container mode, i.e. do not
+#     perform system management functions". Read out of the man page shipped
+#     INSIDE the rootfs below, not from the internet.
+#   * Chimera is musl + apk, and supervizio already publishes a musl .apk. The
+#     artix leg proves pacman AND dinit at once; pacman is already covered by
+#     the hosted e2e-linux-arch-pacman leg, so only dinit needs a new home.
+#
+# This workflow proves the mechanism ONLY -- PID 1, the control socket, and a
+# real service transition. Wiring it into e2e.yml is a separate change, and
+# should not happen until this job has been green on a hosted runner. Same
+# discipline as qemu-vm-selftest.yml, for the same reason.
+#
+# It does NOT check out supervizio/agent: that source is private, and nothing
+# here needs it.
+
+on:
+  workflow_dispatch:
+  # Scoped to its own file. workflow_dispatch alone would make this unrunnable
+  # until it reached the default branch -- the trap that left qemu-vm-selftest
+  # with zero runs for its whole life.
+  push:
+    paths:
+      - '.github/workflows/dinit-container-proof.yml'
+
+permissions:
+  contents: read
+
+jobs:
+  proof:
+    name: dinit as PID 1 in a Chimera container
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    env:
+      # A DATED path, not a rolling one: the checksum below pins these exact
+      # bytes, and a rolling URL would turn a routine upstream refresh into a
+      # checksum failure with no visible cause.
+      ROOTFS_URL: https://repo.chimera-linux.org/live/latest/chimera-linux-x86_64-ROOTFS-20251220-full.tar.gz
+      # From the project's own sha256sums.txt, verified to match the bytes
+      # served. The container gets a root shell, so an unverified blob is not
+      # acceptable here.
+      ROOTFS_SHA256: c159ce6b8203d3c5e43e73e05cf537d581b78353f6b6f5bf53aef10b46d857da
+    steps:
+      - name: Fetch the Chimera rootfs and verify it
+        run: |
+          set -euo pipefail
+          curl -fsSL --retry 3 --retry-delay 5 -o rootfs.tar.gz "$ROOTFS_URL"
+          echo "$ROOTFS_SHA256  rootfs.tar.gz" | sha256sum -c -
+          ls -l rootfs.tar.gz
+
+      - name: Build a container image straight from the rootfs
+        run: |
+          set -euo pipefail
+          # No base image and no package install: the tarball IS the filesystem.
+          printf 'FROM scratch\nADD rootfs.tar.gz /\n' > Dockerfile
+          docker build -t chimera-dinit:proof .
+          docker run --rm chimera-dinit:proof /usr/bin/dinit --version
+
+      - name: dinit must be PID 1, and its control socket must answer
+        run: |
+          set -euo pipefail
+          # --container is what makes this legitimate rather than a hack: dinit
+          # then skips the system-management work (mounts, swclock, shutdown)
+          # that has no meaning in a container, and supervises services only.
+          docker run -d --name dinit-proof chimera-dinit:proof \
+            /usr/bin/dinit --container --quiet
+          # dinit creates its control socket a moment after exec.
+          for _ in $(seq 1 30); do
+            if docker exec dinit-proof /usr/bin/dinitctl list >/dev/null 2>&1; then break; fi
+            sleep 1
+          done
+
+          echo "=== PID 1 ==="
+          pid1=$(docker exec dinit-proof cat /proc/1/comm)
+          echo "comm=$pid1"
+          # The assertion the whole question turns on: a REAL service manager as
+          # PID 1, not a shell pretending to be one.
+          [ "$pid1" = "dinit" ] || { echo "::error::PID 1 is '$pid1', expected 'dinit'"; exit 1; }
+
+          echo "=== control socket ==="
+          docker exec dinit-proof /usr/bin/dinitctl list
+
+      - name: A service dropped in /etc/dinit.d must start and stop
+        run: |
+          set -euo pipefail
+          # printf, not a heredoc: inside `docker exec sh -c '...'` the closing
+          # EOF would carry this file's indentation and never terminate the
+          # heredoc. The step would then hang until the job timeout, which is
+          # the least readable failure available.
+          #
+          # /etc/dinit.d, not Chimera's /usr/lib/dinit.d: that is where
+          # supervizio's own installer puts its service file (setup/scripts/
+          # detect-init.sh installs to /etc/dinit.d/supervizio), so it is the
+          # path that has to work. dinit reads both.
+          docker exec dinit-proof sh -c 'mkdir -p /etc/dinit.d && printf "type = process\ncommand = /usr/bin/sleep 600\nsmooth-recovery = true\n" > /etc/dinit.d/proofsvc'
+          docker exec dinit-proof cat /etc/dinit.d/proofsvc
+          docker exec dinit-proof /usr/bin/dinitctl start proofsvc
+          docker exec dinit-proof /usr/bin/dinitctl status proofsvc
+          docker exec dinit-proof /usr/bin/dinitctl status proofsvc | grep -qi 'started' || {
+            echo "::error::service did not reach STARTED"; exit 1; }
+          docker exec dinit-proof /usr/bin/dinitctl stop proofsvc
+          echo "OK: dinit supervises a service dropped in /etc/dinit.d, with no VM"
+
+      - name: Collect dinit's console output on failure
+        if: failure()
+        run: docker logs dinit-proof || true
+
+      - name: Tear down
+        if: always()
+        run: docker rm -f dinit-proof || true
