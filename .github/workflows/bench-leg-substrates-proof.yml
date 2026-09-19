@@ -1,0 +1,194 @@
+name: Bench leg substrates proof
+
+# =============================================================================
+# The last two legs on the Proxmox bench, and whether either still needs a VM.
+#
+# `e2e-vm` keeps `artix-dinit` (guest 208) and `debian-sysvinit` (guest 205).
+# Both reasons recorded for them turned out to be answers to a DIFFERENT
+# question than the one that matters.
+#
+#   artix-dinit    "Artix publishes no cloud image" -- true, and irrelevant:
+#                  Artix publishes official DOCKER images, one per init, and
+#                  the dinit variant carries pacman too. So the leg's two
+#                  dimensions stay together, which a split across Chimera
+#                  (dinit, apk) and Arch (pacman, systemd) would have lost.
+#
+#   debian-sysvinit  init-swap-proof.yml spent four runs failing to convert a
+#                  systemd-built Debian CLOUD IMAGE to SysVinit, and concluded
+#                  the bench guest was INSTALLED with sysvinit rather than
+#                  converted. Correct -- and a Docker base image is likewise a
+#                  system sysvinit is INSTALLED into. `debian:trixie` ships no
+#                  init at all: no systemd-sysv, no /sbin/init, no /etc/inittab.
+#                  There is nothing to remove, so none of the four blockers
+#                  (systemd-sysv-, --allow-remove-essential, ifupdown, a
+#                  missing inittab) applies.
+#
+# This proves the SUBSTRATES only. Wiring either leg into e2e.yml is a separate
+# change and should wait until this is green -- the discipline qemu-vm-selftest
+# and dinit-container-proof already follow.
+#
+# What the containers do NOT cover, and it is the honest delta: boot ordering
+# and clean shutdown. `dinit --container` disables system management by design,
+# and a sysvinit container never reaches a real runlevel 0. Every defect this
+# migration surfaced lived in install and packaging, not in boot ordering -- but
+# that is a judgement, not a measurement.
+
+on:
+  workflow_dispatch:
+  push:
+    paths:
+      - '.github/workflows/bench-leg-substrates-proof.yml'
+
+permissions:
+  contents: read
+
+jobs:
+  artix-dinit:
+    name: pacman + dinit together, no VM
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    env:
+      # A TAG of artixlinux/artixlinux, not a repository. `artixlinux/base` and
+      # `artixlinux/base-dinit` both 404 -- the naming trap costs one run.
+      # Pinned by digest: this image gets a root shell and installs our package.
+      ARTIX: artixlinux/artixlinux@sha256:874c6127fd51fec8455274f7a4b22b04ecd5db35886677f3e780339f71f20a9b
+    steps:
+      - name: The image really is Artix, with pacman and dinit
+        run: |
+          set -euo pipefail
+          docker pull -q "$ARTIX"
+          docker run --rm "$ARTIX" sh -c '
+            . /etc/os-release; echo "ID=$ID  $PRETTY_NAME"
+            pacman --version | head -1
+            dinit --version | head -1
+            dinit --help 2>&1 | grep -- "--container" || { echo "::error::this dinit has no --container mode"; exit 1; }
+          '
+
+      - name: dinit must be PID 1, in an unprivileged container
+        run: |
+          set -euo pipefail
+          # An explicit service name is required. Run bare, dinit looks for a
+          # service called `boot` and exits at once -- the image ships boot.d/
+          # but no `boot`. Measured, not assumed.
+          # printf, not a heredoc: indented inside this block the closing
+          # token would carry leading spaces and never terminate, hanging the
+          # step until the job timeout. Already paid for once in
+          # dinit-container-proof.yml.
+          printf 'type = internal\n' > svc
+          docker create --name artix-proof --entrypoint /usr/sbin/dinit "$ARTIX" \
+            --container -d /etc/dinit.d proofboot >/dev/null
+          docker cp svc artix-proof:/etc/dinit.d/proofboot
+          docker start artix-proof >/dev/null
+          sleep 4
+          running=$(docker inspect -f '{{.State.Running}}' artix-proof)
+          if [ "$running" != "true" ]; then
+            echo "::error::dinit exited (code $(docker inspect -f '{{.State.ExitCode}}' artix-proof))"
+            docker logs artix-proof 2>&1 || true
+            exit 1
+          fi
+          pid1=$(docker exec artix-proof cat /proc/1/comm)
+          echo "comm=$pid1"
+          [ "$pid1" = "dinit" ] || { echo "::error::PID 1 is '$pid1', expected 'dinit'"; exit 1; }
+
+      - name: A pacman package must land a service that dinit then starts
+        run: |
+          set -euo pipefail
+          # The whole point of keeping the two dimensions together: not "pacman
+          # installs" and "dinit starts" separately, but that a .pkg.tar.zst
+          # puts a service file where dinit finds it, with the right ownership,
+          # and that dinit then runs it. That seam is where packaging
+          # regressions actually live.
+          docker exec artix-proof sh -c '
+            set -e
+            mkdir -p /tmp/b/etc/dinit.d
+            printf "type = process\ncommand = /usr/bin/sleep 600\n" > /tmp/b/etc/dinit.d/proofsvc
+            cd /tmp/b
+            # .PKGINFO, with the `key = value` syntax pacman actually reads.
+            # The %NAME%/%VERSION% form is the repository DATABASE format, not
+            # the package one; pacman rejects it outright with "missing package
+            # name ... invalid or corrupted package". Caught by running this
+            # locally before spending a CI round trip on it.
+            #
+            # Built by hand rather than with makepkg, which refuses to run as
+            # root -- and the payload is all this needs to prove anyway.
+            printf "pkgname = proofsvc\npkgver = 1.0.0-1\npkgdesc = proof service\narch = any\n" > .PKGINFO
+            tar --zstd -cf /tmp/proofsvc-1.0.0-1-any.pkg.tar.zst .PKGINFO etc
+          '
+          docker exec artix-proof pacman -U --noconfirm /tmp/proofsvc-1.0.0-1-any.pkg.tar.zst
+          echo "=== pacman owns the service file ==="
+          docker exec artix-proof pacman -Qo /etc/dinit.d/proofsvc
+          echo "=== dinit starts what pacman installed ==="
+          docker exec artix-proof dinitctl start proofsvc
+          docker exec artix-proof dinitctl status proofsvc
+          docker exec artix-proof dinitctl status proofsvc | grep -qi started || {
+            echo "::error::the pacman-installed service did not reach STARTED"; exit 1; }
+          echo "OK: pacman and dinit, together, with no VM"
+
+      - name: Tear down
+        if: always()
+        run: docker rm -f artix-proof >/dev/null 2>&1 || true
+
+  debian-sysvinit:
+    name: SysVinit as PID 1, no VM
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - name: The base image ships no init at all
+        run: |
+          set -euo pipefail
+          # This is the finding the whole job rests on, so it is asserted rather
+          # than stated. If a future base image starts shipping systemd-sysv,
+          # the install below becomes a CONVERSION -- which is exactly what
+          # failed four times in init-swap-proof.yml -- and this must go red
+          # instead of quietly degrading.
+          docker pull -q debian:trixie
+          n=$(docker run --rm debian:trixie sh -c 'dpkg -l 2>/dev/null | grep -cE "^ii  (systemd-sysv|init) " || true')
+          echo "init packages in the base image: $n"
+          [ "$n" = "0" ] || { echo "::error::debian:trixie now ships an init ($n pkgs); installing sysvinit-core would be a conversion, not an install"; exit 1; }
+          docker run --rm debian:trixie sh -c 'test ! -e /sbin/init' || { echo "::error::/sbin/init already exists in the base image"; exit 1; }
+
+      - name: Install sysvinit-core and run it as PID 1
+        run: |
+          set -euo pipefail
+          printf '%s\n' \
+            'FROM debian:trixie' \
+            'RUN apt-get update -qq && DEBIAN_FRONTEND=noninteractive apt-get install -y -qq sysvinit-core >/dev/null' \
+            > Dockerfile
+          cat Dockerfile
+          docker build -q -t sysv:proof . >/dev/null
+          # No --privileged, no cgroup mount, no devices.
+          docker run -d --name sysv-proof --entrypoint /usr/sbin/init sysv:proof >/dev/null
+          sleep 5
+          running=$(docker inspect -f '{{.State.Running}}' sysv-proof)
+          if [ "$running" != "true" ]; then
+            echo "::error::sysvinit exited (code $(docker inspect -f '{{.State.ExitCode}}' sysv-proof))"
+            docker logs sysv-proof 2>&1 || true
+            exit 1
+          fi
+          pid1=$(docker exec sysv-proof cat /proc/1/comm)
+          echo "comm=$pid1  exe=$(docker exec sysv-proof readlink -f /proc/1/exe)"
+          [ "$pid1" = "init" ] || { echo "::error::PID 1 is '$pid1', expected 'init'"; exit 1; }
+          echo "runlevel: $(docker exec sysv-proof runlevel)"
+          # /etc/inittab is NOT in sysvinit-core's file list -- `dpkg -S` finds
+          # nothing -- because the postinst writes it from
+          # /usr/share/sysvinit/inittab. An earlier analysis read that absence
+          # as "sysvinit-core ships no inittab" and drew the wrong conclusion.
+          docker exec sysv-proof test -f /etc/inittab || { echo "::error::no /etc/inittab"; exit 1; }
+          echo "inittab: $(docker exec sysv-proof wc -c < /etc/inittab) bytes"
+
+      - name: A service must start and be reparented to PID 1
+        run: |
+          set -euo pipefail
+          docker exec sysv-proof service cron start
+          sleep 2
+          docker exec sysv-proof sh -c '
+            p=$(pidof cron) || { echo "::error::cron did not start"; exit 1; }
+            ppid=$(cut -d" " -f4 "/proc/$p/stat")
+            echo "cron pid=$p ppid=$ppid"
+            [ "$ppid" = "1" ] || { echo "::error::cron ppid=$ppid, not reparented to init"; exit 1; }
+          '
+          echo "OK: real SysVinit supervising a service, with no VM"
+
+      - name: Tear down
+        if: always()
+        run: docker rm -f sysv-proof >/dev/null 2>&1 || true
