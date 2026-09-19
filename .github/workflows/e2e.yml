@@ -1130,6 +1130,13 @@ jobs:
           pid1=$(docker exec svz cat /proc/1/comm)
           [ "$pid1" = "dinit" ] || { echo "::error::PID 1 is '$pid1', expected dinit"; exit 1; }
 
+          # jq, and it is not optional. validate-probe.sh calls it 39 times,
+          # and its parse check is `printf ... | jq empty 2>/dev/null` -- so a
+          # MISSING jq is swallowed and reported as "[FAIL] Invalid JSON output"
+          # about perfectly valid JSON. The bench guest had it provisioned; this
+          # image does not. pgrep and timeout are already here, unlike Debian.
+          docker exec svz pacman -Sy --noconfirm jq >/dev/null
+
           docker cp pkg/supervizio-amd64.pkg.tar.zst svz:/tmp/svz.pkg.tar.zst
           docker cp setup svz:/tmp/setup
           docker cp e2e/validate-probe.sh svz:/tmp/validate-probe.sh
@@ -1234,9 +1241,15 @@ jobs:
           docker pull -q debian:trixie
           n=$(docker run --rm debian:trixie sh -c 'dpkg -l 2>/dev/null | grep -cE "^ii  (systemd-sysv|init) " || true')
           [ "$n" = "0" ] || { echo "::error::debian:trixie now ships an init ($n pkgs); this became a conversion"; exit 1; }
+          # jq and procps are not optional. validate-probe.sh calls `jq` 39
+          # times, and its parse check is `printf ... | jq empty 2>/dev/null` --
+          # so a MISSING jq is swallowed and reported as "[FAIL] Invalid JSON
+          # output" about perfectly valid JSON. scenario-battery.sh needs pgrep,
+          # which comes from procps. The bench guests had both provisioned; a
+          # base container has neither, and the failure names the wrong cause.
           printf '%s\n' \
             'FROM debian:trixie' \
-            'RUN apt-get update -qq && DEBIAN_FRONTEND=noninteractive apt-get install -y -qq sysvinit-core >/dev/null' \
+            'RUN apt-get update -qq && DEBIAN_FRONTEND=noninteractive apt-get install -y -qq sysvinit-core jq procps >/dev/null' \
             > Dockerfile
           docker build -q -t svz-sysv . >/dev/null
           docker run -d --name svz --entrypoint /usr/sbin/init svz-sysv >/dev/null
