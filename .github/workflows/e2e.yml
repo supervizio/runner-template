@@ -2722,6 +2722,14 @@ jobs:
         uses: vmactions/openbsd-vm@86cdc08415d9d0865267e686561e276c52d62530 # v1.4.7
         with:
           usesh: true
+          # `run:` executes INSIDE the guest over ssh, and ssh forwards no
+          # environment: OPENBSD_PKG was written to $GITHUB_ENV on the host, so
+          # the guest saw it unset and the leg died on line 11 with "OPENBSD_PKG:
+          # parameter not set" (run 35438753244). Naming it here is how the guest
+          # gets it -- the same mechanism the two qemu-vm legs already use for
+          # PKG, and the same lesson the qemu-vm self-test recorded when eight
+          # legs failed at once for want of an `envs:`.
+          envs: OPENBSD_PKG
           # Pinned, for the same reason the Windows leg pins its image: an
           # unpinned guest floats with the action's default and moves coverage
           # with no diff. matches the bench (packer pins install79.iso) and expected-matrix.json.
