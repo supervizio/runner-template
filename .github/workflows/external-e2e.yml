@@ -89,7 +89,7 @@ jobs:
       # before a single checkout happens. libprobe only: the token reaches
       # nothing else, and agent has its own lane in e2e.yml.
       #
-      # Read through env rather than ${{ }} interpolation — a repository name is
+      # Read through env rather than template interpolation -- a repository name is
       # attacker-supplied text and would otherwise be pasted verbatim into the
       # shell.
       - name: Validate source repository

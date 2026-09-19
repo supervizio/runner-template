@@ -71,7 +71,7 @@ jobs:
           # each of the ten use sites.
           #
           # Read through env, not interpolated into the script: a repository name
-          # is attacker-supplied text and ${{ }} pastes it verbatim into the shell
+          # is attacker-supplied text and template interpolation pastes it verbatim
           # (and into $GITHUB_OUTPUT, where a newline would let it set other
           # outputs).
           # The allowlist is agent-only, deliberately. An earlier revision also
