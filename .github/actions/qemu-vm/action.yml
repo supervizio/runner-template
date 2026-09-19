@@ -64,6 +64,13 @@ inputs:
       this the action could only run scripts with no parameters at all.
     required: false
     default: ""
+  kernel-args:
+    description: >
+      Extra kernel command-line arguments. Applied to the guest's own bootloader
+      and then REBOOTED into, because a parameter like psi=1 can only take
+      effect at boot. Leave empty to skip the extra boot entirely.
+    required: false
+    default: ""
   files:
     description: Newline-separated "src:dest" pairs copied into the guest before `run`
     required: false
@@ -187,6 +194,55 @@ runs:
           sleep 2
         done
         echo "::error::guest never reached SSH within 180s - console tail follows" >&2
+        tail -40 console.log >&2 || true
+        exit 1
+
+    - name: Apply kernel args and reboot into them
+      if: inputs.kernel-args != ''
+      shell: bash
+      env:
+        KARGS: ${{ inputs.kernel-args }}
+      run: |
+        set -euo pipefail
+        cd "$VMDIR"
+        # PSI is the case that forced this: kernels compile it in but default it
+        # off (CONFIG_PSI_DEFAULT_DISABLED), the agent's pressure collectors then
+        # read null, and validate-probe.sh fails three required numerics. There
+        # is no runtime switch -- it is boot-time only.
+        #
+        # Covers the two bootloader families these images use. Both edits are
+        # no-ops when the file is absent, so a guest using the other one is not
+        # disturbed.
+        $SSH_CMD root@127.0.0.1 "
+          set -e
+          if command -v grubby >/dev/null 2>&1; then
+            grubby --update-kernel=ALL --args='$KARGS'
+          elif [ -f /etc/default/grub ]; then
+            sed -i \"s|^GRUB_CMDLINE_LINUX_DEFAULT=\\\"\\(.*\\)\\\"|GRUB_CMDLINE_LINUX_DEFAULT=\\\"\\1 $KARGS\\\"|\" /etc/default/grub
+            (grub2-mkconfig -o /boot/grub2/grub.cfg || grub-mkconfig -o /boot/grub/grub.cfg) >/dev/null 2>&1
+          fi
+          for f in /boot/extlinux.conf /extlinux.conf /boot/syslinux/syslinux.cfg; do
+            [ -f \"\$f\" ] && sed -i \"/APPEND/ s|\\$| $KARGS|\" \"\$f\"
+          done
+          true
+        "
+        echo "rebooting into: $KARGS"
+        $SSH_CMD root@127.0.0.1 'reboot' 2>/dev/null || true
+
+        # Same wall-clock budget and the same reason as the first boot: while the
+        # hostfwd is bound but sshd is down, SLIRP black-holes each probe for the
+        # full ConnectTimeout.
+        sleep 5
+        started=$SECONDS
+        while [ $((SECONDS - started)) -lt 180 ]; do
+          if $SSH_CMD root@127.0.0.1 true 2>/dev/null; then
+            echo "guest back after $((SECONDS - started))s"
+            $SSH_CMD root@127.0.0.1 'cat /proc/cmdline'
+            exit 0
+          fi
+          sleep 2
+        done
+        echo "::error::guest did not come back after the kernel-args reboot" >&2
         tail -40 console.log >&2 || true
         exit 1
 
