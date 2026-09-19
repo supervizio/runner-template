@@ -2789,22 +2789,41 @@ jobs:
             # can never come back. Two alternatives, measured in this one run
             # rather than one per run -- three round trips have already gone
             # into this leg.
-            echo "--- variant A: +CONTENTS +DESC +COMMENT ---"
-            VA=/tmp/svz-varA; rm -rf "$VA"; mkdir -p "$VA"
-            ( cd "$VA" && tar -xzf "$WS/${OPENBSD_PKG}" ) 2>/dev/null || true
-            ( cd "$VA" && tar czf /tmp/varA.tgz +CONTENTS +DESC +COMMENT etc usr ) 2>/dev/null || true
-            pkg_add -D unsigned -v /tmp/varA.tgz 2>&1 | tail -12 || true
-            pkg_info -q 2>/dev/null | grep -i '^supervizio' && echo "VARIANT A INSTALLED" || echo "variant A did not install"
-            for p in $(pkg_info -q 2>/dev/null | grep -i '^supervizio' || true); do pkg_delete -I "$p" >/dev/null 2>&1 || true; done
-            pkg_delete -I partial-supervizio-0.0.0 >/dev/null 2>&1 || true
+            # Rebuild under the name the package DECLARES. The previous
+            # attempt called them varA.tgz/varB.tgz and both died on "Can't
+            # find varA.tgz" -- the filename-must-match-@name rule found two
+            # ticks earlier, re-proved instead of applied. The variants said
+            # nothing about ordering because they never got that far.
+            VA=/tmp/svz-varA
+            rm -rf "$VA"; mkdir -p "$VA"
+            ( cd "$VA" && tar -xzf "$WS/${OPENBSD_PKG}" )
+            DECL="$(sed -n 's/^@name[[:space:]][[:space:]]*//p' "$VA/+CONTENTS" | head -1)"
+            echo "declared @name = ${DECL:-<none>}"
 
-            echo "--- variant B: no +COMMENT member (@comment already in +CONTENTS) ---"
-            ( cd "$VA" && tar czf /tmp/varB.tgz +CONTENTS +DESC etc usr ) 2>/dev/null || true
-            pkg_add -D unsigned -v /tmp/varB.tgz 2>&1 | tail -12 || true
-            pkg_info -q 2>/dev/null | grep -i '^supervizio' && echo "VARIANT B INSTALLED" || echo "variant B did not install"
-            for p in $(pkg_info -q 2>/dev/null | grep -i '^supervizio' || true); do pkg_delete -I "$p" >/dev/null 2>&1 || true; done
-            pkg_delete -I partial-supervizio-0.0.0 >/dev/null 2>&1 || true
-            rm -rf "$VA" /tmp/varA.tgz /tmp/varB.tgz
+            try_variant() {
+                _label="$1"; shift
+                _tgz="/tmp/${DECL}.tgz"
+                rm -f "$_tgz"
+                ( cd "$VA" && tar czf "$_tgz" "$@" )
+                echo "--- $_label ---"
+                tar tzf "$_tgz" | head -4
+                pkg_add -D unsigned -v "$_tgz" 2>&1 | grep -v 'Use of uninitialized' | tail -10
+                if pkg_info -q 2>/dev/null | grep -qi '^supervizio'; then
+                    echo "RESULT: $_label INSTALLED"
+                else
+                    echo "RESULT: $_label did not install"
+                fi
+                for _p in $(pkg_info -q 2>/dev/null | grep -i '^supervizio' || true); do
+                    pkg_delete -I "$_p" >/dev/null 2>&1
+                done
+                pkg_delete -I "partial-${DECL}" >/dev/null 2>&1
+                rm -f "$_tgz"
+            }
+
+            try_variant "A: +CONTENTS +DESC +COMMENT" +CONTENTS +DESC +COMMENT etc usr
+            try_variant "B: no +COMMENT member"       +CONTENTS +DESC etc usr
+            try_variant "C: +CONTENTS only, then files" +CONTENTS etc usr
+            rm -rf "$VA"
             echo "--- installed? ---"
             # Delete by the name pkg_info reports, not a guessed stem: the
             # package is supervizio-openbsd-<ver>, so `pkg_delete supervizio`
