@@ -2660,7 +2660,20 @@ jobs:
             echo "::error::no OpenBSD .tgz - did agent's native-openbsd job publish supervizio-openbsd-pkg?" >&2
             exit 1
           }
-          mv "$TGZ" supervizio-openbsd.tgz
+          # Keep the packager's own filename. OpenBSD's pkg_add resolves its
+          # argument as <stem>-<version>, so supervizio-openbsd.tgz reads as
+          # stem "supervizio" / version "openbsd" -- not a version, so pkg_add
+          # stops treating it as a file and searches PKG_PATH instead:
+          #
+          #   file:/tmp/: empty
+          #   Can't find supervizio-openbsd.tgz
+          #
+          # measured twice, runs 35436578877 and 35437716922. build-pkg.sh
+          # already emits a conforming supervizio-<version>.tgz; renaming it
+          # here was what broke it.
+          OPENBSD_PKG="$TGZ"
+          echo "OPENBSD_PKG=$OPENBSD_PKG" >> "$GITHUB_ENV"
+          ls -l "$OPENBSD_PKG"
           # Prove it carries the NATIVE binary, not the cross one. The two are
           # distinguishable by the build path Go embeds: the bench VM builds
           # under /home/kodflow, the cross job under /home/runner/_work.
@@ -2694,7 +2707,7 @@ jobs:
             # calls pkg_add, which is exactly what a user gets. No Go toolchain
             # in this guest at all any more.
             echo "=== Install (package path) ==="
-            SUPERVIZIO_LOCAL_PKG="$WS/supervizio-openbsd.tgz"
+            SUPERVIZIO_LOCAL_PKG="$WS/${OPENBSD_PKG}"
             export SUPERVIZIO_LOCAL_PKG
             sh "$WS/setup/install.sh" || { echo "::error::install.sh failed"; exit 1; }
 
