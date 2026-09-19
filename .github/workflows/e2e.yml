@@ -2763,6 +2763,16 @@ jobs:
             # 7.8, this one is 7.9. `pkg_add -v` names its objection instead of
             # collapsing every cause into "Can't find", so this step measures it
             # once and the real install below still decides the leg.
+            # Everything between here and "Install (package path)" is a
+            # MEASUREMENT. It must not be able to fail the leg it measures --
+            # which it did in run 35444338161, where a `$RUNNER_TEMP` (a HOST
+            # variable; ssh forwards no environment, so the guest saw it unset)
+            # tripped `set -e` and the real install never ran at all. The leg
+            # then reported the diagnostic's fault as the package's.
+            #
+            # `set +e` for the block, restored right after, and only guest-local
+            # literal paths inside it.
+            set +e
             echo "=== pkg_add diagnostics (non-fatal) ==="
             STAGED="/tmp/$(basename "$OPENBSD_PKG")"
             cp "$WS/${OPENBSD_PKG}" "$STAGED"
@@ -2780,7 +2790,7 @@ jobs:
             # rather than one per run -- three round trips have already gone
             # into this leg.
             echo "--- variant A: +CONTENTS +DESC +COMMENT ---"
-            VA="$RUNNER_TEMP/varA"; rm -rf "$VA"; mkdir -p "$VA"
+            VA=/tmp/svz-varA; rm -rf "$VA"; mkdir -p "$VA"
             ( cd "$VA" && tar -xzf "$WS/${OPENBSD_PKG}" ) 2>/dev/null || true
             ( cd "$VA" && tar czf /tmp/varA.tgz +CONTENTS +DESC +COMMENT etc usr ) 2>/dev/null || true
             pkg_add -D unsigned -v /tmp/varA.tgz 2>&1 | tail -12 || true
@@ -2809,6 +2819,8 @@ jobs:
               echo "ABSENT"
             fi
             rm -f "$STAGED"
+            # Measurement over; the leg is fail-fast again from here.
+            set -e
 
             echo "=== Install (package path) ==="
             SUPERVIZIO_LOCAL_PKG="$WS/${OPENBSD_PKG}"
