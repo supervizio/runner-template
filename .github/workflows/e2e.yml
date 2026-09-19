@@ -96,10 +96,10 @@ jobs:
       #
       # Every leg downloads a build artifact from the agent run that dispatched
       # this one. When that run produced none, each leg discovers it separately
-      # and dies at its own download step -- and two of them, e2e-vm, have
-      # already taken a slot on the shared self-hosted pod and started acquiring
-      # a Proxmox guest by then. Run 35446185851 did exactly that: 13 legs red
-      # for one cause, while agent's own CI queued behind the two ARC slots its
+      # and dies at its own download step. That used to cost more than noise:
+      # two of those legs ran on the shared self-hosted pod and had started
+      # acquiring a Proxmox guest by then. Run 35446185851 did exactly that: 13
+      # legs red for one cause, while agent's own CI queued behind the ARC slots its
       # own dispatch was holding.
       #
       # `needs: [resolve]` means a failure here skips the whole matrix instead.
@@ -1049,51 +1049,26 @@ jobs:
   # E2E VM TESTS (Proxmox, self-hosted)
   # ===========================================================================
 
-  e2e-vm:
-    name: E2E VM ${{ matrix.name }}
+  # ---------------------------------------------------------------------------
+  # The last two legs to leave the Proxmox bench. Both were measured green in
+  # bench-leg-substrates-proof.yml before this wiring existed; see that file for
+  # the traps already paid for.
+  #
+  # The commit status contexts stay `e2e/vm/<name>`, as the other migrated Linux
+  # legs kept theirs. They are informational on the agent side, and renaming
+  # them would strand history for nothing.
+  # ---------------------------------------------------------------------------
+  e2e-linux-artix-dinit:
+    name: E2E Linux artix-dinit
     needs: [resolve]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
     if: ${{ github.event.inputs.arm_only != 'true' }}
-    runs-on: supervizio-runner
-    timeout-minutes: 15
-    strategy:
-      fail-fast: false
-      # Host RAM headroom, not leg count. Each acquired bench VM is a 4 GB guest, so
-      # 8-way fan-out demanded ~32 GB of the Proxmox host at once — but the host keeps
-      # only ~28 GB free (infra VMs 300/301/250 pin ~80 GB) and its swap sits full.
-      # Overcommit made freshly-rolled-back VMs boot into swap-thrash, so neither the
-      # guest-agent nor dhcpcd came up inside vm-acquire's 15-min window and EVERY leg
-      # failed "Could not detect VM IP" (labs #136 / #122). Capping at 5 keeps peak
-      # bench demand ~20 GB, leaving headroom for a concurrent e2e-macos (16 GB) leg.
-      max-parallel: 5
-      matrix:
-        include:
-          # NOTE: arch-systemd is intentionally omitted — the lab has no arch
-          # template and no VM by that name, so its leg failed "Acquire VM (lock)"
-          # on every run (deterministic red). Re-add once an arch VM is provisioned
-          # and appears in `qm list`. (artix-dinit IS kept below — VMID 208 is a
-          # real, provisioned test VM with base+dev snapshots.)
-          - name: artix-dinit
-            binary_artifact: supervizio-linux-amd64
-            pkg_artifact: supervizio-amd64.pkg.tar.zst
-            pkg_ext: pkg.tar.zst
-          - name: debian-sysvinit
-            binary_artifact: supervizio-linux-amd64
-            pkg_artifact: supervizio-amd64.deb
-            pkg_ext: deb
-          # freebsd/openbsd/netbsd left this matrix: they now run on
-          # ubuntu-24.04 under vmactions (jobs e2e-bsd-*), which needs no bench
-          # VM. openbsd builds natively there rather than consuming an artifact,
-          # because the cross-linked binary cannot start at all.
     env:
-      # PROXMOX_API_URL est volontairement absent : depuis un pod, le litteral
-      # 192.168.100.1 resout sur le Proxmox de l'hote CI, pas sur le banc (les
-      # deux hotes ont un 192.168.100.0/24 identique et jamais route). L'action
-      # `bench-api-tunnel` ci-dessous forwarde un port loopback vers le banc et
-      # exporte le vrai PROXMOX_API_URL. Voir kodflow/labs#185.
-      PVE_AUTH: "PVEAPIToken=${{ secrets.CI_RUNNER_API_TOKEN_ID }}=${{ secrets.CI_RUNNER_API_TOKEN_SECRET }}"
-      NODE: ${{ secrets.PROXMOX_NODE }}
-      SSH_OPTS: "-o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o ConnectTimeout=10"
-      GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      # A TAG of artixlinux/artixlinux. `artixlinux/base-dinit` is a 404.
+      # Pinned by digest: this container gets a root shell and installs our
+      # package.
+      ARTIX: artixlinux/artixlinux@sha256:874c6127fd51fec8455274f7a4b22b04ecd5db35886677f3e780339f71f20a9b
     steps:
       - name: Report status (pending)
         if: needs.resolve.outputs.sha != ''
@@ -1101,21 +1076,10 @@ jobs:
         env:
           GH_TOKEN: ${{ secrets.AGENT_REPO_TOKEN }}
         run: |
-          [ -z "$GH_TOKEN" ] && { echo "AGENT_REPO_TOKEN not set, skipping"; exit 0; }
-          curl -sf -X POST \
-            -H "Authorization: Bearer $GH_TOKEN" \
-            -H "Accept: application/vnd.github+json" \
+          [ -z "$GH_TOKEN" ] && exit 0
+          curl -sf -X POST -H "Authorization: Bearer $GH_TOKEN" -H "Accept: application/vnd.github+json" \
             "https://api.github.com/repos/${{ needs.resolve.outputs.source_repo }}/statuses/${{ needs.resolve.outputs.sha }}" \
-            -d '{"state":"pending","context":"e2e/vm/${{ matrix.name }}","description":"Running...","target_url":"${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"}'
-
-      - name: Checkout runner-template (for VM scripts)
-        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with:
-          path: runner-template
-          # The workspace is synced wholesale into guests and read by later
-          # steps; a persisted credential would travel with it as a base64
-          # AUTHORIZATION header that Actions log-masking does not cover.
-          persist-credentials: false
+            -d '{"state":"pending","context":"e2e/vm/artix-dinit","description":"Running...","target_url":"${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"}'
 
       - name: Checkout agent code
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -1123,364 +1087,81 @@ jobs:
           repository: ${{ needs.resolve.outputs.source_repo }}
           ref: ${{ needs.resolve.outputs.ref }}
           token: ${{ secrets.AGENT_REPO_TOKEN }}
-          path: agent
-          # The workspace is synced wholesale into guests and read by later
-          # steps; a persisted credential would travel with it as a base64
-          # AUTHORIZATION header that Actions log-masking does not cover.
           persist-credentials: false
 
-      - name: Init libprobe submodule (needs its own token; AGENT_REPO_TOKEN can't reach the private libprobe repo)
-        working-directory: agent
-        env:
-          GH_TOKEN: ${{ secrets.LIBPROBE_REPO_TOKEN }}
-        run: |
-          git -c url."https://x-access-token:${GH_TOKEN}@github.com/".insteadOf="https://github.com/" \
-            submodule update --init --force --depth=1
-
-      - name: Install oras (zot client)
-        run: |
-          set -euo pipefail
-          command -v oras >/dev/null 2>&1 || {
-            v=1.2.0; a=$(uname -m); case "$a" in x86_64) oa=amd64;; aarch64|arm64) oa=arm64;; *) oa=amd64;; esac
-            curl -fsSL "https://github.com/oras-project/oras/releases/download/v${v}/oras_${v}_linux_${oa}.tar.gz" | sudo tar xz -C /usr/local/bin oras
-          }
-
-      - name: Download package from zot
-        if: matrix.pkg_artifact != ''
-        continue-on-error: true
-        id: download-pkg
-        env:
-          ARTIFACT_REGISTRY: 192.168.100.250:5000
-          RUN_ID: ${{ needs.resolve.outputs.run_id }}
-          ARTIFACT: ${{ matrix.pkg_artifact }}
-        run: |
-          set -euo pipefail
-          mkdir -p artifacts/
-          oras pull --plain-http "$ARTIFACT_REGISTRY/run-${RUN_ID}/${ARTIFACT}:latest" -o artifacts/
-
-      - name: Download binary from zot (fallback)
-        continue-on-error: true
-        id: download-bin
-        env:
-          ARTIFACT_REGISTRY: 192.168.100.250:5000
-          RUN_ID: ${{ needs.resolve.outputs.run_id }}
-          ARTIFACT: ${{ matrix.binary_artifact }}
-        run: |
-          set -euo pipefail
-          mkdir -p artifacts/
-          oras pull --plain-http "$ARTIFACT_REGISTRY/run-${RUN_ID}/${ARTIFACT}:latest" -o artifacts/
-
-      - name: Prepare artifacts
-        run: |
-          echo "=== Available artifacts ==="
-          ls -la artifacts/ 2>/dev/null || echo "No artifacts found"
-
-          # Find the package or binary to deploy
-          if [ -n "${{ matrix.pkg_ext }}" ]; then
-            PKG_FILE=$(find artifacts/ -name "*.${{ matrix.pkg_ext }}" 2>/dev/null | head -1)
-            if [ -n "$PKG_FILE" ]; then
-              echo "PKG_FILE=$PKG_FILE" >> "$GITHUB_ENV"
-              echo "DEPLOY_MODE=package" >> "$GITHUB_ENV"
-              echo "Found package: $PKG_FILE"
-            else
-              echo "Package not found, falling back to binary"
-              echo "DEPLOY_MODE=binary" >> "$GITHUB_ENV"
-            fi
-          else
-            echo "DEPLOY_MODE=binary" >> "$GITHUB_ENV"
-          fi
-
-          # Find binary (use matrix.binary_artifact name to avoid picking wrong platform)
-          BIN_FILE=$(find artifacts/ -name "${{ matrix.binary_artifact }}" 2>/dev/null | head -1)
-          if [ -z "$BIN_FILE" ]; then
-            # Fallback: generic search if exact name not found
-            BIN_FILE=$(find artifacts/ -name "supervizio-*" -not -name "*.deb" -not -name "*.rpm" -not -name "*.apk" -not -name "*.pkg.tar.zst" -not -name "*.xbps" 2>/dev/null | head -1)
-          fi
-          if [ -n "$BIN_FILE" ]; then
-            chmod +x "$BIN_FILE"
-            echo "BIN_FILE=$BIN_FILE" >> "$GITHUB_ENV"
-            echo "Found binary: $BIN_FILE"
-          fi
-
-      # Doit preceder toute etape qui touche l'API : c'est elle qui fait exister
-      # PROXMOX_API_URL, et elle verifie le CN du certificat puis un 200
-      # authentifie avant qu'un credential ne parte.
-      - name: Open bench API tunnel
-        uses: ./runner-template/.github/actions/bench-api-tunnel
-
-      - name: Acquire VM (lock)
-        id: vm
-        run: |
-          chmod +x runner-template/.github/scripts/vm-acquire.sh
-          runner-template/.github/scripts/vm-acquire.sh "${{ matrix.name }}" "${GITHUB_RUN_ID}_e2e-vm-${{ matrix.name }}"
-
-      # Declare la VM que ce leg vient de prendre. C'est la SEULE autorite du job
-      # vm-cleanup : sans ce claim, il ne touche pas la VM. Publie tout de suite
-      # apres l'acquisition, donc avant tout test — une VM acquise est toujours
-      # reinitialisee a la fin, meme si le leg echoue ou est annule ensuite.
-      - name: Record VM claim
-        if: always() && steps.vm.outputs.VMID != ''
-        run: echo "${{ steps.vm.outputs.VMID }}" > "vm-claim-vm-${{ matrix.name }}.txt"
-
-      - name: Upload VM claim
-        if: always() && steps.vm.outputs.VMID != ''
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+      - name: Download the pacman package from the agent run (cross-repo)
+        uses: actions/download-artifact@70fc10c6e5e1ce46ad2ea6f2b72d43f7d47b13c3 # v8.0.0
         with:
-          name: vm-claim-vm-${{ matrix.name }}
-          path: vm-claim-vm-${{ matrix.name }}.txt
-          retention-days: 1
-          overwrite: true
-          if-no-files-found: ignore
+          name: supervizio-amd64.pkg.tar.zst
+          path: pkg
+          repository: ${{ needs.resolve.outputs.source_repo }}
+          run-id: ${{ needs.resolve.outputs.run_id }}
+          github-token: ${{ secrets.AGENT_REPO_TOKEN }}
 
-      - name: SCP files to VM
+      - name: Resolve and normalise the package
         run: |
-          # Retry helper for transient SSH/SCP failures
-          retry() {
-            local n=0 max=3
-            while [ $n -lt $max ]; do
-              "$@" && return 0
-              n=$((n + 1))
-              echo "Retry $n/$max..."
-              sleep 5
-            done
-            echo "Failed after $max attempts: $*"
-            return 1
+          set -euo pipefail
+          ls -la pkg/
+          found=$(find pkg -type f -name "*.pkg.tar.zst" | head -1)
+          [ -n "$found" ] && [ -s "$found" ] || {
+            echo "::error::no *.pkg.tar.zst in the downloaded artifact - did agent publish it?" >&2
+            exit 1
           }
+          [ "$found" = "pkg/supervizio-amd64.pkg.tar.zst" ] || mv "$found" "pkg/supervizio-amd64.pkg.tar.zst"
+          ls -l pkg/supervizio-amd64.pkg.tar.zst
 
-          # Use -O (legacy SCP protocol) for VMs without SFTP subsystem
-          SCP_CMD="scp -O ${SSH_OPTS}"
-
-          # Clean previous files to prevent SCP nesting / stale-file issues. A
-          # leftover /tmp/scenario-battery.sh from an earlier run made scp fail
-          # with "Permission denied" (it was missing from this cleanup list).
-          ssh ${SSH_OPTS} root@${VM_IP} "rm -rf /tmp/setup /tmp/validate-probe.sh /tmp/supervizio* /tmp/scenario-battery.sh" || true
-
-          # Copy setup scripts (from agent repo checkout)
-          retry ${SCP_CMD} -r agent/setup root@${VM_IP}:/tmp/setup
-
-          # Copy test scripts (from agent repo checkout)
-          retry ${SCP_CMD} agent/e2e/validate-probe.sh root@${VM_IP}:/tmp/validate-probe.sh
-          retry ${SCP_CMD} agent/e2e/scenario-battery.sh root@${VM_IP}:/tmp/scenario-battery.sh
-
-          # Copy package if available
-          if [ "$DEPLOY_MODE" = "package" ] && [ -n "${PKG_FILE:-}" ]; then
-            retry ${SCP_CMD} "$PKG_FILE" root@${VM_IP}:/tmp/supervizio.${{ matrix.pkg_ext }}
-            echo "Copied package: $PKG_FILE"
-          fi
-
-          # Always copy binary as fallback
-          if [ -n "${BIN_FILE:-}" ]; then
-            retry ${SCP_CMD} "$BIN_FILE" root@${VM_IP}:/tmp/supervizio
-            ssh ${SSH_OPTS} root@${VM_IP} "chmod +x /tmp/supervizio"
-            echo "Copied binary: $BIN_FILE"
-          fi
-
-          # Fail if nothing was copied
-          if [ -z "${PKG_FILE:-}" ] && [ -z "${BIN_FILE:-}" ]; then
-            echo "ERROR: No package or binary to deploy"
-            exit 1
-          fi
-
-      - name: Install jq (best-effort)
+      - name: Install under dinit, validate, uninstall
         run: |
-          ssh ${SSH_OPTS} root@${VM_IP} << 'INSTALL_JQ'
-          # Try to install jq - varies by OS
-          # Verify jq actually works (not just exists — some VMs have empty binaries)
-          if command -v jq >/dev/null 2>&1 && echo '{}' | jq . >/dev/null 2>&1; then
-            echo "jq already available and functional"
-            exit 0
-          fi
-          # Remove broken jq if present but non-functional
-          if command -v jq >/dev/null 2>&1; then
-            echo "jq exists but broken, forcing reinstall"
-            rm -f "$(command -v jq)" 2>/dev/null || true
-          fi
-          # Try common package managers
-          apk add --no-cache jq 2>/dev/null && echo '{}' | jq . >/dev/null 2>&1 && exit 0
-          apt-get update -qq && apt-get install -y -qq jq 2>/dev/null && echo '{}' | jq . >/dev/null 2>&1 && exit 0
-          dnf install -y jq 2>/dev/null && echo '{}' | jq . >/dev/null 2>&1 && exit 0
-          yum install -y jq 2>/dev/null && echo '{}' | jq . >/dev/null 2>&1 && exit 0
-          zypper install -y jq 2>/dev/null && echo '{}' | jq . >/dev/null 2>&1 && exit 0
-          pacman -Sy --noconfirm jq 2>/dev/null && echo '{}' | jq . >/dev/null 2>&1 && exit 0
-          xbps-install -Sy jq 2>/dev/null && echo '{}' | jq . >/dev/null 2>&1 && exit 0
-          pkg install -y jq 2>/dev/null && echo '{}' | jq . >/dev/null 2>&1 && exit 0
-          pkg_add jq 2>/dev/null && echo '{}' | jq . >/dev/null 2>&1 && exit 0
-          pkgin -y install jq 2>/dev/null && echo '{}' | jq . >/dev/null 2>&1 && exit 0
-          # Static binary fallback (works on any Linux/BSD x86_64)
-          echo "Package jq install failed or broken, trying static binary..."
-          ARCH=$(uname -m)
-          case "$ARCH" in
-            x86_64|amd64) JQ_ARCH="amd64" ;;
-            aarch64|arm64) JQ_ARCH="arm64" ;;
-            *) JQ_ARCH="" ;;
-          esac
-          if [ -n "$JQ_ARCH" ]; then
-            OS=$(uname -s | tr '[:upper:]' '[:lower:]')
-            case "$OS" in
-              freebsd) OS="linux" ;; # jq linux static works on FreeBSD via compat
-              *) ;;
-            esac
-            JQ_URL="https://github.com/jqlang/jq/releases/download/jq-1.7.1/jq-${OS}-${JQ_ARCH}"
-            curl -fsSL "$JQ_URL" -o /usr/local/bin/jq 2>/dev/null || \
-              fetch -o /usr/local/bin/jq "$JQ_URL" 2>/dev/null || \
-              ftp -o /usr/local/bin/jq "$JQ_URL" 2>/dev/null || true
-            chmod +x /usr/local/bin/jq 2>/dev/null
-            if echo '{}' | /usr/local/bin/jq . >/dev/null 2>&1; then
-              echo "Static jq installed successfully"
-              exit 0
-            fi
-          fi
-          echo "WARNING: Could not install functional jq"
-          exit 0
-          INSTALL_JQ
+          set -euo pipefail
+          docker pull -q "$ARTIX"
+          # dinit needs an explicit service to start. Run bare it looks for
+          # `boot`, which this image does not ship, and exits at once. Shadowing
+          # it with an internal no-op leaves dinit as a pure service manager --
+          # the supported shape, documented in the same man page as --container.
+          printf 'type = internal\n' > boot
+          docker create --name svz --entrypoint /usr/sbin/dinit "$ARTIX" \
+            --container -d /etc/dinit.d svzboot >/dev/null
+          docker cp boot svz:/etc/dinit.d/svzboot
+          docker start svz >/dev/null
+          sleep 4
+          [ "$(docker inspect -f '{{.State.Running}}' svz)" = "true" ] || {
+            echo "::error::dinit exited (code $(docker inspect -f '{{.State.ExitCode}}' svz))"
+            docker logs svz 2>&1 || true; exit 1; }
+          pid1=$(docker exec svz cat /proc/1/comm)
+          [ "$pid1" = "dinit" ] || { echo "::error::PID 1 is '$pid1', expected dinit"; exit 1; }
 
-      - name: Install supervizio
-        run: |
-          ssh ${SSH_OPTS} root@${VM_IP} << 'INSTALL_CMD'
-          set -e
-          echo "=== Platform Info ==="
-          uname -a
-          echo ""
+          docker cp pkg/supervizio-amd64.pkg.tar.zst svz:/tmp/svz.pkg.tar.zst
+          docker cp setup svz:/tmp/setup
+          docker cp e2e/validate-probe.sh svz:/tmp/validate-probe.sh
+          docker cp e2e/scenario-battery.sh svz:/tmp/scenario-battery.sh
 
-          # Set package source if available
-          if [ -f "/tmp/supervizio.${{ matrix.pkg_ext }}" ] && [ -n "${{ matrix.pkg_ext }}" ]; then
-            echo "Package available: /tmp/supervizio.${{ matrix.pkg_ext }}"
-            export SUPERVIZIO_LOCAL_PKG="/tmp/supervizio.${{ matrix.pkg_ext }}"
-          fi
+          echo "=== Install, as a user would ==="
+          docker exec -e SUPERVIZIO_LOCAL_PKG=/tmp/svz.pkg.tar.zst svz sh /tmp/setup/install.sh
+          docker exec svz /usr/local/bin/supervizio --version
 
-          # Set binary fallback if available
-          if [ -f "/tmp/supervizio" ]; then
-            echo "Binary available: /tmp/supervizio"
-            export SUPERVIZIO_LOCAL_BIN="/tmp/supervizio"
-          fi
+          echo "=== detect-init must elect dinit ==="
+          docker exec svz test -f /etc/dinit.d/supervizio || {
+            echo "::error::install.sh did not register a dinit service"
+            docker exec svz sh -c 'cat /proc/1/comm; ls -l /etc/dinit.d/ || true'
+            exit 1; }
+          docker exec svz pacman -Qo /etc/dinit.d/supervizio || true
 
-          if [ -z "${SUPERVIZIO_LOCAL_PKG:-}" ] && [ -z "${SUPERVIZIO_LOCAL_BIN:-}" ]; then
-            echo "ERROR: No package or binary found"
-            exit 1
-          fi
+          echo "=== Validate probe ==="
+          docker exec svz sh /tmp/validate-probe.sh
 
-          chmod +x /tmp/setup/install.sh
-          /tmp/setup/install.sh
-          INSTALL_CMD
+          echo "=== Supervision scenarios ==="
+          docker exec svz sh /tmp/scenario-battery.sh /usr/local/bin/supervizio
 
-      - name: Verify installation
-        run: |
-          ssh ${SSH_OPTS} root@${VM_IP} << 'VERIFY_CMD'
-          set -e
-          echo "=== Verify Installation ==="
+          echo "=== Uninstall ==="
+          docker exec -e SUPERVIZIO_NON_INTERACTIVE=true svz sh /tmp/setup/uninstall.sh
 
-          # Check binary exists
-          if [ -f /usr/local/bin/supervizio ]; then
-            echo "OK Binary found at /usr/local/bin/supervizio"
-          else
-            echo "FAIL Binary NOT found"
-            exit 1
-          fi
+      - name: Collect the container console on failure
+        if: failure()
+        run: docker logs svz 2>&1 || true
 
-          # Check config directory
-          if [ -d /etc/supervizio ]; then
-            echo "OK Config directory exists"
-          else
-            echo "SKIP Config directory not found (may be OK for BSD)"
-          fi
-
-          # Check config file
-          if [ -f /etc/supervizio/config.example.yaml ]; then
-            echo "OK Example config found"
-          else
-            echo "SKIP Example config not found"
-          fi
-
-          # Check version
-          echo ""
-          echo "=== Version ==="
-          /usr/local/bin/supervizio --version || echo "version check done"
-          VERIFY_CMD
-
-      - name: Validate probe
-        run: |
-          ssh ${SSH_OPTS} root@${VM_IP} << 'PROBE_CMD'
-          set -e
-          if command -v jq >/dev/null 2>&1; then
-            chmod +x /tmp/validate-probe.sh
-            /tmp/validate-probe.sh
-          else
-            echo "[WARN] jq not available, running basic probe test"
-            OUTPUT=$(/usr/local/bin/supervizio --probe 2>&1) || {
-              echo "ERROR: --probe failed"
-              echo "Output: $OUTPUT"
-              exit 1
-            }
-            echo "Probe output:"
-            echo "$OUTPUT"
-            echo "OK Probe returned output (jq not available for validation)"
-          fi
-          PROBE_CMD
-
-      - name: Supervision scenarios
-        run: |
-          # Prove the supervisor REACTS correctly on this OS: crash→restart,
-          # clean-exit→policy, never, max_retries, ignore-SIGTERM→SIGKILL, rlimit.
-          # Self-contained battery (no extra binary) against the installed binary.
-          ssh ${SSH_OPTS} root@${VM_IP} << 'BATTERY_CMD'
-          set -e
-          chmod +x /tmp/scenario-battery.sh
-          /tmp/scenario-battery.sh /usr/local/bin/supervizio
-          BATTERY_CMD
-
-      - name: Uninstall supervizio
-        run: |
-          ssh ${SSH_OPTS} root@${VM_IP} << 'UNINSTALL_CMD'
-          set -e
-          echo "=== Uninstalling supervizio ==="
-          export SUPERVIZIO_NON_INTERACTIVE=true
-          chmod +x /tmp/setup/uninstall.sh
-          /tmp/setup/uninstall.sh
-          UNINSTALL_CMD
-
-      - name: Verify clean uninstall
-        run: |
-          ssh ${SSH_OPTS} root@${VM_IP} << 'VERIFY_CLEAN'
-          set -e
-          echo "=== Verify Clean Uninstall ==="
-          ERRORS=0
-
-          # Check binary removed
-          if [ -f /usr/local/bin/supervizio ]; then
-            echo "FAIL Binary still present!"
-            ERRORS=$((ERRORS + 1))
-          else
-            echo "OK Binary removed"
-          fi
-
-          # Check service files removed
-          for svc in /etc/systemd/system/supervizio.service \
-                     /usr/lib/systemd/system/supervizio.service \
-                     /etc/init.d/supervizio \
-                     /etc/sv/supervizio/run \
-                     /etc/s6/supervizio/run \
-                     /etc/dinit.d/supervizio \
-                     /etc/rc.d/supervizio; do
-            if [ -f "$svc" ]; then
-              echo "FAIL Service file still present: $svc"
-              ERRORS=$((ERRORS + 1))
-            fi
-          done
-
-          if [ "$ERRORS" -gt 0 ]; then
-            echo ""
-            echo "WARNING: $ERRORS items not cleaned up"
-            # Don't fail - some systems may retain config
-          else
-            echo "OK Clean uninstall verified"
-          fi
-          VERIFY_CLEAN
-
-      - name: Release VM
+      - name: Tear down
         if: always()
-        run: |
-          chmod +x runner-template/.github/scripts/vm-release.sh
-          runner-template/.github/scripts/vm-release.sh "${{ steps.vm.outputs.VMID || matrix.name }}"
+        run: docker rm -f svz >/dev/null 2>&1 || true
 
       - name: Report status (result)
         if: always() && needs.resolve.outputs.sha != ''
@@ -1488,18 +1169,133 @@ jobs:
         env:
           GH_TOKEN: ${{ secrets.AGENT_REPO_TOKEN }}
         run: |
-          [ -z "$GH_TOKEN" ] && { echo "AGENT_REPO_TOKEN not set, skipping"; exit 0; }
-          STATE="success"
-          DESC="Passed"
-          if [ "${{ job.status }}" != "success" ]; then
-            STATE="failure"
-            DESC="Failed"
-          fi
-          curl -sf -X POST \
-            -H "Authorization: Bearer $GH_TOKEN" \
-            -H "Accept: application/vnd.github+json" \
+          [ -z "$GH_TOKEN" ] && exit 0
+          STATE="success"; DESC="Passed"
+          if [ "${{ job.status }}" != "success" ]; then STATE="failure"; DESC="Failed"; fi
+          curl -sf -X POST -H "Authorization: Bearer $GH_TOKEN" -H "Accept: application/vnd.github+json" \
             "https://api.github.com/repos/${{ needs.resolve.outputs.source_repo }}/statuses/${{ needs.resolve.outputs.sha }}" \
-            -d "{\"state\":\"$STATE\",\"context\":\"e2e/vm/${{ matrix.name }}\",\"description\":\"$DESC\",\"target_url\":\"${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}\"}"
+            -d "{\"state\":\"$STATE\",\"context\":\"e2e/vm/artix-dinit\",\"description\":\"$DESC\",\"target_url\":\"${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}\"}"
+
+  e2e-linux-debian-sysvinit:
+    name: E2E Linux debian-sysvinit
+    needs: [resolve]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    if: ${{ github.event.inputs.arm_only != 'true' }}
+    steps:
+      - name: Report status (pending)
+        if: needs.resolve.outputs.sha != ''
+        continue-on-error: true
+        env:
+          GH_TOKEN: ${{ secrets.AGENT_REPO_TOKEN }}
+        run: |
+          [ -z "$GH_TOKEN" ] && exit 0
+          curl -sf -X POST -H "Authorization: Bearer $GH_TOKEN" -H "Accept: application/vnd.github+json" \
+            "https://api.github.com/repos/${{ needs.resolve.outputs.source_repo }}/statuses/${{ needs.resolve.outputs.sha }}" \
+            -d '{"state":"pending","context":"e2e/vm/debian-sysvinit","description":"Running...","target_url":"${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"}'
+
+      - name: Checkout agent code
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: ${{ needs.resolve.outputs.source_repo }}
+          ref: ${{ needs.resolve.outputs.ref }}
+          token: ${{ secrets.AGENT_REPO_TOKEN }}
+          persist-credentials: false
+
+      - name: Download the deb from the agent run (cross-repo)
+        uses: actions/download-artifact@70fc10c6e5e1ce46ad2ea6f2b72d43f7d47b13c3 # v8.0.0
+        with:
+          name: supervizio-amd64.deb
+          path: pkg
+          repository: ${{ needs.resolve.outputs.source_repo }}
+          run-id: ${{ needs.resolve.outputs.run_id }}
+          github-token: ${{ secrets.AGENT_REPO_TOKEN }}
+
+      - name: Resolve and normalise the package
+        run: |
+          set -euo pipefail
+          ls -la pkg/
+          found=$(find pkg -type f -name "*.deb" | head -1)
+          [ -n "$found" ] && [ -s "$found" ] || {
+            echo "::error::no *.deb in the downloaded artifact - did agent publish it?" >&2
+            exit 1
+          }
+          [ "$found" = "pkg/supervizio-amd64.deb" ] || mv "$found" "pkg/supervizio-amd64.deb"
+          ls -l pkg/supervizio-amd64.deb
+
+      - name: Build a real SysVinit container
+        run: |
+          set -euo pipefail
+          # The load-bearing fact, asserted rather than stated: the base image
+          # ships NO init. That is why installing sysvinit-core is an INSTALL
+          # and not the CONVERSION that failed four times in init-swap-proof.yml.
+          # If a future base starts shipping systemd-sysv this must go red, not
+          # degrade quietly.
+          docker pull -q debian:trixie
+          n=$(docker run --rm debian:trixie sh -c 'dpkg -l 2>/dev/null | grep -cE "^ii  (systemd-sysv|init) " || true')
+          [ "$n" = "0" ] || { echo "::error::debian:trixie now ships an init ($n pkgs); this became a conversion"; exit 1; }
+          printf '%s\n' \
+            'FROM debian:trixie' \
+            'RUN apt-get update -qq && DEBIAN_FRONTEND=noninteractive apt-get install -y -qq sysvinit-core >/dev/null' \
+            > Dockerfile
+          docker build -q -t svz-sysv . >/dev/null
+          docker run -d --name svz --entrypoint /usr/sbin/init svz-sysv >/dev/null
+          sleep 5
+          [ "$(docker inspect -f '{{.State.Running}}' svz)" = "true" ] || {
+            echo "::error::sysvinit exited (code $(docker inspect -f '{{.State.ExitCode}}' svz))"
+            docker logs svz 2>&1 || true; exit 1; }
+          pid1=$(docker exec svz cat /proc/1/comm)
+          [ "$pid1" = "init" ] || { echo "::error::PID 1 is '$pid1', expected init"; exit 1; }
+          echo "PID 1 = $pid1, runlevel $(docker exec svz runlevel)"
+
+      - name: Install under SysVinit, validate, uninstall
+        run: |
+          set -euo pipefail
+          docker cp pkg/supervizio-amd64.deb svz:/tmp/svz.deb
+          docker cp setup svz:/tmp/setup
+          docker cp e2e/validate-probe.sh svz:/tmp/validate-probe.sh
+          docker cp e2e/scenario-battery.sh svz:/tmp/scenario-battery.sh
+
+          echo "=== Install, as a user would ==="
+          docker exec -e SUPERVIZIO_LOCAL_PKG=/tmp/svz.deb svz sh /tmp/setup/install.sh
+          docker exec svz /usr/local/bin/supervizio --version
+
+          echo "=== detect-init must elect sysvinit ==="
+          docker exec svz test -f /etc/init.d/supervizio || {
+            echo "::error::install.sh did not register a SysVinit service"
+            docker exec svz sh -c 'cat /proc/1/comm; ls -l /etc/init.d/ || true'
+            exit 1; }
+
+          echo "=== Validate probe ==="
+          docker exec svz sh /tmp/validate-probe.sh
+
+          echo "=== Supervision scenarios ==="
+          docker exec svz sh /tmp/scenario-battery.sh /usr/local/bin/supervizio
+
+          echo "=== Uninstall ==="
+          docker exec -e SUPERVIZIO_NON_INTERACTIVE=true svz sh /tmp/setup/uninstall.sh
+
+      - name: Collect the container console on failure
+        if: failure()
+        run: docker logs svz 2>&1 || true
+
+      - name: Tear down
+        if: always()
+        run: docker rm -f svz >/dev/null 2>&1 || true
+
+      - name: Report status (result)
+        if: always() && needs.resolve.outputs.sha != ''
+        continue-on-error: true
+        env:
+          GH_TOKEN: ${{ secrets.AGENT_REPO_TOKEN }}
+        run: |
+          [ -z "$GH_TOKEN" ] && exit 0
+          STATE="success"; DESC="Passed"
+          if [ "${{ job.status }}" != "success" ]; then STATE="failure"; DESC="Failed"; fi
+          curl -sf -X POST -H "Authorization: Bearer $GH_TOKEN" -H "Accept: application/vnd.github+json" \
+            "https://api.github.com/repos/${{ needs.resolve.outputs.source_repo }}/statuses/${{ needs.resolve.outputs.sha }}" \
+            -d "{\"state\":\"$STATE\",\"context\":\"e2e/vm/debian-sysvinit\",\"description\":\"$DESC\",\"target_url\":\"${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}\"}"
+
 
   e2e-linux-alpine-openrc:
     name: E2E Linux alpine-openrc
@@ -3223,109 +3019,12 @@ jobs:
   # Desormais chaque leg publie la VM qu'il a reellement acquise (artefact
   # `vm-claim-<name>`, ecrit par l'etape "Record VM claim") et ce job ne touche
   # que cette liste. Une VM que ce run n'a jamais prise n'est jamais reinitialisee.
-  vm-cleanup:
-    name: VM Cleanup
-    # e2e-macos (215 sequoia) et e2e-windows (214) tenaient aussi des VM de la
-    # bande, d'ou leur presence ici : sans les attendre, leur claim n'existait
-    # pas encore au telechargement. Les deux tournent desormais sur des runners
-    # GitHub et ne prennent plus rien, donc seul e2e-vm reste a attendre.
-    # Ce job disparait entierement le jour ou e2e-vm quitte le banc a son tour.
-    needs: [e2e-vm]
-    if: always() && github.event.inputs.arm_only != 'true'
-    runs-on: supervizio-runner
-    timeout-minutes: 10
-    env:
-      # Plus de PVE_AUTH/NODE/PROXMOX_API_URL : ce job ne DECOUVRE plus de VM, il
-      # lit la liste de celles qu'il a prises. L'action `bench-api-tunnel` et le
-      # token PVE n'ont donc plus lieu d'etre ici — moins de surface, et plus
-      # aucun chemin capable de designer une VM tierce.
-      SSH_OPTS: "-o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o ConnectTimeout=10"
-    steps:
-      - name: Setup SSH key
-        run: |
-          mkdir -p ~/.ssh && chmod 700 ~/.ssh
-          echo "${{ secrets.CI_SSH_PRIVATE_KEY }}" > ~/.ssh/id_ed25519
-          chmod 600 ~/.ssh/id_ed25519
-
-      # continue-on-error : un run ou aucun leg n'a acquis de VM (skip, annulation
-      # avant l'acquisition) ne publie aucun claim, et download-artifact echoue
-      # quand le motif ne correspond a rien. L'etape suivante traite l'absence de
-      # repertoire comme "rien a reinitialiser".
-      - name: Download VM claims
-        continue-on-error: true
-        uses: actions/download-artifact@70fc10c6e5e1ce46ad2ea6f2b72d43f7d47b13c3 # v8.0.0
-        with:
-          pattern: vm-claim-*
-          path: vm-claims
-          merge-multiple: true
-
-      - name: Reset claimed VMs to their restore point
-        run: |
-          echo "=== VM Cleanup: resetting the VMs acquired by this run ==="
-
-          if [ ! -d vm-claims ]; then
-            echo "No claim artifact: this run acquired no VM. Nothing to reset."
-            exit 0
-          fi
-
-          # Une ligne = un VMID. `sort -u` parce qu'aucun leg ne partage une VM,
-          # mais un re-run partiel peut republier un claim deja present.
-          VMIDS=$(cat vm-claims/*.txt 2>/dev/null | tr -d '\r' | grep -E '^[0-9]+$' | sort -nu)
-
-          if [ -z "$VMIDS" ]; then
-            echo "Claim artifacts present but empty. Nothing to reset."
-            exit 0
-          fi
-
-          echo "Claimed by this run: $(echo "$VMIDS" | tr '\n' ' ')"
-
-          TOTAL=0
-          FAILED=0
-          for VMID in $VMIDS; do
-            # Defense en profondeur : `ci-vm-updown.sh` garde deja la bande
-            # 200-215 cote hote, mais un claim corrompu ne doit meme pas partir.
-            if [ "$VMID" -lt 200 ] || [ "$VMID" -gt 215 ]; then
-              echo "  SKIP ${VMID}: hors bande test 200-215"
-              continue
-            fi
-
-            TOTAL=$((TOTAL + 1))
-            echo ""
-            echo "--- VMID ${VMID} ---"
-
-            # `ci-vm-down` fait stop + rollback (dev, repli base) + enforce +
-            # start cote hote, en root, SOUS LE FLOCK PAR VM (kodflow/labs#159),
-            # et efface le bail. Aucun privilege PVE requis : le token est
-            # privsep=1 et l'ACL de ci-runner@pve, reduite a CIRunner (labs#195),
-            # n'a PAS VM.Snapshot.Rollback — l'appel API rendait 403.
-            if ssh ${SSH_OPTS} -i ~/.ssh/id_ed25519 root@192.168.100.1 \
-                 "ci-vm-down ${VMID}" >/dev/null 2>&1; then
-              echo "  OK: ${VMID} reset to its restore point"
-            else
-              echo "  WARNING: failed to reset ${VMID}"
-              FAILED=$((FAILED + 1))
-            fi
-          done
-
-          echo ""
-          echo "=== VM Cleanup Complete ==="
-          echo "  VMs claimed by this run: ${TOTAL}"
-          echo "  Failed: ${FAILED}"
-
-          if [ "$FAILED" -gt 0 ]; then
-            echo "  WARNING: ${FAILED} VM(s) failed to reset (non-fatal)"
-          fi
-
-  # ===========================================================================
-  # REPORT: Aggregate results and post final commit status
-  # ===========================================================================
-
   report:
     name: Report Results
     # e2e-windows belongs here. Without it the aggregate reports green while
     # the Windows leg is red: it is not in needs, so its result is never read
     # and the job does not even wait for it.
-    needs: [resolve, e2e-docker-amd64, e2e-docker-arm64, e2e-macos, e2e-macos-arm64, e2e-vm, e2e-windows-amd64, e2e-windows-arm64,
+    needs: [resolve, e2e-docker-amd64, e2e-docker-arm64, e2e-macos, e2e-macos-arm64, e2e-linux-artix-dinit, e2e-linux-debian-sysvinit, e2e-windows-amd64, e2e-windows-arm64,
              e2e-linux-alpine-openrc, e2e-linux-debian-systemd, e2e-linux-rocky-systemd, e2e-linux-opensuse-zypper, e2e-linux-arch-pacman,
              e2e-linux-alpine-runit, e2e-linux-alpine-s6,
              e2e-bsd-freebsd-amd64, e2e-bsd-netbsd-amd64, e2e-bsd-openbsd-amd64,
@@ -3345,7 +3044,8 @@ jobs:
             "docker-arm64=${{ needs.e2e-docker-arm64.result }}"
             "macos-x86_64=${{ needs.e2e-macos.result }}"
             "macos-arm64=${{ needs.e2e-macos-arm64.result }}"
-            "vm=${{ needs.e2e-vm.result }}"
+            "linux-artix-dinit=${{ needs.e2e-linux-artix-dinit.result }}"
+            "linux-debian-sysvinit=${{ needs.e2e-linux-debian-sysvinit.result }}"
             "linux-alpine-openrc=${{ needs.e2e-linux-alpine-openrc.result }}"
             "linux-debian-systemd=${{ needs.e2e-linux-debian-systemd.result }}"
             "linux-rocky-systemd=${{ needs.e2e-linux-rocky-systemd.result }}"
@@ -3451,7 +3151,8 @@ jobs:
             echo "| Docker arm64 | \`${{ needs.e2e-docker-arm64.result }}\` |"
             echo "| macOS x86_64 | \`${{ needs.e2e-macos.result }}\` |"
             echo "| macOS ARM64 | \`${{ needs.e2e-macos-arm64.result }}\` |"
-            echo "| VM E2E | \`${{ needs.e2e-vm.result }}\` |"
+            echo "| Linux artix-dinit | \`${{ needs.e2e-linux-artix-dinit.result }}\` |"
+            echo "| Linux debian-sysvinit | \`${{ needs.e2e-linux-debian-sysvinit.result }}\` |"
             echo "| Windows amd64 | \`${{ needs.e2e-windows-amd64.result }}\` |"
             echo "| Windows arm64 | \`${{ needs.e2e-windows-arm64.result }}\` |"
             echo "| BSD freebsd amd64 | \`${{ needs.e2e-bsd-freebsd-amd64.result }}\` |"
