@@ -64,19 +64,45 @@ jobs:
         run: |
           set -euo pipefail
           # No base image and no package install: the tarball IS the filesystem.
-          printf 'FROM scratch\nADD rootfs.tar.gz /\n' > Dockerfile
+          #
+          # The `boot` service is the whole trick. Run bare, dinit starts the
+          # service named `boot`, and Chimera's own /usr/lib/dinit.d/boot pulls
+          # in early-fs-local, early-cryptdisks, early-dev-trigger and friends --
+          # real system management, which is exactly what a container has no
+          # business doing. It fails, and dinit exits. Shadowing `boot` in
+          # /etc/dinit.d (which dinit searches BEFORE /usr/lib/dinit.d) with an
+          # internal no-op leaves dinit running as a pure service manager.
+          # One printf argument per line, and `echo` rather than a nested printf
+          # inside RUN: the service file is a single line, so no escape sequence
+          # has to survive two levels of quoting. shellcheck SC2028 flagged the
+          # version that tried.
+          printf '%s\n' \
+            'FROM scratch' \
+            'ADD rootfs.tar.gz /' \
+            "RUN mkdir -p /etc/dinit.d && echo 'type = internal' > /etc/dinit.d/boot" \
+            'CMD ["/usr/bin/dinit", "--container"]' > Dockerfile
+          cat Dockerfile
           docker build -t chimera-dinit:proof .
           docker run --rm chimera-dinit:proof /usr/bin/dinit --version
 
       - name: dinit must be PID 1, and its control socket must answer
         run: |
           set -euo pipefail
-          # --container is what makes this legitimate rather than a hack: dinit
-          # then skips the system-management work (mounts, swclock, shutdown)
-          # that has no meaning in a container, and supervises services only.
-          docker run -d --name dinit-proof chimera-dinit:proof \
-            /usr/bin/dinit --container --quiet
-          # dinit creates its control socket a moment after exec.
+          # NOT --quiet. The first attempt passed it and the container exited
+          # with `docker logs` empty, which silenced the only evidence of why.
+          # A diagnostic that suppresses its own subject is worse than none.
+          docker run -d --name dinit-proof chimera-dinit:proof
+
+          # Fail on the real reason, not on a downstream "is not running".
+          sleep 3
+          running=$(docker inspect -f '{{.State.Running}}' dinit-proof)
+          if [ "$running" != "true" ]; then
+            echo "::error::dinit exited instead of supervising. Exit code: $(docker inspect -f '{{.State.ExitCode}}' dinit-proof)"
+            echo "--- console ---"; docker logs dinit-proof 2>&1 || true
+            exit 1
+          fi
+
+          # The control socket appears a moment after dinit is up.
           for _ in $(seq 1 30); do
             if docker exec dinit-proof /usr/bin/dinitctl list >/dev/null 2>&1; then break; fi
             sleep 1
