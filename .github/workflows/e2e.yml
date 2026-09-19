@@ -1026,14 +1026,6 @@ jobs:
       max-parallel: 5
       matrix:
         include:
-          - name: alpine-openrc
-            binary_artifact: supervizio-linux-amd64-musl
-            pkg_artifact: supervizio-amd64.apk
-            pkg_ext: apk
-          - name: alpine-s6
-            binary_artifact: supervizio-linux-amd64-musl
-            pkg_artifact: supervizio-amd64.apk
-            pkg_ext: apk
           # NOTE: arch-systemd is intentionally omitted — the lab has no arch
           # template and no VM by that name, so its leg failed "Acquire VM (lock)"
           # on every run (deterministic red). Re-add once an arch VM is provisioned
@@ -1043,26 +1035,10 @@ jobs:
             binary_artifact: supervizio-linux-amd64
             pkg_artifact: supervizio-amd64.pkg.tar.zst
             pkg_ext: pkg.tar.zst
-          - name: debian-systemd
-            binary_artifact: supervizio-linux-amd64
-            pkg_artifact: supervizio-amd64.deb
-            pkg_ext: deb
           - name: debian-sysvinit
             binary_artifact: supervizio-linux-amd64
             pkg_artifact: supervizio-amd64.deb
             pkg_ext: deb
-          - name: fedora-systemd
-            binary_artifact: supervizio-linux-amd64
-            pkg_artifact: supervizio-amd64.rpm
-            pkg_ext: rpm
-          - name: opensuse-systemd
-            binary_artifact: supervizio-linux-amd64
-            pkg_artifact: supervizio-amd64.rpm
-            pkg_ext: rpm
-          - name: alpine-runit
-            binary_artifact: supervizio-linux-amd64-musl
-            pkg_artifact: supervizio-amd64.apk
-            pkg_ext: apk
           # freebsd/openbsd/netbsd left this matrix: they now run on
           # ubuntu-24.04 under vmactions (jobs e2e-bsd-*), which needs no bench
           # VM. openbsd builds natively there rather than consuming an artifact,
@@ -1484,6 +1460,808 @@ jobs:
             "https://api.github.com/repos/${{ needs.resolve.outputs.source_repo }}/statuses/${{ needs.resolve.outputs.sha }}" \
             -d "{\"state\":\"$STATE\",\"context\":\"e2e/vm/${{ matrix.name }}\",\"description\":\"$DESC\",\"target_url\":\"${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}\"}"
 
+  e2e-linux-alpine-openrc:
+    name: E2E Linux alpine-openrc
+    needs: [resolve]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    if: ${{ github.event.inputs.arm_only != 'true' }}
+    steps:
+      - name: Report status (pending)
+        if: needs.resolve.outputs.sha != ''
+        continue-on-error: true
+        env:
+          GH_TOKEN: ${{ secrets.AGENT_REPO_TOKEN }}
+        run: |
+          [ -z "$GH_TOKEN" ] && exit 0
+          curl -sf -X POST -H "Authorization: Bearer $GH_TOKEN" -H "Accept: application/vnd.github+json" \
+            "https://api.github.com/repos/${{ needs.resolve.outputs.source_repo }}/statuses/${{ needs.resolve.outputs.sha }}" \
+            -d '{"state":"pending","context":"e2e/vm/alpine-openrc","description":"Running...","target_url":"${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"}'
+
+      - name: Checkout agent code
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          repository: ${{ needs.resolve.outputs.source_repo }}
+          ref: ${{ needs.resolve.outputs.ref }}
+          token: ${{ secrets.AGENT_REPO_TOKEN }}
+          persist-credentials: false
+
+      # The bench leg pulled this package from zot at 192.168.100.250, which a
+      # hosted runner cannot reach. Same bytes, taken from the GitHub artifact
+      # agent's packaging jobs now mirror. Downloaded on the HOST and synced in
+      # by vmactions -- the token never enters the guest.
+      - name: Download package from the agent run (cross-repo)
+        uses: actions/download-artifact@70fc10c6e5e1ce46ad2ea6f2b72d43f7d47b13c3 # v8.0.0
+        with:
+          name: supervizio-amd64.apk
+          path: pkg
+          repository: ${{ needs.resolve.outputs.source_repo }}
+          run-id: ${{ needs.resolve.outputs.run_id }}
+          github-token: ${{ secrets.AGENT_REPO_TOKEN }}
+
+      - name: Verify the package arrived
+        run: |
+          set -euo pipefail
+          ls -la pkg/
+          [ -s "pkg/supervizio-amd64.apk" ] || {
+            echo "::error::supervizio-amd64.apk missing or empty — did agent's packages-musl publish it? (public E2E bridge)" >&2
+            exit 1
+          }
+
+      - name: Install, graft, validate and uninstall in a alpine guest
+        uses: vmactions/alpine-vm@697847385681cdc413604693010eded91e8d9650 # v1.0.1
+        with:
+          release: '3.23'
+          copyback: false
+          prepare: apk add --no-cache jq
+          run: |
+            set -e
+            WS="$(pwd)"
+            echo "=== Platform ==="; uname -a; head -2 /etc/os-release
+            echo "PID1=$(cat /proc/1/comm)"
+
+            # Install through the PACKAGE, not the raw binary: these legs exist
+            # to prove the package postinstall grafts onto whatever service
+            # manager the machine runs. install.sh detects that manager by
+            # `command -v`, never by /etc/os-release.
+            export SUPERVIZIO_LOCAL_PKG="$WS/pkg/supervizio-amd64.apk"
+
+            echo "=== Install ==="
+            sh "$WS/setup/install.sh"
+
+            echo "=== Verify install ==="
+            [ -x /usr/local/bin/supervizio ] || { echo "binary not installed"; exit 1; }
+            /usr/local/bin/supervizio --version
+
+            echo "=== Verify the service grafted onto OpenRC ==="
+            rc-update show 2>/dev/null | grep -q supervizio || { echo "::error::not registered with OpenRC"; rc-update show || true; exit 1; }
+            echo "OK: OpenRC knows supervizio"
+
+            echo "=== Validate probe ==="
+            sh "$WS/e2e/validate-probe.sh" /usr/local/bin/supervizio
+
+            echo "=== Supervision scenarios ==="
+            sh "$WS/e2e/scenario-battery.sh" /usr/local/bin/supervizio
+
+            echo "=== Uninstall ==="
+            # No tty here: uninstall.sh's config-dir prompt would either take EOF
+            # and trip `set -e`, or block until the job timeout.
+            SUPERVIZIO_NON_INTERACTIVE=true; export SUPERVIZIO_NON_INTERACTIVE
+            sh "$WS/setup/uninstall.sh"
+            [ -x /usr/local/bin/supervizio ] && echo "::warning::binary still present after uninstall" || true
+
+      - name: Report status (result)
+        if: always() && needs.resolve.outputs.sha != ''
+        continue-on-error: true
+        env:
+          GH_TOKEN: ${{ secrets.AGENT_REPO_TOKEN }}
+        run: |
+          [ -z "$GH_TOKEN" ] && exit 0
+          STATE="success"; DESC="Passed"
+          if [ "${{ job.status }}" != "success" ]; then STATE="failure"; DESC="Failed"; fi
+          curl -sf -X POST -H "Authorization: Bearer $GH_TOKEN" -H "Accept: application/vnd.github+json" \
+            "https://api.github.com/repos/${{ needs.resolve.outputs.source_repo }}/statuses/${{ needs.resolve.outputs.sha }}" \
+            -d "{\"state\":\"$STATE\",\"context\":\"e2e/vm/alpine-openrc\",\"description\":\"$DESC\",\"target_url\":\"${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}\"}"
+
+  e2e-linux-debian-systemd:
+    name: E2E Linux debian-systemd
+    needs: [resolve]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    if: ${{ github.event.inputs.arm_only != 'true' }}
+    steps:
+      - name: Report status (pending)
+        if: needs.resolve.outputs.sha != ''
+        continue-on-error: true
+        env:
+          GH_TOKEN: ${{ secrets.AGENT_REPO_TOKEN }}
+        run: |
+          [ -z "$GH_TOKEN" ] && exit 0
+          curl -sf -X POST -H "Authorization: Bearer $GH_TOKEN" -H "Accept: application/vnd.github+json" \
+            "https://api.github.com/repos/${{ needs.resolve.outputs.source_repo }}/statuses/${{ needs.resolve.outputs.sha }}" \
+            -d '{"state":"pending","context":"e2e/vm/debian-systemd","description":"Running...","target_url":"${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"}'
+
+      - name: Checkout agent code
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          repository: ${{ needs.resolve.outputs.source_repo }}
+          ref: ${{ needs.resolve.outputs.ref }}
+          token: ${{ secrets.AGENT_REPO_TOKEN }}
+          persist-credentials: false
+
+      # The bench leg pulled this package from zot at 192.168.100.250, which a
+      # hosted runner cannot reach. Same bytes, taken from the GitHub artifact
+      # agent's packaging jobs now mirror. Downloaded on the HOST and synced in
+      # by vmactions -- the token never enters the guest.
+      - name: Download package from the agent run (cross-repo)
+        uses: actions/download-artifact@70fc10c6e5e1ce46ad2ea6f2b72d43f7d47b13c3 # v8.0.0
+        with:
+          name: supervizio-amd64.deb
+          path: pkg
+          repository: ${{ needs.resolve.outputs.source_repo }}
+          run-id: ${{ needs.resolve.outputs.run_id }}
+          github-token: ${{ secrets.AGENT_REPO_TOKEN }}
+
+      - name: Verify the package arrived
+        run: |
+          set -euo pipefail
+          ls -la pkg/
+          [ -s "pkg/supervizio-amd64.deb" ] || {
+            echo "::error::supervizio-amd64.deb missing or empty — did agent's packages-glibc publish it? (public E2E bridge)" >&2
+            exit 1
+          }
+
+      - name: Install, graft, validate and uninstall in a debian guest
+        uses: vmactions/debian-vm@389ba1da28ff5b440cba52db8e03fc2e08e2affa # v1.0.0
+        with:
+          release: '13'
+          copyback: false
+          prepare: apt-get update -qq && apt-get install -y -qq jq
+          run: |
+            set -e
+            WS="$(pwd)"
+            echo "=== Platform ==="; uname -a; head -2 /etc/os-release
+            echo "PID1=$(cat /proc/1/comm)"
+
+            # Install through the PACKAGE, not the raw binary: these legs exist
+            # to prove the package postinstall grafts onto whatever service
+            # manager the machine runs. install.sh detects that manager by
+            # `command -v`, never by /etc/os-release.
+            export SUPERVIZIO_LOCAL_PKG="$WS/pkg/supervizio-amd64.deb"
+
+            echo "=== Install ==="
+            sh "$WS/setup/install.sh"
+
+            echo "=== Verify install ==="
+            [ -x /usr/local/bin/supervizio ] || { echo "binary not installed"; exit 1; }
+            /usr/local/bin/supervizio --version
+
+            echo "=== Verify the service grafted onto systemd ==="
+            systemctl is-enabled supervizio >/dev/null 2>&1 || { echo "::error::not enabled under systemd"; systemctl status supervizio || true; exit 1; }
+            echo "OK: systemd has supervizio enabled"
+
+            echo "=== Validate probe ==="
+            sh "$WS/e2e/validate-probe.sh" /usr/local/bin/supervizio
+
+            echo "=== Supervision scenarios ==="
+            sh "$WS/e2e/scenario-battery.sh" /usr/local/bin/supervizio
+
+            echo "=== Uninstall ==="
+            # No tty here: uninstall.sh's config-dir prompt would either take EOF
+            # and trip `set -e`, or block until the job timeout.
+            SUPERVIZIO_NON_INTERACTIVE=true; export SUPERVIZIO_NON_INTERACTIVE
+            sh "$WS/setup/uninstall.sh"
+            [ -x /usr/local/bin/supervizio ] && echo "::warning::binary still present after uninstall" || true
+
+      - name: Report status (result)
+        if: always() && needs.resolve.outputs.sha != ''
+        continue-on-error: true
+        env:
+          GH_TOKEN: ${{ secrets.AGENT_REPO_TOKEN }}
+        run: |
+          [ -z "$GH_TOKEN" ] && exit 0
+          STATE="success"; DESC="Passed"
+          if [ "${{ job.status }}" != "success" ]; then STATE="failure"; DESC="Failed"; fi
+          curl -sf -X POST -H "Authorization: Bearer $GH_TOKEN" -H "Accept: application/vnd.github+json" \
+            "https://api.github.com/repos/${{ needs.resolve.outputs.source_repo }}/statuses/${{ needs.resolve.outputs.sha }}" \
+            -d "{\"state\":\"$STATE\",\"context\":\"e2e/vm/debian-systemd\",\"description\":\"$DESC\",\"target_url\":\"${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}\"}"
+
+  e2e-linux-rocky-systemd:
+    name: E2E Linux rocky-systemd
+    needs: [resolve]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    if: ${{ github.event.inputs.arm_only != 'true' }}
+    steps:
+      - name: Report status (pending)
+        if: needs.resolve.outputs.sha != ''
+        continue-on-error: true
+        env:
+          GH_TOKEN: ${{ secrets.AGENT_REPO_TOKEN }}
+        run: |
+          [ -z "$GH_TOKEN" ] && exit 0
+          curl -sf -X POST -H "Authorization: Bearer $GH_TOKEN" -H "Accept: application/vnd.github+json" \
+            "https://api.github.com/repos/${{ needs.resolve.outputs.source_repo }}/statuses/${{ needs.resolve.outputs.sha }}" \
+            -d '{"state":"pending","context":"e2e/vm/rocky-systemd","description":"Running...","target_url":"${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"}'
+
+      - name: Checkout agent code
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          repository: ${{ needs.resolve.outputs.source_repo }}
+          ref: ${{ needs.resolve.outputs.ref }}
+          token: ${{ secrets.AGENT_REPO_TOKEN }}
+          persist-credentials: false
+
+      # The bench leg pulled this package from zot at 192.168.100.250, which a
+      # hosted runner cannot reach. Same bytes, taken from the GitHub artifact
+      # agent's packaging jobs now mirror. Downloaded on the HOST and synced in
+      # by vmactions -- the token never enters the guest.
+      - name: Download package from the agent run (cross-repo)
+        uses: actions/download-artifact@70fc10c6e5e1ce46ad2ea6f2b72d43f7d47b13c3 # v8.0.0
+        with:
+          name: supervizio-amd64.rpm
+          path: pkg
+          repository: ${{ needs.resolve.outputs.source_repo }}
+          run-id: ${{ needs.resolve.outputs.run_id }}
+          github-token: ${{ secrets.AGENT_REPO_TOKEN }}
+
+      - name: Verify the package arrived
+        run: |
+          set -euo pipefail
+          ls -la pkg/
+          [ -s "pkg/supervizio-amd64.rpm" ] || {
+            echo "::error::supervizio-amd64.rpm missing or empty — did agent's packages-glibc publish it? (public E2E bridge)" >&2
+            exit 1
+          }
+
+      - name: Install, graft, validate and uninstall in a rockylinux guest
+        uses: vmactions/rockylinux-vm@4d78b486fbcbfd7837c11bd7a2f0d4dc04b21464 # v1.0.1
+        with:
+          release: '10'
+          copyback: false
+          prepare: dnf install -y -q jq
+          run: |
+            set -e
+            WS="$(pwd)"
+            echo "=== Platform ==="; uname -a; head -2 /etc/os-release
+            echo "PID1=$(cat /proc/1/comm)"
+
+            # Install through the PACKAGE, not the raw binary: these legs exist
+            # to prove the package postinstall grafts onto whatever service
+            # manager the machine runs. install.sh detects that manager by
+            # `command -v`, never by /etc/os-release.
+            export SUPERVIZIO_LOCAL_PKG="$WS/pkg/supervizio-amd64.rpm"
+
+            echo "=== Install ==="
+            sh "$WS/setup/install.sh"
+
+            echo "=== Verify install ==="
+            [ -x /usr/local/bin/supervizio ] || { echo "binary not installed"; exit 1; }
+            /usr/local/bin/supervizio --version
+
+            echo "=== Verify the service grafted onto systemd ==="
+            systemctl is-enabled supervizio >/dev/null 2>&1 || { echo "::error::not enabled under systemd"; systemctl status supervizio || true; exit 1; }
+            echo "OK: systemd has supervizio enabled"
+
+            echo "=== Validate probe ==="
+            sh "$WS/e2e/validate-probe.sh" /usr/local/bin/supervizio
+
+            echo "=== Supervision scenarios ==="
+            sh "$WS/e2e/scenario-battery.sh" /usr/local/bin/supervizio
+
+            echo "=== Uninstall ==="
+            # No tty here: uninstall.sh's config-dir prompt would either take EOF
+            # and trip `set -e`, or block until the job timeout.
+            SUPERVIZIO_NON_INTERACTIVE=true; export SUPERVIZIO_NON_INTERACTIVE
+            sh "$WS/setup/uninstall.sh"
+            [ -x /usr/local/bin/supervizio ] && echo "::warning::binary still present after uninstall" || true
+
+      - name: Report status (result)
+        if: always() && needs.resolve.outputs.sha != ''
+        continue-on-error: true
+        env:
+          GH_TOKEN: ${{ secrets.AGENT_REPO_TOKEN }}
+        run: |
+          [ -z "$GH_TOKEN" ] && exit 0
+          STATE="success"; DESC="Passed"
+          if [ "${{ job.status }}" != "success" ]; then STATE="failure"; DESC="Failed"; fi
+          curl -sf -X POST -H "Authorization: Bearer $GH_TOKEN" -H "Accept: application/vnd.github+json" \
+            "https://api.github.com/repos/${{ needs.resolve.outputs.source_repo }}/statuses/${{ needs.resolve.outputs.sha }}" \
+            -d "{\"state\":\"$STATE\",\"context\":\"e2e/vm/rocky-systemd\",\"description\":\"$DESC\",\"target_url\":\"${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}\"}"
+
+  # openSUSE has NO vmactions image, so it goes through the in-repo qemu-vm
+  # action instead. That action is now proven: run 35400826120, 8/8 green on
+  # ubuntu-24.04 and ubuntu-26.04, including this exact image and checksum,
+  # booting to SSH in 38.3s.
+  #
+  # The one structural difference from a vmactions leg: vmactions rsyncs the
+  # whole workspace into the guest, qemu-vm copies only what `files` names. The
+  # four scripts below are self-contained (install.sh and uninstall.sh embed the
+  # detect-init contract textually), so naming them is enough and keeps what
+  # crosses into a root shell explicit.
+  e2e-linux-opensuse-zypper:
+    name: E2E Linux opensuse-zypper
+    needs: [resolve]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    if: ${{ github.event.inputs.arm_only != 'true' }}
+    steps:
+      - name: Report status (pending)
+        if: needs.resolve.outputs.sha != ''
+        continue-on-error: true
+        env:
+          GH_TOKEN: ${{ secrets.AGENT_REPO_TOKEN }}
+        run: |
+          [ -z "$GH_TOKEN" ] && exit 0
+          curl -sf -X POST -H "Authorization: Bearer $GH_TOKEN" -H "Accept: application/vnd.github+json" \
+            "https://api.github.com/repos/${{ needs.resolve.outputs.source_repo }}/statuses/${{ needs.resolve.outputs.sha }}" \
+            -d '{"state":"pending","context":"e2e/vm/opensuse-zypper","description":"Running...","target_url":"${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"}'
+
+      - name: Checkout runner-template (for the qemu-vm action)
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          persist-credentials: false
+
+      - name: Checkout agent code
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          repository: ${{ needs.resolve.outputs.source_repo }}
+          ref: ${{ needs.resolve.outputs.ref }}
+          token: ${{ secrets.AGENT_REPO_TOKEN }}
+          path: agent
+          persist-credentials: false
+
+      - name: Download package from the agent run (cross-repo)
+        uses: actions/download-artifact@70fc10c6e5e1ce46ad2ea6f2b72d43f7d47b13c3 # v8.0.0
+        with:
+          name: supervizio-amd64.rpm
+          path: pkg
+          repository: ${{ needs.resolve.outputs.source_repo }}
+          run-id: ${{ needs.resolve.outputs.run_id }}
+          github-token: ${{ secrets.AGENT_REPO_TOKEN }}
+
+      - name: Verify the package arrived
+        run: |
+          set -euo pipefail
+          ls -la pkg/
+          [ -s "pkg/supervizio-amd64.rpm" ] || {
+            echo "::error::supervizio-amd64.rpm missing or empty — did agent's packages-glibc publish it? (public E2E bridge)" >&2
+            exit 1
+          }
+
+      - name: Install, graft, validate and uninstall in an openSUSE guest
+        uses: ./.github/actions/qemu-vm
+        env:
+          PKG: /root/supervizio-amd64.rpm
+        with:
+          image-url: https://download.opensuse.org/distribution/leap/16.0/appliances/Leap-16.0-Minimal-VM.x86_64-Cloud.qcow2
+          image-sha256: c5cd6904632c86d5368dea3896da8c17571c238ef96a0e2c8b0ca1835d796e07
+          memory: "2048"
+          timeout: "1500"
+          # ssh carries no environment; naming it here is what gets it across.
+          envs: PKG
+          files: |
+            pkg/supervizio-amd64.rpm:/root/supervizio-amd64.rpm
+            agent/setup/install.sh:/root/install.sh
+            agent/setup/uninstall.sh:/root/uninstall.sh
+            agent/e2e/validate-probe.sh:/root/validate-probe.sh
+            agent/e2e/scenario-battery.sh:/root/scenario-battery.sh
+          run: |
+            echo "=== Platform ==="; uname -srm; head -2 /etc/os-release
+            echo "PID1=$(cat /proc/1/comm)"
+            # The reason this leg exists: zypper is a distinct branch in
+            # install.sh (rpm-zypper) and in the Go detector, and no other leg
+            # reaches it. Assert it is really the manager in play.
+            command -v zypper >/dev/null || { echo "::error::zypper absent — this is not an openSUSE guest"; exit 1; }
+
+            echo "=== Install ==="
+            export SUPERVIZIO_LOCAL_PKG="$PKG"
+            sh /root/install.sh
+
+            echo "=== Verify install ==="
+            [ -x /usr/local/bin/supervizio ] || { echo "::error::binary not installed"; exit 1; }
+            /usr/local/bin/supervizio --version
+
+            echo "=== Verify the service grafted onto systemd ==="
+            systemctl is-enabled supervizio >/dev/null 2>&1 || {
+              echo "::error::not enabled under systemd"; systemctl status supervizio || true; exit 1; }
+            echo "OK: systemd has supervizio enabled"
+
+            echo "=== Validate probe ==="
+            sh /root/validate-probe.sh /usr/local/bin/supervizio
+
+            echo "=== Supervision scenarios ==="
+            sh /root/scenario-battery.sh /usr/local/bin/supervizio
+
+            echo "=== Uninstall ==="
+            SUPERVIZIO_NON_INTERACTIVE=true; export SUPERVIZIO_NON_INTERACTIVE
+            sh /root/uninstall.sh
+            [ -x /usr/local/bin/supervizio ] && echo "::warning::binary still present after uninstall" || true
+
+      - name: Report status (result)
+        if: always() && needs.resolve.outputs.sha != ''
+        continue-on-error: true
+        env:
+          GH_TOKEN: ${{ secrets.AGENT_REPO_TOKEN }}
+        run: |
+          [ -z "$GH_TOKEN" ] && exit 0
+          STATE="success"; DESC="Passed"
+          if [ "${{ job.status }}" != "success" ]; then STATE="failure"; DESC="Failed"; fi
+          curl -sf -X POST -H "Authorization: Bearer $GH_TOKEN" -H "Accept: application/vnd.github+json" \
+            "https://api.github.com/repos/${{ needs.resolve.outputs.source_repo }}/statuses/${{ needs.resolve.outputs.sha }}" \
+            -d "{\"state\":\"$STATE\",\"context\":\"e2e/vm/opensuse-zypper\",\"description\":\"$DESC\",\"target_url\":\"${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}\"}"
+
+  # pacman is the one package manager with no other route. No vmactions image
+  # exists for the Arch family, and nothing else in this matrix reaches
+  # pacman_linux.go (the discovery adapter that walks /var/lib/pacman/local) or
+  # install.sh's `pacman` branch. So this leg goes through qemu-vm, proven by
+  # run 35400826120.
+  #
+  # Arch, not Artix, and that is a deliberate narrowing: Artix would also give
+  # dinit, but it ships no cloud image. Arch gives pacman under systemd. This
+  # leg therefore replaces the PACKAGE-MANAGER half of the bench's artix-dinit
+  # leg and not its init half — dinit stays on the bench until it has a working
+  # boot configuration, which run 35398438742 showed is a real piece of work.
+  #
+  # A VERSIONED path, never images/latest/: latest/ rolls on each build and
+  # would silently invalidate the checksum below.
+  e2e-linux-arch-pacman:
+    name: E2E Linux arch-pacman
+    needs: [resolve]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    if: ${{ github.event.inputs.arm_only != 'true' }}
+    steps:
+      - name: Report status (pending)
+        if: needs.resolve.outputs.sha != ''
+        continue-on-error: true
+        env:
+          GH_TOKEN: ${{ secrets.AGENT_REPO_TOKEN }}
+        run: |
+          [ -z "$GH_TOKEN" ] && exit 0
+          curl -sf -X POST -H "Authorization: Bearer $GH_TOKEN" -H "Accept: application/vnd.github+json" \
+            "https://api.github.com/repos/${{ needs.resolve.outputs.source_repo }}/statuses/${{ needs.resolve.outputs.sha }}" \
+            -d '{"state":"pending","context":"e2e/vm/arch-pacman","description":"Running...","target_url":"${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"}'
+
+      - name: Checkout runner-template (for the qemu-vm action)
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          persist-credentials: false
+
+      - name: Checkout agent code
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          repository: ${{ needs.resolve.outputs.source_repo }}
+          ref: ${{ needs.resolve.outputs.ref }}
+          token: ${{ secrets.AGENT_REPO_TOKEN }}
+          path: agent
+          persist-credentials: false
+
+      - name: Download package from the agent run (cross-repo)
+        uses: actions/download-artifact@70fc10c6e5e1ce46ad2ea6f2b72d43f7d47b13c3 # v8.0.0
+        with:
+          name: supervizio-amd64.pkg.tar.zst
+          path: pkg
+          repository: ${{ needs.resolve.outputs.source_repo }}
+          run-id: ${{ needs.resolve.outputs.run_id }}
+          github-token: ${{ secrets.AGENT_REPO_TOKEN }}
+
+      - name: Verify the package arrived
+        run: |
+          set -euo pipefail
+          ls -la pkg/
+          [ -s "pkg/supervizio-amd64.pkg.tar.zst" ] || {
+            echo "::error::supervizio-amd64.pkg.tar.zst missing or empty — did agent's packages-archlinux publish it? (public E2E bridge)" >&2
+            exit 1
+          }
+
+      - name: Install, graft, validate and uninstall in an Arch guest
+        uses: ./.github/actions/qemu-vm
+        env:
+          PKG: /root/supervizio-amd64.pkg.tar.zst
+        with:
+          image-url: https://geo.mirror.pkgbuild.com/images/v20260915.594445/Arch-Linux-x86_64-cloudimg-20260915.594445.qcow2
+          image-sha256: d7cc7c86a21b32d6678c001464714f71f4ef7e0d7bbbfca65e99123ac5afc25b
+          memory: "2048"
+          timeout: "1500"
+          envs: PKG
+          files: |
+            pkg/supervizio-amd64.pkg.tar.zst:/root/supervizio-amd64.pkg.tar.zst
+            agent/setup/install.sh:/root/install.sh
+            agent/setup/uninstall.sh:/root/uninstall.sh
+            agent/e2e/validate-probe.sh:/root/validate-probe.sh
+            agent/e2e/scenario-battery.sh:/root/scenario-battery.sh
+          run: |
+            echo "=== Platform ==="; uname -srm; head -2 /etc/os-release
+            echo "PID1=$(cat /proc/1/comm)"
+            # The reason this leg exists. install.sh picks its branch by
+            # `command -v`, so assert pacman is genuinely the manager in play
+            # rather than trusting the image label.
+            command -v pacman >/dev/null || { echo "::error::pacman absent — this is not an Arch-family guest"; exit 1; }
+            echo "pacman db entries before: $(ls -1 /var/lib/pacman/local 2>/dev/null | wc -l)"
+
+            echo "=== Install ==="
+            export SUPERVIZIO_LOCAL_PKG="$PKG"
+            sh /root/install.sh
+
+            echo "=== Verify install ==="
+            [ -x /usr/local/bin/supervizio ] || { echo "::error::binary not installed"; exit 1; }
+            /usr/local/bin/supervizio --version
+
+            # Proves the pacman DISCOVERY adapter has something real to read:
+            # pacman_linux.go walks /var/lib/pacman/local looking for a `desc`
+            # per package, and this is the only leg where that path is populated
+            # by an actual supervizio install.
+            echo "=== Verify pacman's local db recorded the package ==="
+            pacman -Q supervizio || { echo "::error::pacman does not know the package it just installed"; exit 1; }
+            ls -d /var/lib/pacman/local/supervizio-* >/dev/null || {
+              echo "::error::no /var/lib/pacman/local entry — the discovery adapter would find nothing"; exit 1; }
+
+            echo "=== Verify the service grafted onto systemd ==="
+            systemctl is-enabled supervizio >/dev/null 2>&1 || {
+              echo "::error::not enabled under systemd"; systemctl status supervizio || true; exit 1; }
+            echo "OK: systemd has supervizio enabled"
+
+            echo "=== Validate probe ==="
+            sh /root/validate-probe.sh /usr/local/bin/supervizio
+
+            echo "=== Supervision scenarios ==="
+            sh /root/scenario-battery.sh /usr/local/bin/supervizio
+
+            echo "=== Uninstall ==="
+            SUPERVIZIO_NON_INTERACTIVE=true; export SUPERVIZIO_NON_INTERACTIVE
+            sh /root/uninstall.sh
+            [ -x /usr/local/bin/supervizio ] && echo "::warning::binary still present after uninstall" || true
+
+      - name: Report status (result)
+        if: always() && needs.resolve.outputs.sha != ''
+        continue-on-error: true
+        env:
+          GH_TOKEN: ${{ secrets.AGENT_REPO_TOKEN }}
+        run: |
+          [ -z "$GH_TOKEN" ] && exit 0
+          STATE="success"; DESC="Passed"
+          if [ "${{ job.status }}" != "success" ]; then STATE="failure"; DESC="Failed"; fi
+          curl -sf -X POST -H "Authorization: Bearer $GH_TOKEN" -H "Accept: application/vnd.github+json" \
+            "https://api.github.com/repos/${{ needs.resolve.outputs.source_repo }}/statuses/${{ needs.resolve.outputs.sha }}" \
+            -d "{\"state\":\"$STATE\",\"context\":\"e2e/vm/arch-pacman\",\"description\":\"$DESC\",\"target_url\":\"${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}\"}"
+
+  # alpine-runit -- NO init swap, and that is not a shortcut.
+  #
+  # setup/scripts/detect-init.sh rule 1: "a DEDICATED supervisor (runsvdir,
+  # s6-svscan, dinit) takes precedence over the boot init that launched it --
+  # on Alpine, runit and s6 ship as OpenRC services, so /run/openrc coexists
+  # with a running runsvdir". And expected-matrix.json accepts
+  # init_method_regex "supervisor-over-init|pid1" for both of these columns.
+  #
+  # So the bench VM is not Alpine-with-runsvdir-as-PID-1; it is stock Alpine with
+  # runsvdir RUNNING. Starting the supervisor reproduces that exactly, with no
+  # reboot, no bootloader edit and no cache-after-prepare. The scandir matches
+  # the one expected-matrix.json pins for this column (/etc/service).
+  e2e-linux-alpine-runit:
+    name: E2E Linux alpine-runit
+    needs: [resolve]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    if: ${{ github.event.inputs.arm_only != 'true' }}
+    steps:
+      - name: Report status (pending)
+        if: needs.resolve.outputs.sha != ''
+        continue-on-error: true
+        env:
+          GH_TOKEN: ${{ secrets.AGENT_REPO_TOKEN }}
+        run: |
+          [ -z "$GH_TOKEN" ] && exit 0
+          curl -sf -X POST -H "Authorization: Bearer $GH_TOKEN" -H "Accept: application/vnd.github+json" \
+            "https://api.github.com/repos/${{ needs.resolve.outputs.source_repo }}/statuses/${{ needs.resolve.outputs.sha }}" \
+            -d '{"state":"pending","context":"e2e/vm/alpine-runit","description":"Running...","target_url":"${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"}'
+
+      - name: Checkout agent code
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          repository: ${{ needs.resolve.outputs.source_repo }}
+          ref: ${{ needs.resolve.outputs.ref }}
+          token: ${{ secrets.AGENT_REPO_TOKEN }}
+          persist-credentials: false
+
+      - name: Download package from the agent run (cross-repo)
+        uses: actions/download-artifact@70fc10c6e5e1ce46ad2ea6f2b72d43f7d47b13c3 # v8.0.0
+        with:
+          name: supervizio-amd64.apk
+          path: pkg
+          repository: ${{ needs.resolve.outputs.source_repo }}
+          run-id: ${{ needs.resolve.outputs.run_id }}
+          github-token: ${{ secrets.AGENT_REPO_TOKEN }}
+
+      - name: Verify the package arrived
+        run: |
+          set -euo pipefail
+          ls -la pkg/
+          [ -s "pkg/supervizio-amd64.apk" ] || {
+            echo "::error::supervizio-amd64.apk missing or empty — did agent's packages-musl publish it? (public E2E bridge)" >&2
+            exit 1
+          }
+
+      - name: Install, graft onto runsvdir, validate and uninstall
+        uses: vmactions/alpine-vm@697847385681cdc413604693010eded91e8d9650 # v1.0.1
+        with:
+          release: '3.23'
+          copyback: false
+          prepare: apk add --no-cache jq runit
+          run: |
+            set -e
+            WS="$(pwd)"
+            echo "=== Platform ==="; uname -srm; head -2 /etc/os-release
+            echo "PID1=$(cat /proc/1/comm)   (busybox init -- the supervisor runs ON TOP of it)"
+
+            echo "=== Start runsvdir ==="
+            mkdir -p /etc/service
+            (setsid /usr/bin/runsvdir -P /etc/service >/dev/null 2>&1 &) ; sleep 2
+            # Give it a moment to appear in /proc, which is what the agent reads.
+            i=0; while [ $i -lt 30 ]; do
+              pgrep -x runsvdir >/dev/null 2>&1 && break
+              i=$((i+1)); sleep 1
+            done
+            pgrep -x runsvdir >/dev/null || { echo "::error::runsvdir did not start"; exit 1; }
+            echo "OK: runsvdir is running (scandir /etc/service)"
+
+            echo "=== Install ==="
+            export SUPERVIZIO_LOCAL_PKG="$WS/pkg/supervizio-amd64.apk"
+            sh "$WS/setup/install.sh"
+
+            echo "=== Verify install ==="
+            [ -x /usr/local/bin/supervizio ] || { echo "::error::binary not installed"; exit 1; }
+            /usr/local/bin/supervizio --version
+
+            # The assertion this leg exists for: the SAME .apk must graft onto
+            # whichever supervisor is live, not onto OpenRC just because Alpine
+            # booted with it.
+            echo "=== Verify the service grafted onto runit, not OpenRC ==="
+            [ -e /etc/service/supervizio ] || { echo "::error::no runit service in /etc/service"; ls -la /etc/service || true; exit 1; }
+            echo "OK: runit scandir has supervizio"
+
+            echo "=== Validate probe ==="
+            sh "$WS/e2e/validate-probe.sh" /usr/local/bin/supervizio
+
+            echo "=== Supervision scenarios ==="
+            sh "$WS/e2e/scenario-battery.sh" /usr/local/bin/supervizio
+
+            echo "=== Uninstall ==="
+            SUPERVIZIO_NON_INTERACTIVE=true; export SUPERVIZIO_NON_INTERACTIVE
+            sh "$WS/setup/uninstall.sh"
+            [ -x /usr/local/bin/supervizio ] && echo "::warning::binary still present after uninstall" || true
+
+      - name: Report status (result)
+        if: always() && needs.resolve.outputs.sha != ''
+        continue-on-error: true
+        env:
+          GH_TOKEN: ${{ secrets.AGENT_REPO_TOKEN }}
+        run: |
+          [ -z "$GH_TOKEN" ] && exit 0
+          STATE="success"; DESC="Passed"
+          if [ "${{ job.status }}" != "success" ]; then STATE="failure"; DESC="Failed"; fi
+          curl -sf -X POST -H "Authorization: Bearer $GH_TOKEN" -H "Accept: application/vnd.github+json" \
+            "https://api.github.com/repos/${{ needs.resolve.outputs.source_repo }}/statuses/${{ needs.resolve.outputs.sha }}" \
+            -d "{\"state\":\"$STATE\",\"context\":\"e2e/vm/alpine-runit\",\"description\":\"$DESC\",\"target_url\":\"${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}\"}"
+
+  # alpine-s6 -- NO init swap, and that is not a shortcut.
+  #
+  # setup/scripts/detect-init.sh rule 1: "a DEDICATED supervisor (runsvdir,
+  # s6-svscan, dinit) takes precedence over the boot init that launched it --
+  # on Alpine, runit and s6 ship as OpenRC services, so /run/openrc coexists
+  # with a running runsvdir". And expected-matrix.json accepts
+  # init_method_regex "supervisor-over-init|pid1" for both of these columns.
+  #
+  # So the bench VM is not Alpine-with-s6-svscan-as-PID-1; it is stock Alpine with
+  # s6-svscan RUNNING. Starting the supervisor reproduces that exactly, with no
+  # reboot, no bootloader edit and no cache-after-prepare. The scandir matches
+  # the one expected-matrix.json pins for this column (/run/service).
+  e2e-linux-alpine-s6:
+    name: E2E Linux alpine-s6
+    needs: [resolve]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    if: ${{ github.event.inputs.arm_only != 'true' }}
+    steps:
+      - name: Report status (pending)
+        if: needs.resolve.outputs.sha != ''
+        continue-on-error: true
+        env:
+          GH_TOKEN: ${{ secrets.AGENT_REPO_TOKEN }}
+        run: |
+          [ -z "$GH_TOKEN" ] && exit 0
+          curl -sf -X POST -H "Authorization: Bearer $GH_TOKEN" -H "Accept: application/vnd.github+json" \
+            "https://api.github.com/repos/${{ needs.resolve.outputs.source_repo }}/statuses/${{ needs.resolve.outputs.sha }}" \
+            -d '{"state":"pending","context":"e2e/vm/alpine-s6","description":"Running...","target_url":"${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"}'
+
+      - name: Checkout agent code
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          repository: ${{ needs.resolve.outputs.source_repo }}
+          ref: ${{ needs.resolve.outputs.ref }}
+          token: ${{ secrets.AGENT_REPO_TOKEN }}
+          persist-credentials: false
+
+      - name: Download package from the agent run (cross-repo)
+        uses: actions/download-artifact@70fc10c6e5e1ce46ad2ea6f2b72d43f7d47b13c3 # v8.0.0
+        with:
+          name: supervizio-amd64.apk
+          path: pkg
+          repository: ${{ needs.resolve.outputs.source_repo }}
+          run-id: ${{ needs.resolve.outputs.run_id }}
+          github-token: ${{ secrets.AGENT_REPO_TOKEN }}
+
+      - name: Verify the package arrived
+        run: |
+          set -euo pipefail
+          ls -la pkg/
+          [ -s "pkg/supervizio-amd64.apk" ] || {
+            echo "::error::supervizio-amd64.apk missing or empty — did agent's packages-musl publish it? (public E2E bridge)" >&2
+            exit 1
+          }
+
+      - name: Install, graft onto s6-svscan, validate and uninstall
+        uses: vmactions/alpine-vm@697847385681cdc413604693010eded91e8d9650 # v1.0.1
+        with:
+          release: '3.23'
+          copyback: false
+          prepare: apk add --no-cache jq s6
+          run: |
+            set -e
+            WS="$(pwd)"
+            echo "=== Platform ==="; uname -srm; head -2 /etc/os-release
+            echo "PID1=$(cat /proc/1/comm)   (busybox init -- the supervisor runs ON TOP of it)"
+
+            echo "=== Start s6-svscan ==="
+            mkdir -p /run/service
+            (setsid /usr/bin/s6-svscan /run/service >/dev/null 2>&1 &) ; sleep 2
+            # Give it a moment to appear in /proc, which is what the agent reads.
+            i=0; while [ $i -lt 30 ]; do
+              pgrep -x s6-svscan >/dev/null 2>&1 && break
+              i=$((i+1)); sleep 1
+            done
+            pgrep -x s6-svscan >/dev/null || { echo "::error::s6-svscan did not start"; exit 1; }
+            echo "OK: s6-svscan is running (scandir /run/service)"
+
+            echo "=== Install ==="
+            export SUPERVIZIO_LOCAL_PKG="$WS/pkg/supervizio-amd64.apk"
+            sh "$WS/setup/install.sh"
+
+            echo "=== Verify install ==="
+            [ -x /usr/local/bin/supervizio ] || { echo "::error::binary not installed"; exit 1; }
+            /usr/local/bin/supervizio --version
+
+            # The assertion this leg exists for: the SAME .apk must graft onto
+            # whichever supervisor is live, not onto OpenRC just because Alpine
+            # booted with it.
+            echo "=== Verify the service grafted onto s6, not OpenRC ==="
+            [ -e /run/service/supervizio ] || { echo "::error::no s6 service in /run/service"; ls -la /run/service || true; exit 1; }
+            echo "OK: s6 scandir has supervizio"
+
+            echo "=== Validate probe ==="
+            sh "$WS/e2e/validate-probe.sh" /usr/local/bin/supervizio
+
+            echo "=== Supervision scenarios ==="
+            sh "$WS/e2e/scenario-battery.sh" /usr/local/bin/supervizio
+
+            echo "=== Uninstall ==="
+            SUPERVIZIO_NON_INTERACTIVE=true; export SUPERVIZIO_NON_INTERACTIVE
+            sh "$WS/setup/uninstall.sh"
+            [ -x /usr/local/bin/supervizio ] && echo "::warning::binary still present after uninstall" || true
+
+      - name: Report status (result)
+        if: always() && needs.resolve.outputs.sha != ''
+        continue-on-error: true
+        env:
+          GH_TOKEN: ${{ secrets.AGENT_REPO_TOKEN }}
+        run: |
+          [ -z "$GH_TOKEN" ] && exit 0
+          STATE="success"; DESC="Passed"
+          if [ "${{ job.status }}" != "success" ]; then STATE="failure"; DESC="Failed"; fi
+          curl -sf -X POST -H "Authorization: Bearer $GH_TOKEN" -H "Accept: application/vnd.github+json" \
+            "https://api.github.com/repos/${{ needs.resolve.outputs.source_repo }}/statuses/${{ needs.resolve.outputs.sha }}" \
+            -d "{\"state\":\"$STATE\",\"context\":\"e2e/vm/alpine-s6\",\"description\":\"$DESC\",\"target_url\":\"${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}\"}"
+
   e2e-bsd-freebsd-amd64:
     name: E2E BSD freebsd amd64
     needs: [resolve]
@@ -1901,6 +2679,29 @@ jobs:
             echo "=== Supervision scenarios ==="
             sh "$WS/e2e/scenario-battery.sh" /usr/local/bin/supervizio
 
+            # Detection vs ground truth, ADVISORY. The freebsd-arm64 /
+            # netbsd-arm64 entries in expected-matrix.json are seeded from their
+            # amd64 siblings, not captured from a real arm64 guest, so a
+            # mismatch means "correct the matrix" -- which is exactly what that
+            # file tells you to do -- and not "fail the leg". The first real
+            # capture is the authority; until then this reports without gating.
+            #
+            # probe-capabilities.sh, not raw `--probe`: the validator consumes
+            # the capability shape the bench feeds it, and `--probe` already
+            # emits JSON on its own (the `-f json` in validate-detection.sh's
+            # own usage comment is stale).
+            echo "=== Detection vs expected-matrix (advisory) ==="
+            sh "$WS/e2e/probe-capabilities.sh" /usr/local/bin/supervizio \
+               /tmp/probe-cap.json "freebsd-arm64" || true
+            /usr/local/bin/supervizio --inventory all > /tmp/inventory.json 2>/dev/null || true
+            if [ -s /tmp/probe-cap.json ] && [ -s /tmp/inventory.json ]; then
+              sh "$WS/e2e/validate-detection.sh" "freebsd-arm64" \
+                 /tmp/probe-cap.json /tmp/inventory.json --advisory \
+                || echo "::warning::detection drifted from expected-matrix for freebsd-arm64 - correct e2e/expected-matrix.json"
+            else
+              echo "::warning::could not capture probe/inventory dumps on freebsd-arm64 - detection not checked"
+            fi
+
             echo "=== Uninstall ==="
             # uninstall.sh PROMPTS before removing the config dir unless this is
             # set, and there is no tty here: the read either takes EOF and trips
@@ -2011,6 +2812,29 @@ jobs:
 
             echo "=== Supervision scenarios ==="
             sh "$WS/e2e/scenario-battery.sh" /usr/local/bin/supervizio
+
+            # Detection vs ground truth, ADVISORY. The freebsd-arm64 /
+            # netbsd-arm64 entries in expected-matrix.json are seeded from their
+            # amd64 siblings, not captured from a real arm64 guest, so a
+            # mismatch means "correct the matrix" -- which is exactly what that
+            # file tells you to do -- and not "fail the leg". The first real
+            # capture is the authority; until then this reports without gating.
+            #
+            # probe-capabilities.sh, not raw `--probe`: the validator consumes
+            # the capability shape the bench feeds it, and `--probe` already
+            # emits JSON on its own (the `-f json` in validate-detection.sh's
+            # own usage comment is stale).
+            echo "=== Detection vs expected-matrix (advisory) ==="
+            sh "$WS/e2e/probe-capabilities.sh" /usr/local/bin/supervizio \
+               /tmp/probe-cap.json "netbsd-arm64" || true
+            /usr/local/bin/supervizio --inventory all > /tmp/inventory.json 2>/dev/null || true
+            if [ -s /tmp/probe-cap.json ] && [ -s /tmp/inventory.json ]; then
+              sh "$WS/e2e/validate-detection.sh" "netbsd-arm64" \
+                 /tmp/probe-cap.json /tmp/inventory.json --advisory \
+                || echo "::warning::detection drifted from expected-matrix for netbsd-arm64 - correct e2e/expected-matrix.json"
+            else
+              echo "::warning::could not capture probe/inventory dumps on netbsd-arm64 - detection not checked"
+            fi
 
             echo "=== Uninstall ==="
             # uninstall.sh PROMPTS before removing the config dir unless this is
@@ -2163,6 +2987,8 @@ jobs:
     # the Windows leg is red: it is not in needs, so its result is never read
     # and the job does not even wait for it.
     needs: [resolve, e2e-docker-amd64, e2e-docker-arm64, e2e-macos, e2e-macos-arm64, e2e-vm, e2e-windows-amd64, e2e-windows-arm64,
+             e2e-linux-alpine-openrc, e2e-linux-debian-systemd, e2e-linux-rocky-systemd, e2e-linux-opensuse-zypper, e2e-linux-arch-pacman,
+             e2e-linux-alpine-runit, e2e-linux-alpine-s6,
              e2e-bsd-freebsd-amd64, e2e-bsd-netbsd-amd64, e2e-bsd-openbsd-amd64,
              e2e-bsd-freebsd-arm64, e2e-bsd-netbsd-arm64]
     if: always()
@@ -2181,6 +3007,13 @@ jobs:
             "macos-x86_64=${{ needs.e2e-macos.result }}"
             "macos-arm64=${{ needs.e2e-macos-arm64.result }}"
             "vm=${{ needs.e2e-vm.result }}"
+            "linux-alpine-openrc=${{ needs.e2e-linux-alpine-openrc.result }}"
+            "linux-debian-systemd=${{ needs.e2e-linux-debian-systemd.result }}"
+            "linux-rocky-systemd=${{ needs.e2e-linux-rocky-systemd.result }}"
+            "linux-opensuse-zypper=${{ needs.e2e-linux-opensuse-zypper.result }}"
+            "linux-arch-pacman=${{ needs.e2e-linux-arch-pacman.result }}"
+            "linux-alpine-runit=${{ needs.e2e-linux-alpine-runit.result }}"
+            "linux-alpine-s6=${{ needs.e2e-linux-alpine-s6.result }}"
             "windows-amd64=${{ needs.e2e-windows-amd64.result }}"
             "windows-arm64=${{ needs.e2e-windows-arm64.result }}"
             "bsd-freebsd-amd64=${{ needs.e2e-bsd-freebsd-amd64.result }}"
