@@ -152,7 +152,7 @@ jobs:
           set -euo pipefail
           printf '%s\n' \
             'FROM debian:trixie' \
-            'RUN apt-get update -qq && DEBIAN_FRONTEND=noninteractive apt-get install -y -qq sysvinit-core >/dev/null' \
+            'RUN apt-get update -qq && DEBIAN_FRONTEND=noninteractive apt-get install -y -qq sysvinit-core cron >/dev/null' \
             > Dockerfile
           cat Dockerfile
           docker build -q -t sysv:proof . >/dev/null
@@ -173,12 +173,25 @@ jobs:
           # nothing -- because the postinst writes it from
           # /usr/share/sysvinit/inittab. An earlier analysis read that absence
           # as "sysvinit-core ships no inittab" and drew the wrong conclusion.
-          docker exec sysv-proof test -f /etc/inittab || { echo "::error::no /etc/inittab"; exit 1; }
-          echo "inittab: $(docker exec sysv-proof wc -c < /etc/inittab) bytes"
+          # `sh -c` around it, because a bare `docker exec ... wc -c < FILE`
+          # redirects on the HOST: the host shell opens /etc/inittab, which does
+          # not exist there, and the measurement silently comes back empty while
+          # the step stays green. It printed "inittab:  bytes" for exactly one
+          # run before this was caught.
+          bytes=$(docker exec sysv-proof sh -c 'wc -c < /etc/inittab') || {
+            echo "::error::no /etc/inittab in the container"; exit 1; }
+          [ "${bytes:-0}" -gt 0 ] || { echo "::error::/etc/inittab is empty"; exit 1; }
+          echo "inittab: $bytes bytes"
 
       - name: A service must start and be reparented to PID 1
         run: |
           set -euo pipefail
+          # cron, installed alongside sysvinit-core above: debian:trixie ships
+          # no service at all, and the first run of this job assumed it did
+          # ("cron: unrecognized service"). A real packaged service is what
+          # makes this assertion worth anything -- it exercises /etc/init.d,
+          # the `service` wrapper and reparenting, which is the path our own
+          # package takes.
           docker exec sysv-proof service cron start
           sleep 2
           docker exec sysv-proof sh -c '
