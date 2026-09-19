@@ -1899,6 +1899,11 @@ jobs:
           image-sha256: c5cd6904632c86d5368dea3896da8c17571c238ef96a0e2c8b0ca1835d796e07
           memory: "2048"
           timeout: "1500"
+          # openSUSE's kernel compiles PSI in but leaves it off, so the pressure
+          # collectors read null and validate-probe.sh fails three required
+          # numerics. Arch does not need this -- it ships PSI enabled, which is
+          # why arch-pacman went green on the same run openSUSE did not.
+          kernel-args: psi=1
           # ssh carries no environment; naming it here is what gets it across.
           envs: PKG
           files: |
@@ -2206,12 +2211,25 @@ jobs:
             echo "=== Start runsvdir ==="
             mkdir -p /etc/service
             (setsid /usr/bin/runsvdir -P /etc/service >/dev/null 2>&1 &) ; sleep 2
-            # Give it a moment to appear in /proc, which is what the agent reads.
+            # Scan /proc/*/comm, NOT `pgrep -x`. setup/scripts/detect-init.sh
+            # says it outright: "busybox `pgrep -x` has been observed to MISS a
+            # live supervisor (e.g. runsvdir on Alpine) that a /proc/comm scan
+            # finds" -- which is why the agent's own detector scans /proc. Using
+            # pgrep here reported "did not start" for a supervisor that was
+            # running, i.e. the check was blind, not the supervisor absent.
+            svz_running() {
+              for c in /proc/[0-9]*/comm; do
+                [ -r "$c" ] || continue
+                IFS= read -r n < "$c" 2>/dev/null || continue
+                [ "$n" = "runsvdir" ] && return 0
+              done
+              return 1
+            }
             i=0; while [ $i -lt 30 ]; do
-              pgrep -x runsvdir >/dev/null 2>&1 && break
+              svz_running && break
               i=$((i+1)); sleep 1
             done
-            pgrep -x runsvdir >/dev/null || { echo "::error::runsvdir did not start"; exit 1; }
+            svz_running || { echo "::error::runsvdir did not start"; ps aux 2>/dev/null | head -20; exit 1; }
             echo "OK: runsvdir is running (scandir /etc/service)"
 
             echo "=== Install ==="
@@ -2346,12 +2364,25 @@ jobs:
             echo "=== Start s6-svscan ==="
             mkdir -p /run/service
             (setsid /usr/bin/s6-svscan /run/service >/dev/null 2>&1 &) ; sleep 2
-            # Give it a moment to appear in /proc, which is what the agent reads.
+            # Scan /proc/*/comm, NOT `pgrep -x`. setup/scripts/detect-init.sh
+            # says it outright: "busybox `pgrep -x` has been observed to MISS a
+            # live supervisor (e.g. runsvdir on Alpine) that a /proc/comm scan
+            # finds" -- which is why the agent's own detector scans /proc. Using
+            # pgrep here reported "did not start" for a supervisor that was
+            # running, i.e. the check was blind, not the supervisor absent.
+            svz_running() {
+              for c in /proc/[0-9]*/comm; do
+                [ -r "$c" ] || continue
+                IFS= read -r n < "$c" 2>/dev/null || continue
+                [ "$n" = "s6-svscan" ] && return 0
+              done
+              return 1
+            }
             i=0; while [ $i -lt 30 ]; do
-              pgrep -x s6-svscan >/dev/null 2>&1 && break
+              svz_running && break
               i=$((i+1)); sleep 1
             done
-            pgrep -x s6-svscan >/dev/null || { echo "::error::s6-svscan did not start"; exit 1; }
+            svz_running || { echo "::error::s6-svscan did not start"; ps aux 2>/dev/null | head -20; exit 1; }
             echo "OK: s6-svscan is running (scandir /run/service)"
 
             echo "=== Install ==="
