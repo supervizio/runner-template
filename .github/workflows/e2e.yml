@@ -1523,7 +1523,17 @@ jobs:
         with:
           release: '3.23'
           copyback: false
-          prepare: apk add --no-cache jq
+          cache-after-prepare: true
+          prepare: |
+            apk add --no-cache jq 
+            # PSI is compiled in but default-disabled on this kernel, so the
+            # pressure collectors read null and validate-probe.sh fails three
+            # required numerics. Debian ships it enabled, which is why that leg
+            # was the only one to pass. extlinux is Alpine's bootloader.
+            for f in /boot/extlinux.conf /extlinux.conf; do
+              [ -f "$f" ] && sed -i '/APPEND/ s/$/ psi=1/' "$f"
+            done
+            grep -h APPEND /boot/extlinux.conf 2>/dev/null || true
           run: |
             set -e
             WS="$(pwd)"
@@ -1753,7 +1763,12 @@ jobs:
         with:
           release: '10'
           copyback: false
-          prepare: dnf install -y -q jq
+          cache-after-prepare: true
+          prepare: |
+            dnf install -y -q jq
+            # Same PSI story; grubby is the RHEL-family way to add a kernel arg.
+            grubby --update-kernel=ALL --args="psi=1" || true
+            grubby --info=DEFAULT | grep -i args || true
           run: |
             set -e
             WS="$(pwd)"
@@ -1898,6 +1913,13 @@ jobs:
             # The reason this leg exists: zypper is a distinct branch in
             # install.sh (rpm-zypper) and in the Go detector, and no other leg
             # reaches it. Assert it is really the manager in play.
+            # validate-probe.sh makes 39 jq calls and the qemu-vm action has no
+            # `prepare:` input, so nothing had installed it: --probe ran fine and the
+            # validator reported "Invalid JSON output" for a missing parser.
+            zypper -n --gpg-auto-import-keys install jq >/dev/null 2>&1 || zypper -n install jq \
+              || { echo "::error::could not install jq"; exit 1; }
+            command -v jq >/dev/null || { echo "::error::jq still absent"; exit 1; }
+
             command -v zypper >/dev/null || { echo "::error::zypper absent — this is not an openSUSE guest"; exit 1; }
 
             echo "=== Install ==="
@@ -2035,6 +2057,13 @@ jobs:
             # The reason this leg exists. install.sh picks its branch by
             # `command -v`, so assert pacman is genuinely the manager in play
             # rather than trusting the image label.
+            # validate-probe.sh makes 39 jq calls and the qemu-vm action has no
+            # `prepare:` input, so nothing had installed it: --probe ran fine and the
+            # validator reported "Invalid JSON output" for a missing parser.
+            pacman -Sy --noconfirm --needed jq >/dev/null 2>&1 \
+              || { echo "::error::could not install jq"; exit 1; }
+            command -v jq >/dev/null || { echo "::error::jq still absent"; exit 1; }
+
             command -v pacman >/dev/null || { echo "::error::pacman absent — this is not an Arch-family guest"; exit 1; }
             echo "pacman db entries before: $(ls -1 /var/lib/pacman/local 2>/dev/null | wc -l)"
 
@@ -2157,7 +2186,17 @@ jobs:
         with:
           release: '3.23'
           copyback: false
-          prepare: apk add --no-cache jq runit
+          cache-after-prepare: true
+          prepare: |
+            apk add --no-cache jq runit
+            # PSI is compiled in but default-disabled on this kernel, so the
+            # pressure collectors read null and validate-probe.sh fails three
+            # required numerics. Debian ships it enabled, which is why that leg
+            # was the only one to pass. extlinux is Alpine's bootloader.
+            for f in /boot/extlinux.conf /extlinux.conf; do
+              [ -f "$f" ] && sed -i '/APPEND/ s/$/ psi=1/' "$f"
+            done
+            grep -h APPEND /boot/extlinux.conf 2>/dev/null || true
           run: |
             set -e
             WS="$(pwd)"
@@ -2287,7 +2326,17 @@ jobs:
         with:
           release: '3.23'
           copyback: false
-          prepare: apk add --no-cache jq s6
+          cache-after-prepare: true
+          prepare: |
+            apk add --no-cache jq s6
+            # PSI is compiled in but default-disabled on this kernel, so the
+            # pressure collectors read null and validate-probe.sh fails three
+            # required numerics. Debian ships it enabled, which is why that leg
+            # was the only one to pass. extlinux is Alpine's bootloader.
+            for f in /boot/extlinux.conf /extlinux.conf; do
+              [ -f "$f" ] && sed -i '/APPEND/ s/$/ psi=1/' "$f"
+            done
+            grep -h APPEND /boot/extlinux.conf 2>/dev/null || true
           run: |
             set -e
             WS="$(pwd)"
