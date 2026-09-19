@@ -76,6 +76,35 @@ jobs:
     name: Ack (pending status)
     runs-on: ubuntu-24.04
     steps:
+      # Gate the whole workflow on source_repo, BEFORE anything reads it.
+      #
+      # SOURCE_REPO comes straight from an attacker-controllable dispatch
+      # payload, and every downstream job does `actions/checkout` of that
+      # repository with LIBPROBE_REPO_TOKEN and then runs `cargo test --release`
+      # on it. cargo executes build.rs, proc macros and test code, so an
+      # unconstrained value turns "can dispatch a test run" into "can run
+      # arbitrary code next to a private-repo credential".
+      #
+      # Every other job declares `needs: [ack]`, so failing here stops the run
+      # before a single checkout happens. libprobe only: the token reaches
+      # nothing else, and agent has its own lane in e2e.yml.
+      #
+      # Read through env rather than template interpolation -- a repository name is
+      # attacker-supplied text and would otherwise be pasted verbatim into the
+      # shell.
+      - name: Validate source repository
+        env:
+          CANDIDATE: ${{ env.SOURCE_REPO }}
+        run: |
+          set -euo pipefail
+          case "$CANDIDATE" in
+            supervizio/libprobe) ;;
+            *)
+              echo "::error::refusing source_repo '$CANDIDATE' - external-e2e.yml serves supervizio/libprobe only" >&2
+              exit 1 ;;
+          esac
+          echo "source_repo accepted: $CANDIDATE"
+
       - name: Set pending commit status on source
         env:
           GH_TOKEN: ${{ secrets.LIBPROBE_REPO_TOKEN }}
@@ -148,9 +177,14 @@ jobs:
           ref: ${{ env.SOURCE_SHA }}
           token: ${{ secrets.LIBPROBE_REPO_TOKEN }}
           persist-credentials: false
-      - uses: vmactions/freebsd-vm@5a72679103d223925653750faa878a143340fbd0 # v1.5.0
+      - uses: vmactions/freebsd-vm@4469451fe39bee80be4066836c5170362e9349f3 # v1.5.7
         with:
           usesh: true
+          # Pinned, like e2e.yml. Unpinned, the action follows its own
+          # default, which moves without notice -- netbsd already drifted
+          # to 11.0 while the bench and expected-matrix.json still say 10.1.
+          # A guest that changes under you turns a red leg into a mystery.
+          release: '15.0'
           arch: ${{ matrix.vmarch }}
           copyback: true
           prepare: pkg install -y rust
@@ -183,9 +217,14 @@ jobs:
           ref: ${{ env.SOURCE_SHA }}
           token: ${{ secrets.LIBPROBE_REPO_TOKEN }}
           persist-credentials: false
-      - uses: vmactions/openbsd-vm@18edb32f4e48dae5865d7b8b3a9587bc01218a20 # v1.4.4
+      - uses: vmactions/openbsd-vm@86cdc08415d9d0865267e686561e276c52d62530 # v1.4.7
         with:
           usesh: true
+          # Pinned, like e2e.yml. Unpinned, the action follows its own
+          # default, which moves without notice -- netbsd already drifted
+          # to 11.0 while the bench and expected-matrix.json still say 10.1.
+          # A guest that changes under you turns a red leg into a mystery.
+          release: '7.9'
           arch: ${{ matrix.vmarch }}
           copyback: true
           prepare: pkg_add -I rust
@@ -221,9 +260,14 @@ jobs:
           ref: ${{ env.SOURCE_SHA }}
           token: ${{ secrets.LIBPROBE_REPO_TOKEN }}
           persist-credentials: false
-      - uses: vmactions/netbsd-vm@1d9767765fd3f986e6de3aff4b1148f0c3a45f01 # v1.4.1
+      - uses: vmactions/netbsd-vm@20ee93a005c9fc78743e6e05269f4cb023b87413 # v1.5.0
         with:
           usesh: true
+          # Pinned, like e2e.yml. Unpinned, the action follows its own
+          # default, which moves without notice -- netbsd already drifted
+          # to 11.0 while the bench and expected-matrix.json still say 10.1.
+          # A guest that changes under you turns a red leg into a mystery.
+          release: '10.1'
           arch: ${{ matrix.vmarch }}
           copyback: true
           prepare: /usr/sbin/pkg_add -I rust || pkgin -y install rust

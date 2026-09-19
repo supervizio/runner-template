@@ -18,7 +18,7 @@ jobs:
   release:
     # Only run on the original template repository, not on forks/copies
     if: github.repository == 'kodflow/devcontainer-template'
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     permissions:
       contents: write
 

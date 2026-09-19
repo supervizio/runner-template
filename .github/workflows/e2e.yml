@@ -39,9 +39,12 @@ jobs:
       ref: ${{ steps.resolve.outputs.ref }}
       run_id: ${{ steps.resolve.outputs.run_id }}
       sha: ${{ steps.resolve.outputs.sha }}
+      source_repo: ${{ steps.resolve.outputs.source_repo }}
     steps:
       - name: Resolve dispatch parameters
         id: resolve
+        env:
+          PAYLOAD_SOURCE_REPO: ${{ github.event.client_payload.source_repo }}
         run: |
           if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
             echo "ref=${{ inputs.ref }}" >> "$GITHUB_OUTPUT"
@@ -52,22 +55,59 @@ jobs:
             echo "run_id=${{ github.event.client_payload.run_id }}" >> "$GITHUB_OUTPUT"
             echo "sha=${{ github.event.client_payload.sha }}" >> "$GITHUB_OUTPUT"
           fi
+          # The dispatch payload has carried source_repo from the start but
+          # nothing ever read it -- every consumer hardcoded supervizio/agent.
+          # Read it now (the artifact download needs it), defaulting to that
+          # same value so in-flight dispatches and workflow_dispatch runs, which
+          # send no such field, behave exactly as before.
+          #
+          # ALLOWLISTED, and that is load-bearing. This value steers both the
+          # private `actions/checkout` and the cross-repo artifact download, and
+          # the jobs that consume it then EXECUTE scripts out of that checkout --
+          # setup/install.sh as root in a guest, and setup/fetch-libprobe.sh with
+          # LIBPROBE_REPO_TOKEN in its step env. Left unconstrained it would turn
+          # "can dispatch a test run" into "can run arbitrary code next to a
+          # private-repo credential". Checked once here rather than trusted at
+          # each of the ten use sites.
+          #
+          # Read through env, not interpolated into the script: a repository name
+          # is attacker-supplied text and template interpolation pastes it verbatim
+          # (and into $GITHUB_OUTPUT, where a newline would let it set other
+          # outputs).
+          # The allowlist is agent-only, deliberately. An earlier revision also
+          # accepted supervizio/libprobe, which was wrong twice over: this
+          # workflow's checkouts and every status post authenticate with
+          # AGENT_REPO_TOKEN, which cannot reach libprobe, so a libprobe-sourced
+          # dispatch would have 404'd on checkout after posting a run's worth of
+          # statuses against a SHA that does not exist in agent. libprobe has its
+          # own lane, external-e2e.yml, with its own token and its own contract.
+          # Widening this list is not a config change -- it needs a token and a
+          # status target to match.
+          SOURCE_REPO="${PAYLOAD_SOURCE_REPO:-supervizio/agent}"
+          case "$SOURCE_REPO" in
+            supervizio/agent) ;;
+            *)
+              echo "::error::refusing source_repo '$SOURCE_REPO' - e2e.yml serves supervizio/agent only (libprobe uses external-e2e.yml)" >&2
+              exit 1 ;;
+          esac
+          echo "source_repo=$SOURCE_REPO" >> "$GITHUB_OUTPUT"
 
       - name: Display resolved parameters
         run: |
           echo "Agent ref:    ${{ steps.resolve.outputs.ref }}"
           echo "Agent run ID: ${{ steps.resolve.outputs.run_id }}"
           echo "Agent SHA:    ${{ steps.resolve.outputs.sha }}"
+          echo "Source repo:  ${{ steps.resolve.outputs.source_repo }}"
 
   # ===========================================================================
   # E2E DOCKER (amd64)
   # ===========================================================================
 
-  e2e-docker:
-    name: E2E Docker ${{ matrix.name }}
+  e2e-docker-amd64:
+    name: E2E Docker amd64 ${{ matrix.name }}
     needs: [resolve]
     if: ${{ github.event.inputs.arm_only != 'true' }}
-    runs-on: supervizio-runner
+    runs-on: ubuntu-24.04
     timeout-minutes: 10
     strategy:
       fail-fast: false
@@ -96,42 +136,48 @@ jobs:
           curl -sf -X POST \
             -H "Authorization: Bearer $GH_TOKEN" \
             -H "Accept: application/vnd.github+json" \
-            "https://api.github.com/repos/supervizio/agent/statuses/${{ needs.resolve.outputs.sha }}" \
+            "https://api.github.com/repos/${{ needs.resolve.outputs.source_repo }}/statuses/${{ needs.resolve.outputs.sha }}" \
             -d '{"state":"pending","context":"e2e/docker/${{ matrix.name }}","description":"Running...","target_url":"${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"}'
 
       - name: Checkout agent code
         uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
         with:
-          repository: supervizio/agent
+          repository: ${{ needs.resolve.outputs.source_repo }}
           ref: ${{ needs.resolve.outputs.ref }}
           token: ${{ secrets.AGENT_REPO_TOKEN }}
+          # The workspace is synced wholesale into guests and read by later
+          # steps; a persisted credential would travel with it as a base64
+          # AUTHORIZATION header that Actions log-masking does not cover.
+          persist-credentials: false
 
-      - name: Init libprobe submodule (needs its own token; AGENT_REPO_TOKEN can't reach the private libprobe repo)
-        env:
-          GH_TOKEN: ${{ secrets.LIBPROBE_REPO_TOKEN }}
-        run: |
-          git -c url."https://x-access-token:${GH_TOKEN}@github.com/".insteadOf="https://github.com/" \
-            submodule update --init --force --depth=1
+      # e2e-docker used to init the libprobe submodule because it BUILT the
+      # binary. It now downloads one, and none of the three Dockerfiles reads
+      # third_party/libprobe -- they copy bin/ and setup/ only. Keeping the
+      # step meant an unset or expired LIBPROBE_REPO_TOKEN reddened a job with
+      # no dependency on it, and fattened the docker build context, since
+      # .dockerignore excludes **/target but not third_party.
 
-      - name: Download binary from zot (cross-repo)
-        env:
-          ARTIFACT_REGISTRY: 192.168.100.250:5000
-          RUN_ID: ${{ needs.resolve.outputs.run_id }}
-          ARTIFACT: ${{ matrix.artifact }}
+      - name: Download binary from the agent run (cross-repo)
+        uses: actions/download-artifact@70fc10c6e5e1ce46ad2ea6f2b72d43f7d47b13c3 # v8.0.0
+        with:
+          name: ${{ matrix.artifact }}
+          path: bin
+          repository: ${{ needs.resolve.outputs.source_repo }}
+          run-id: ${{ needs.resolve.outputs.run_id }}
+          # Needs actions:read on the agent repo, on top of the contents:read
+          # this token already carries for the checkout above.
+          github-token: ${{ secrets.AGENT_REPO_TOKEN }}
+
+      - name: Verify the binary arrived
         run: |
           set -euo pipefail
-          mkdir -p bin
-          # Agent CI publishes binaries to the self-hosted zot store (no GitHub
-          # artifacts). This runner (supervizio-runner) is on the lab network.
-          command -v oras >/dev/null 2>&1 || {
-            v=1.2.0; a=$(uname -m); case "$a" in x86_64) oa=amd64;; aarch64|arm64) oa=arm64;; *) oa=amd64;; esac
-            curl -fsSL "https://github.com/oras-project/oras/releases/download/v${v}/oras_${v}_linux_${oa}.tar.gz" | sudo tar xz -C /usr/local/bin oras
-          }
-          n=0; until oras pull --plain-http "$ARTIFACT_REGISTRY/run-${RUN_ID}/${ARTIFACT}:latest" -o bin; do
-            n=$((n+1)); [ "$n" -ge 5 ] && { echo "::error::zot pull failed for ${ARTIFACT}"; exit 1; }
-            echo "retry $n"; sleep $((n*8))
-          done
           ls -la bin/
+          # A silently-empty download would surface much later as a confusing
+          # docker build error; fail here, where the cause is obvious.
+          [ -s "bin/${{ matrix.artifact }}" ] || {
+            echo "::error::${{ matrix.artifact }} missing or empty — did agent's CI publish it? (E2E_BRIDGE_PLATFORMS)" >&2
+            exit 1
+          }
 
       - name: Prepare binary
         run: |
@@ -144,20 +190,13 @@ jobs:
           fi
           file bin/supervizio* | head -5
 
-      - name: Wait for Docker daemon (DinD)
-        run: |
-          # The dind sidecar's dockerd needs a few seconds to open
-          # tcp://localhost:2375. Without this wait the first `docker build`
-          # races dockerd startup and dies with "Cannot connect to the Docker
-          # daemon" (issue #15). Probe `docker info` for up to 60s.
-          for i in $(seq 1 30); do
-            if docker info >/dev/null 2>&1; then
-              echo "Docker daemon ready (attempt $i)"; exit 0
-            fi
-            echo "waiting for dockerd... ($i/30)"; sleep 2
-          done
-          echo "::error::Docker daemon (DinD) not reachable at ${DOCKER_HOST:-tcp://localhost:2375} after 60s"
-          exit 1
+      # The dind-sidecar wait this replaced (issue #15) was about the ARC pod's
+      # dockerd racing the first build on tcp://localhost:2375. A GitHub-hosted
+      # runner ships a local dockerd that is already up, so there is nothing to
+      # race; one assertion is enough to keep the failure legible if that ever
+      # stops being true.
+      - name: Check Docker is available
+        run: docker info >/dev/null
 
       - name: Build container
         run: |
@@ -270,7 +309,7 @@ jobs:
           curl -sf -X POST \
             -H "Authorization: Bearer $GH_TOKEN" \
             -H "Accept: application/vnd.github+json" \
-            "https://api.github.com/repos/supervizio/agent/statuses/${{ needs.resolve.outputs.sha }}" \
+            "https://api.github.com/repos/${{ needs.resolve.outputs.source_repo }}/statuses/${{ needs.resolve.outputs.sha }}" \
             -d "{\"state\":\"$STATE\",\"context\":\"e2e/docker/${{ matrix.name }}\",\"description\":\"$DESC\",\"target_url\":\"${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}\"}"
 
   # ===========================================================================
@@ -292,16 +331,19 @@ jobs:
           - name: debian-glibc
             dockerfile: Dockerfile.debian-script
             libc: glibc
+            artifact: supervizio-linux-arm64
             binary_name: supervizio-linux-amd64
             description: "Debian ARM64 with glibc (systemd)"
           - name: alpine-musl
             dockerfile: Dockerfile.alpine-script
             libc: musl
+            artifact: supervizio-linux-arm64-musl
             binary_name: supervizio-linux-amd64
             description: "Alpine ARM64 with musl (OpenRC)"
           - name: scratch
             dockerfile: Dockerfile.scratch
             libc: musl
+            artifact: supervizio-linux-arm64-musl
             binary_name: supervizio
             description: "Scratch ARM64 (static binary, no OS)"
     steps:
@@ -315,94 +357,58 @@ jobs:
           curl -sf -X POST \
             -H "Authorization: Bearer $GH_TOKEN" \
             -H "Accept: application/vnd.github+json" \
-            "https://api.github.com/repos/supervizio/agent/statuses/${{ needs.resolve.outputs.sha }}" \
+            "https://api.github.com/repos/${{ needs.resolve.outputs.source_repo }}/statuses/${{ needs.resolve.outputs.sha }}" \
             -d '{"state":"pending","context":"e2e/docker-arm64/${{ matrix.name }}","description":"Running...","target_url":"${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"}'
 
       - name: Checkout agent code
         uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
         with:
-          repository: supervizio/agent
+          repository: ${{ needs.resolve.outputs.source_repo }}
           ref: ${{ needs.resolve.outputs.ref }}
           token: ${{ secrets.AGENT_REPO_TOKEN }}
+          # The workspace is synced wholesale into guests and read by later
+          # steps; a persisted credential would travel with it as a base64
+          # AUTHORIZATION header that Actions log-masking does not cover.
+          persist-credentials: false
 
-      - name: Init libprobe submodule (needs its own token; AGENT_REPO_TOKEN can't reach the private libprobe repo)
-        env:
-          GH_TOKEN: ${{ secrets.LIBPROBE_REPO_TOKEN }}
-        run: |
-          git -c url."https://x-access-token:${GH_TOKEN}@github.com/".insteadOf="https://github.com/" \
-            submodule update --init --force --depth=1
-
-      - name: Set up Go
-        uses: actions/setup-go@4b73464bb391d4059bd26b0524d20df3927bd417 # v6.3.0
+      # This leg used to install Go, Rust and Zig and compile the agent from
+      # source before testing it -- so what it validated was a rebuild on a
+      # different toolchain, not the binary the release ships. That is the exact
+      # thing this migration exists to remove, and it survived here only because
+      # zot was unreachable from a hosted runner. agent now bridges the arm64
+      # binaries, so this consumes the shipped bytes like every other leg.
+      #
+      # The libprobe submodule init went with the build: nothing in the three
+      # Dockerfiles reads third_party/libprobe, they copy bin/ and setup/.
+      - name: Download binary from the agent run (cross-repo)
+        uses: actions/download-artifact@70fc10c6e5e1ce46ad2ea6f2b72d43f7d47b13c3 # v8.0.0
         with:
-          # Track the agent's own requirement instead of pinning a literal. A
-          # hardcoded '1.27.0' here silently broke every from-source leg the day
-          # the agent bumped go.work to 1.27.1: the toolchain is GOTOOLCHAIN=local
-          # on hosted runners, so `wire` died with "go.work requires go >= 1.27.1
-          # (running go 1.27.0)" before any of the real test work started.
-          go-version-file: go.work
+          name: ${{ matrix.artifact }}
+          path: bin
+          repository: ${{ needs.resolve.outputs.source_repo }}
+          run-id: ${{ needs.resolve.outputs.run_id }}
+          github-token: ${{ secrets.AGENT_REPO_TOKEN }}
 
-      - name: Set up Rust
-        uses: dtolnay/rust-toolchain@fa04a1451ff1842e2626ccb99004d0195b455a88 # stable
-        with:
-          toolchain: stable
-          components: rust-src
-
-      - name: Generate Wire code
+      - name: Verify and place the binary
         run: |
           set -euo pipefail
-          # wire_gen.go (InitializeApp) is generated, not checked in — the agent
-          # CI runs this before every build. Mirror it here.
-          go install github.com/google/wire/cmd/wire@v0.7.0
-          export PATH="$(go env GOPATH)/bin:$PATH"
-          cd src && wire ./internal/bootstrap/
-
-      - name: Install Zig (musl static link)
-        if: matrix.libc == 'musl'
-        run: |
-          set -euo pipefail
-          # Mirror the agent CI: zig acts as the musl cross-cc, identical recipe
-          # (just on a native aarch64 host instead of cross from x86).
-          ZIG_VER=0.13.0
-          curl -fsSL "https://ziglang.org/download/${ZIG_VER}/zig-linux-aarch64-${ZIG_VER}.tar.xz" | sudo tar -xJ -C /opt
-          sudo ln -sf "/opt/zig-linux-aarch64-${ZIG_VER}/zig" /usr/local/bin/zig
-          # The `ring` crate's build (via cc-rs) appends --target=<rust-triple>
-          # (aarch64-unknown-linux-musl), which zig 0.13 cannot parse
-          # ("UnknownOperatingSystem"). Our `-target aarch64-linux-musl` is the
-          # authoritative one, so strip any incoming --target= before calling zig.
-          sudo tee /usr/local/bin/zig-cc >/dev/null <<'ZCC'
-          #!/bin/sh
-          n=$#
-          while [ "$n" -gt 0 ]; do a=$1; shift; case "$a" in --target=*) : ;; *) set -- "$@" "$a" ;; esac; n=$((n-1)); done
-          exec zig cc -target aarch64-linux-musl "$@"
-          ZCC
-          sudo chmod +x /usr/local/bin/zig-cc
-          zig version
-
-      - name: Build supervizio natively (linux-arm64 ${{ matrix.libc }})
-        run: |
-          set -euo pipefail
-          mkdir -p bin
-          if [ "${{ matrix.libc }}" = "glibc" ]; then
-            # Native aarch64 glibc — the Makefile defaults are correct here.
-            make build
-            cp "dist/bin/linux-arm64/supervizio" "bin/${{ matrix.binary_name }}"
+          ls -la bin/
+          [ -s "bin/${{ matrix.artifact }}" ] || {
+            echo "::error::${{ matrix.artifact }} missing or empty - did agent's CI publish it? (E2E_BRIDGE_PLATFORMS)" >&2
+            exit 1
+          }
+          chmod +x "bin/${{ matrix.artifact }}"
+          # The three Dockerfiles hardcode `COPY bin/supervizio-linux-amd64`
+          # (and bin/supervizio for scratch) regardless of architecture -- they
+          # are shared with the amd64 leg. So an arm64 binary has to land under
+          # the amd64 name. Ugly, but it is the existing contract, and the
+          # previous build-from-source step did exactly the same rename.
+          if [ "${{ matrix.dockerfile }}" = "Dockerfile.scratch" ]; then
+            mv "bin/${{ matrix.artifact }}" bin/supervizio
           else
-            # Native aarch64 musl static — same recipe as the agent CI build-cross
-            # (zig-cc + build-std + external static link).
-            ( cd third_party/libprobe && RUSTC_BOOTSTRAP=1 CC=zig-cc cargo build \
-                -Z build-std=std,panic_abort --release \
-                --target aarch64-unknown-linux-musl --package probe-ffi )
-            mkdir -p dist/lib/linux-arm64-musl
-            cp third_party/libprobe/target/aarch64-unknown-linux-musl/release/libprobe.a dist/lib/linux-arm64-musl/
-            ( cd src && CGO_ENABLED=1 CC=zig-cc \
-                CGO_CFLAGS="-I${GITHUB_WORKSPACE}/third_party/libprobe/include" \
-                CGO_LDFLAGS="-L${GITHUB_WORKSPACE}/dist/lib/linux-arm64-musl -lprobe -lm -lunwind" \
-                go build -ldflags="-s -w -linkmode external -extldflags '-static'" \
-                  -o "${GITHUB_WORKSPACE}/bin/${{ matrix.binary_name }}" ./cmd/agent )
+            mv "bin/${{ matrix.artifact }}" bin/supervizio-linux-amd64
           fi
-          chmod +x "bin/${{ matrix.binary_name }}"
-          file "bin/${{ matrix.binary_name }}"
+          file bin/supervizio* | head -3
 
       - name: Build container
         run: |
@@ -488,7 +494,7 @@ jobs:
           curl -sf -X POST \
             -H "Authorization: Bearer $GH_TOKEN" \
             -H "Accept: application/vnd.github+json" \
-            "https://api.github.com/repos/supervizio/agent/statuses/${{ needs.resolve.outputs.sha }}" \
+            "https://api.github.com/repos/${{ needs.resolve.outputs.source_repo }}/statuses/${{ needs.resolve.outputs.sha }}" \
             -d "{\"state\":\"$STATE\",\"context\":\"e2e/docker-arm64/${{ matrix.name }}\",\"description\":\"$DESC\",\"target_url\":\"${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}\"}"
 
   # ===========================================================================
@@ -498,21 +504,16 @@ jobs:
   e2e-macos:
     name: E2E macOS x86_64
     needs: [resolve]
+    # macos-15-intel matches what agent's e2e/expected-matrix.json pins
+    # darwin-amd64 to. It replaces bench VM 215 "sequoia" — an OpenCore
+    # hackintosh that Packer cannot build (manual VNC install, 30-60 min by
+    # hand), pinned 16 GiB with ballooning disabled on a bench that runs with
+    # ~29 GiB of slack. Note GitHub retires x86_64 macOS runners in August 2027;
+    # this leg has a deadline either way, which is an argument for renting one
+    # rather than maintaining one.
+    runs-on: macos-15-intel
+    timeout-minutes: 15
     if: ${{ github.event.inputs.arm_only != 'true' }}
-    runs-on: supervizio-runner
-    timeout-minutes: 20
-    env:
-      # PROXMOX_API_URL est volontairement absent : depuis un pod, le litteral
-      # 192.168.100.1 resout sur le Proxmox de l'hote CI, pas sur le banc (les
-      # deux hotes ont un 192.168.100.0/24 identique et jamais route). L'action
-      # `bench-api-tunnel` ci-dessous forwarde un port loopback vers le banc et
-      # exporte le vrai PROXMOX_API_URL. Voir kodflow/labs#185.
-      PVE_AUTH: "PVEAPIToken=${{ secrets.CI_RUNNER_API_TOKEN_ID }}=${{ secrets.CI_RUNNER_API_TOKEN_SECRET }}"
-      NODE: ${{ secrets.PROXMOX_NODE }}
-      SSH_OPTS: "-o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o ConnectTimeout=10"
-      GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-      ARTIFACT_REGISTRY: "192.168.100.250:5000"
-      RUN_ID: ${{ needs.resolve.outputs.run_id }}
     steps:
       - name: Report status (pending)
         if: needs.resolve.outputs.sha != ''
@@ -520,97 +521,61 @@ jobs:
         env:
           GH_TOKEN: ${{ secrets.AGENT_REPO_TOKEN }}
         run: |
-          [ -z "$GH_TOKEN" ] && { echo "AGENT_REPO_TOKEN not set, skipping"; exit 0; }
-          curl -sf -X POST \
-            -H "Authorization: Bearer $GH_TOKEN" \
-            -H "Accept: application/vnd.github+json" \
-            "https://api.github.com/repos/supervizio/agent/statuses/${{ needs.resolve.outputs.sha }}" \
+          [ -z "$GH_TOKEN" ] && exit 0
+          curl -sf -X POST -H "Authorization: Bearer $GH_TOKEN" -H "Accept: application/vnd.github+json" \
+            "https://api.github.com/repos/${{ needs.resolve.outputs.source_repo }}/statuses/${{ needs.resolve.outputs.sha }}" \
             -d '{"state":"pending","context":"e2e/macos-x86_64","description":"Running...","target_url":"${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"}'
 
-      - name: Checkout runner-template (for VM scripts)
+      - name: Checkout agent code
         uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
         with:
-          path: runner-template
+          repository: ${{ needs.resolve.outputs.source_repo }}
+          ref: ${{ needs.resolve.outputs.ref }}
+          token: ${{ secrets.AGENT_REPO_TOKEN }}
+          persist-credentials: false
 
-      # Doit preceder toute etape qui touche l'API : c'est elle qui fait exister
-      # PROXMOX_API_URL, et elle verifie le CN du certificat puis un 200
-      # authentifie avant qu'un credential ne parte.
-      - name: Open bench API tunnel
-        uses: ./runner-template/.github/actions/bench-api-tunnel
-
-      - name: Acquire macOS VM (sequoia, lock)
-        id: vm
-        run: |
-          chmod +x runner-template/.github/scripts/vm-acquire.sh
-          runner-template/.github/scripts/vm-acquire.sh sequoia "${GITHUB_RUN_ID}_e2e-macos-x86_64"
-
-      # Declare la VM que ce leg vient de prendre. C'est la SEULE autorite du job
-      # vm-cleanup : sans ce claim, il ne touche pas la VM. Publie tout de suite
-      # apres l'acquisition, donc avant tout test — une VM acquise est toujours
-      # reinitialisee a la fin, meme si le leg echoue ou est annule ensuite.
-      - name: Record VM claim
-        if: always() && steps.vm.outputs.VMID != ''
-        run: echo "${{ steps.vm.outputs.VMID }}" > "vm-claim-macos-sequoia.txt"
-
-      - name: Upload VM claim
-        if: always() && steps.vm.outputs.VMID != ''
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+      # The bench leg pulled this from zot ON the VM, because sequoia sat on the
+      # lab subnet. A hosted runner does not, so it comes from the GitHub
+      # artifact agent's CI now mirrors — the same binary, one hop instead of
+      # three, and no oras/brew bootstrap inside the guest.
+      - name: Download binary from the agent run (cross-repo)
+        uses: actions/download-artifact@70fc10c6e5e1ce46ad2ea6f2b72d43f7d47b13c3 # v8.0.0
         with:
-          name: vm-claim-macos-sequoia
-          path: vm-claim-macos-sequoia.txt
-          retention-days: 1
-          overwrite: true
-          if-no-files-found: ignore
+          name: supervizio-darwin-amd64
+          path: bin
+          repository: ${{ needs.resolve.outputs.source_repo }}
+          run-id: ${{ needs.resolve.outputs.run_id }}
+          github-token: ${{ secrets.AGENT_REPO_TOKEN }}
 
-      - name: Probe E2E on macOS (sequoia, exec via ssh)
-        env:
-          VM_IP: ${{ steps.vm.outputs.VM_IP }}
-          SSH_USER: ${{ steps.vm.outputs.SSH_USER }}
+      - name: Prepare binary
         run: |
           set -euo pipefail
-          # sequoia is an Intel macOS VM on the lab subnet, so it reaches the zot
-          # store directly and runs the shipped darwin-amd64 binary natively. The
-          # binary is pulled ON the VM (no scp from the pod) — "zot on every VM".
-          ssh ${SSH_OPTS} "${SSH_USER}@${VM_IP}" \
-            ARTIFACT_REGISTRY="$ARTIFACT_REGISTRY" RUN_ID="$RUN_ID" 'bash -s' <<'REMOTE'
-          set -euo pipefail
-          work="$HOME/svz-e2e"; rm -rf "$work"; mkdir -p "$work/bin"; cd "$work"
-          export PATH="$work/bin:/opt/homebrew/bin:/usr/local/bin:$PATH"
-          # oras (darwin) into a local dir — kodflow has no passwordless sudo.
-          if ! command -v oras >/dev/null 2>&1; then
-            v=1.2.0; a=$(uname -m); case "$a" in arm64) oa=arm64;; *) oa=amd64;; esac
-            curl -fsSL "https://github.com/oras-project/oras/releases/download/v${v}/oras_${v}_darwin_${oa}.tar.gz" | tar xz -C bin oras
-          fi
-          # jq is on the dev snapshot; brew-install as a fallback if absent.
-          command -v jq >/dev/null 2>&1 || brew install jq
-          n=0; until oras pull --plain-http "$ARTIFACT_REGISTRY/run-${RUN_ID}/supervizio-darwin-amd64:latest" -o bin; do
-            n=$((n+1)); [ "$n" -ge 5 ] && { echo "::error::zot pull failed for supervizio-darwin-amd64"; exit 1; }
-            echo "retry $n"; sleep $((n*8))
-          done
-          chmod +x bin/supervizio-darwin-amd64
+          ls -la bin/
+          [ -s bin/supervizio-darwin-amd64 ] || {
+            echo "::error::supervizio-darwin-amd64 missing or empty — did agent's CI publish it? (E2E_BRIDGE_PLATFORMS)" >&2
+            exit 1
+          }
           mv bin/supervizio-darwin-amd64 bin/supervizio
+          chmod +x bin/supervizio
+
+      - name: Probe validation
+        run: |
+          set -euo pipefail
           echo "=== System ==="; uname -a; sw_vers || true
           echo "=== version ==="; bin/supervizio --version
           echo "=== probe ==="
           OUT=$(bin/supervizio --probe 2>&1) || { echo "::error::probe failed: $OUT"; exit 1; }
           echo "$OUT" | jq -e 'type=="object"' >/dev/null
-          echo "$OUT" | jq -e '.timestamp and .os.platform and .cpu.cores > 0' \
-            && echo "OK probe validation passed on macOS x86_64"
-          echo "$OUT" | jq --arg p darwin-amd64 '. + {"_platform":$p}' > "$work/probe-cap-darwin-amd64.json"
-          REMOTE
-
-      - name: Fetch probe capabilities from VM
-        if: always()
-        continue-on-error: true
-        env:
-          VM_IP: ${{ steps.vm.outputs.VM_IP }}
-          SSH_USER: ${{ steps.vm.outputs.SSH_USER }}
-        run: |
-          scp -O ${SSH_OPTS} "${SSH_USER}@${VM_IP}:svz-e2e/probe-cap-darwin-amd64.json" probe-cap-darwin-amd64.json \
-            || printf '{"_platform":"darwin-amd64","_error":true}\n' > probe-cap-darwin-amd64.json
+          # Not `<assert> && echo ...`: a failing left operand that is not the
+          # last command in the step does NOT trip `set -e`, so a probe
+          # reporting cpu.cores == 0 would pass.
+          echo "$OUT" | jq -e '.timestamp and .os.platform and .cpu.cores > 0' >/dev/null
+          echo "OK probe validation passed on macOS x86_64"
+          echo "$OUT" | jq --arg p darwin-amd64 '. + {"_platform":$p}' > probe-cap-darwin-amd64.json
 
       - name: Upload probe capabilities
         if: always()
+        continue-on-error: true
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: probe-cap-darwin-amd64
@@ -618,11 +583,15 @@ jobs:
           retention-days: 1
           if-no-files-found: ignore
 
-      - name: Release macOS VM (lock)
-        if: always()
+      # New coverage, not a port. The bench leg stopped at --version and a probe
+      # JSON shape check; its arm64 twin has always run the battery. Running it
+      # here too means macOS x86_64 finally proves the supervisor's restart,
+      # exit-code, rlimit and SIGKILL behaviour instead of only proving the
+      # binary starts.
+      - name: Supervision scenarios
         run: |
-          chmod +x runner-template/.github/scripts/vm-release.sh
-          runner-template/.github/scripts/vm-release.sh "${{ steps.vm.outputs.VMID || 'sequoia' }}" || true
+          chmod +x e2e/scenario-battery.sh
+          e2e/scenario-battery.sh "$PWD/bin/supervizio"
 
       - name: Report status (result)
         if: always() && needs.resolve.outputs.sha != ''
@@ -630,18 +599,12 @@ jobs:
         env:
           GH_TOKEN: ${{ secrets.AGENT_REPO_TOKEN }}
         run: |
-          [ -z "$GH_TOKEN" ] && { echo "AGENT_REPO_TOKEN not set, skipping"; exit 0; }
+          [ -z "$GH_TOKEN" ] && exit 0
           STATE="success"; DESC="Passed"
           if [ "${{ job.status }}" != "success" ]; then STATE="failure"; DESC="Failed"; fi
-          curl -sf -X POST \
-            -H "Authorization: Bearer $GH_TOKEN" \
-            -H "Accept: application/vnd.github+json" \
-            "https://api.github.com/repos/supervizio/agent/statuses/${{ needs.resolve.outputs.sha }}" \
+          curl -sf -X POST -H "Authorization: Bearer $GH_TOKEN" -H "Accept: application/vnd.github+json" \
+            "https://api.github.com/repos/${{ needs.resolve.outputs.source_repo }}/statuses/${{ needs.resolve.outputs.sha }}" \
             -d "{\"state\":\"$STATE\",\"context\":\"e2e/macos-x86_64\",\"description\":\"$DESC\",\"target_url\":\"${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}\"}"
-
-  # ===========================================================================
-  # E2E macOS ARM64 (Apple Silicon)
-  # ===========================================================================
 
   e2e-macos-arm64:
     name: E2E macOS ARM64
@@ -659,62 +622,49 @@ jobs:
           curl -sf -X POST \
             -H "Authorization: Bearer $GH_TOKEN" \
             -H "Accept: application/vnd.github+json" \
-            "https://api.github.com/repos/supervizio/agent/statuses/${{ needs.resolve.outputs.sha }}" \
+            "https://api.github.com/repos/${{ needs.resolve.outputs.source_repo }}/statuses/${{ needs.resolve.outputs.sha }}" \
             -d '{"state":"pending","context":"e2e/macos-arm64","description":"Running...","target_url":"${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"}'
 
       - name: Checkout agent code
         uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
         with:
-          repository: supervizio/agent
+          repository: ${{ needs.resolve.outputs.source_repo }}
           ref: ${{ needs.resolve.outputs.ref }}
           token: ${{ secrets.AGENT_REPO_TOKEN }}
+          # The workspace is synced wholesale into guests and read by later
+          # steps; a persisted credential would travel with it as a base64
+          # AUTHORIZATION header that Actions log-masking does not cover.
+          persist-credentials: false
 
-      - name: Init libprobe submodule (needs its own token; AGENT_REPO_TOKEN can't reach the private libprobe repo)
-        env:
-          GH_TOKEN: ${{ secrets.LIBPROBE_REPO_TOKEN }}
-        run: |
-          git -c url."https://x-access-token:${GH_TOKEN}@github.com/".insteadOf="https://github.com/" \
-            submodule update --init --force --depth=1
-
-      - name: Set up Go
-        uses: actions/setup-go@4b73464bb391d4059bd26b0524d20df3927bd417 # v6.3.0
+      # This leg used to install Go and Rust and build darwin-arm64 from source,
+      # so it validated a rebuild rather than the binary the release ships --
+      # the one thing this migration exists to remove. It survived here because
+      # zot is unreachable from a hosted runner; agent now bridges the artifact.
+      #
+      # The libprobe submodule init goes with the build: nothing left in this
+      # job reads third_party/libprobe.
+      - name: Download binary from the agent run (cross-repo)
+        uses: actions/download-artifact@70fc10c6e5e1ce46ad2ea6f2b72d43f7d47b13c3 # v8.0.0
         with:
-          # Track the agent's own requirement instead of pinning a literal. A
-          # hardcoded '1.27.0' here silently broke every from-source leg the day
-          # the agent bumped go.work to 1.27.1: the toolchain is GOTOOLCHAIN=local
-          # on hosted runners, so `wire` died with "go.work requires go >= 1.27.1
-          # (running go 1.27.0)" before any of the real test work started.
-          go-version-file: go.work
+          name: supervizio-darwin-arm64
+          path: bin
+          repository: ${{ needs.resolve.outputs.source_repo }}
+          run-id: ${{ needs.resolve.outputs.run_id }}
+          github-token: ${{ secrets.AGENT_REPO_TOKEN }}
 
-      - name: Set up Rust
-        uses: dtolnay/rust-toolchain@fa04a1451ff1842e2626ccb99004d0195b455a88 # stable
-        with:
-          toolchain: stable
-          components: rust-src
-
-      - name: Generate Wire code
+      - name: Verify and place the binary
         run: |
           set -euo pipefail
-          # wire_gen.go (InitializeApp) is generated, not checked in.
-          go install github.com/google/wire/cmd/wire@v0.7.0
-          export PATH="$(go env GOPATH)/bin:$PATH"
-          cd src && wire ./internal/bootstrap/
-
-      - name: Build supervizio natively (darwin-arm64)
-        run: |
-          set -euo pipefail
-          # macos-15 is real Apple Silicon — build libprobe.a + the Go agent
-          # NATIVELY for darwin-arm64. No GitHub artifacts (the agent CI publishes
-          # only to the lab zot store, unreachable from this hosted runner) and no
-          # cross-compilation. Frameworks are passed explicitly because the
-          # Makefile's default CGO_LDFLAGS is linux-only (-ldl etc.).
-          make build-probe
-          mkdir -p bin
-          cd src && CGO_ENABLED=1 \
-            CGO_CFLAGS="-I${GITHUB_WORKSPACE}/third_party/libprobe/include" \
-            CGO_LDFLAGS="-L${GITHUB_WORKSPACE}/dist/lib/darwin-arm64 -lprobe -framework IOKit -framework CoreFoundation -framework Metal" \
-            go build -ldflags="-s -w" -o "${GITHUB_WORKSPACE}/bin/supervizio" ./cmd/agent
-          file "${GITHUB_WORKSPACE}/bin/supervizio"
+          ls -la bin/
+          [ -s bin/supervizio-darwin-arm64 ] || {
+            echo "::error::supervizio-darwin-arm64 missing or empty - did agent's CI publish it? (E2E_BRIDGE_PLATFORMS)" >&2
+            exit 1
+          }
+          # The steps below expect $GITHUB_WORKSPACE/bin/supervizio, which is
+          # where the build step used to put it.
+          mv bin/supervizio-darwin-arm64 bin/supervizio
+          chmod +x bin/supervizio
+          file bin/supervizio
 
       - name: Run macOS ARM64 E2E test
         run: |
@@ -803,7 +753,7 @@ jobs:
           curl -sf -X POST \
             -H "Authorization: Bearer $GH_TOKEN" \
             -H "Accept: application/vnd.github+json" \
-            "https://api.github.com/repos/supervizio/agent/statuses/${{ needs.resolve.outputs.sha }}" \
+            "https://api.github.com/repos/${{ needs.resolve.outputs.source_repo }}/statuses/${{ needs.resolve.outputs.sha }}" \
             -d "{\"state\":\"$STATE\",\"context\":\"e2e/macos-arm64\",\"description\":\"$DESC\",\"target_url\":\"${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}\"}"
 
   # ===========================================================================
@@ -811,30 +761,35 @@ jobs:
   # NOTE: authored mirroring agent/build-windows-native; validate on first run.
   # ===========================================================================
 
-  e2e-windows:
-    name: E2E Windows ${{ matrix.name }}
+  e2e-windows-amd64:
+    name: E2E Windows amd64
     needs: [resolve]
-    runs-on: supervizio-runner
+    # windows-2025, pinned. The first version of this pinned 2022 to match the
+    # bench VM byte for byte -- but the point of leaving the bench is to stop
+    # being bounded by what it happens to run, and expected-matrix.json (which
+    # pins windows-server-amd64 to 2022) is read only by agent's own
+    # validate-detection.sh on the bench, never by this leg. 2025 is the current
+    # GA Server image; the SCM contract the battery exercises is unchanged.
+    # Still pinned rather than windows-latest, which drifts on GitHub's
+    # schedule and would change coverage with no diff.
+    runs-on: windows-2025
     timeout-minutes: 20
+    # The three other VM legs carry this guard; this one did not, so an
+    # arm_only dispatch used to acquire a bench VM while vm-cleanup was
+    # skipped — a leaked lease, and the bench does not reclaim those
+    # implicitly. Harmless now that no VM is taken, kept for consistency.
+    if: ${{ github.event.inputs.arm_only != 'true' }}
     strategy:
       fail-fast: false
       matrix:
         include:
           - name: windows-server
-    env:
-      # PROXMOX_API_URL est volontairement absent : depuis un pod, le litteral
-      # 192.168.100.1 resout sur le Proxmox de l'hote CI, pas sur le banc (les
-      # deux hotes ont un 192.168.100.0/24 identique et jamais route). L'action
-      # `bench-api-tunnel` ci-dessous forwarde un port loopback vers le banc et
-      # exporte le vrai PROXMOX_API_URL. Voir kodflow/labs#185.
-      PVE_AUTH: "PVEAPIToken=${{ secrets.CI_RUNNER_API_TOKEN_ID }}=${{ secrets.CI_RUNNER_API_TOKEN_SECRET }}"
-      NODE: ${{ secrets.PROXMOX_NODE }}
-      # Keepalive: the supervision battery runs S1-S8 in one long SSH session
-      # (S6 backoff sleeps, S7 rotation, S8 health all add idle time); without it
-      # the Windows OpenSSH server drops the idle session ("closed by remote host",
-      # exit 255) even though the scenarios pass.
-      SSH_OPTS: "-o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o ConnectTimeout=15 -o ServerAliveInterval=15 -o ServerAliveCountMax=8"
-      GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+    defaults:
+      run:
+        # Git Bash ships on the Windows runners. The status-reporting steps are
+        # shared verbatim with the other legs, so keep one shell for the job and
+        # call pwsh explicitly where PowerShell is actually wanted.
+        shell: bash
     steps:
       - name: Report status (pending)
         if: needs.resolve.outputs.sha != ''
@@ -844,120 +799,76 @@ jobs:
         run: |
           [ -z "$GH_TOKEN" ] && exit 0
           curl -sf -X POST -H "Authorization: Bearer $GH_TOKEN" -H "Accept: application/vnd.github+json" \
-            "https://api.github.com/repos/supervizio/agent/statuses/${{ needs.resolve.outputs.sha }}" \
-            -d '{"state":"pending","context":"e2e/windows/${{ matrix.name }}","description":"Running...","target_url":"${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"}'
+            "https://api.github.com/repos/${{ needs.resolve.outputs.source_repo }}/statuses/${{ needs.resolve.outputs.sha }}" \
+            -d '{"state":"pending","context":"e2e/windows/amd64","description":"Running...","target_url":"${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"}'
 
       - name: Checkout agent code
         uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
         with:
-          repository: supervizio/agent
+          repository: ${{ needs.resolve.outputs.source_repo }}
           ref: ${{ needs.resolve.outputs.ref }}
           token: ${{ secrets.AGENT_REPO_TOKEN }}
           path: agent
-
-      - name: Init libprobe submodule (needs its own token; AGENT_REPO_TOKEN can't reach the private libprobe repo)
-        working-directory: agent
-        env:
-          GH_TOKEN: ${{ secrets.LIBPROBE_REPO_TOKEN }}
-        run: |
-          git -c url."https://x-access-token:${GH_TOKEN}@github.com/".insteadOf="https://github.com/" \
-            submodule update --init --force --depth=1
-
-      - name: Setup SSH key
-        run: |
-          mkdir -p ~/.ssh && chmod 700 ~/.ssh
-          echo "${{ secrets.CI_SSH_PRIVATE_KEY }}" > ~/.ssh/id_ed25519
-          chmod 600 ~/.ssh/id_ed25519
+          persist-credentials: false
 
       - name: Set up Go
         uses: actions/setup-go@4b73464bb391d4059bd26b0524d20df3927bd417 # v6.3.0
         with:
-          # Same reasoning as the from-source legs above; the agent is checked
-          # out under agent/ in this job, so its go.work lives one level in.
           go-version-file: agent/go.work
 
       - name: Build Windows crasher
         run: |
           set -euo pipefail
           # The supervision battery supervises a separate crasher.exe (pure Go,
-          # CGO_ENABLED=0). Cross-build it here and ship it to the VM — otherwise
-          # supervizio can't spawn it (SPAWN_FAILED, all scenarios count=0).
+          # CGO_ENABLED=0); without it supervizio cannot spawn anything and every
+          # scenario reports count=0. Built natively now — this runner IS Windows,
+          # so the cross-build the bench leg needed is gone.
           ( cd agent/e2e/behavioral/crasher && \
-            GOOS=windows GOARCH=amd64 CGO_ENABLED=0 GOWORK=off go build -ldflags="-s -w" \
-              -o "${GITHUB_WORKSPACE}/crasher.exe" . )
+            CGO_ENABLED=0 GOWORK=off go build -ldflags="-s -w" -o "${GITHUB_WORKSPACE}/crasher.exe" . )
           ls -la "${GITHUB_WORKSPACE}/crasher.exe"
 
-      - name: Download Windows binary from zot (cross-repo)
-        env:
-          ARTIFACT_REGISTRY: 192.168.100.250:5000
-          RUN_ID: ${{ needs.resolve.outputs.run_id }}
-          ARTIFACT: supervizio-windows-amd64
+      # zot is on the lab network and unreachable from a hosted runner, which is
+      # the only reason this leg ever needed the bench. Agent CI mirrors the
+      # E2E-consumed binaries to GitHub artifacts, so the same bytes the bench
+      # built are fetchable cross-repo.
+      - name: Download binary from the agent run (cross-repo)
+        uses: actions/download-artifact@70fc10c6e5e1ce46ad2ea6f2b72d43f7d47b13c3 # v8.0.0
+        with:
+          name: supervizio-windows-amd64
+          path: bin
+          repository: ${{ needs.resolve.outputs.source_repo }}
+          run-id: ${{ needs.resolve.outputs.run_id }}
+          github-token: ${{ secrets.AGENT_REPO_TOKEN }}
+
+      - name: Verify the binary arrived
         run: |
           set -euo pipefail
-          mkdir -p bin
-          # Agent CI publishes binaries to the self-hosted zot store (no GitHub
-          # artifacts). This runner (supervizio-runner) is on the lab network.
-          command -v oras >/dev/null 2>&1 || {
-            v=1.2.0; a=$(uname -m); case "$a" in x86_64) oa=amd64;; aarch64|arm64) oa=arm64;; *) oa=amd64;; esac
-            curl -fsSL "https://github.com/oras-project/oras/releases/download/v${v}/oras_${v}_linux_${oa}.tar.gz" | sudo tar xz -C /usr/local/bin oras
-          }
-          n=0; until oras pull --plain-http "$ARTIFACT_REGISTRY/run-${RUN_ID}/${ARTIFACT}:latest" -o bin; do
-            n=$((n+1)); [ "$n" -ge 5 ] && { echo "::error::zot pull failed for ${ARTIFACT}"; exit 1; }
-            echo "retry $n"; sleep $((n*8))
-          done
           ls -la bin/
-
-      # Checkout supplementaire : ce job ne sort que le depot agent, or l'action
-      # du tunnel vit ici. Repertoire dedie pour ne pas ecraser `agent/`.
-      - name: Checkout runner-template (pour l'action bench-api-tunnel)
-        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
-        with:
-          path: runner-template
-
-      # Doit preceder toute etape qui touche l'API : c'est elle qui fait exister
-      # PROXMOX_API_URL, et elle verifie le CN du certificat puis un 200
-      # authentifie avant qu'un credential ne parte.
-      - name: Open bench API tunnel
-        uses: ./runner-template/.github/actions/bench-api-tunnel
-
-      - name: Acquire VM (lock)
-        id: vm
-        run: |
-          chmod +x agent/.github/scripts/vm-acquire.sh
-          agent/.github/scripts/vm-acquire.sh "${{ matrix.name }}" "${GITHUB_RUN_ID}_e2e-win-${{ matrix.name }}"
-
-      # Declare la VM que ce leg vient de prendre. C'est la SEULE autorite du job
-      # vm-cleanup : sans ce claim, il ne touche pas la VM. Publie tout de suite
-      # apres l'acquisition, donc avant tout test — une VM acquise est toujours
-      # reinitialisee a la fin, meme si le leg echoue ou est annule ensuite.
-      - name: Record VM claim
-        if: always() && steps.vm.outputs.VMID != ''
-        run: echo "${{ steps.vm.outputs.VMID }}" > "vm-claim-win-${{ matrix.name }}.txt"
-
-      - name: Upload VM claim
-        if: always() && steps.vm.outputs.VMID != ''
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
-        with:
-          name: vm-claim-win-${{ matrix.name }}
-          path: vm-claim-win-${{ matrix.name }}.txt
-          retention-days: 1
-          overwrite: true
-          if-no-files-found: ignore
+          # An empty download would otherwise surface as an opaque PowerShell
+          # error deep inside the battery; fail where the cause is legible.
+          # Absolute: the battery is invoked from pwsh, and a relative path only
+          # resolves because pwsh happens to inherit the workspace cwd.
+          BIN=$(find "$PWD/bin" -name 'supervizio-windows-amd64*' | head -1)
+          [ -n "$BIN" ] && [ -s "$BIN" ] || {
+            echo "::error::supervizio-windows-amd64 missing or empty — did agent's CI publish it? (E2E_BRIDGE_PLATFORMS)" >&2
+            exit 1
+          }
+          echo "SVZ_BIN=$BIN" >> "$GITHUB_ENV"
 
       - name: Supervision scenarios (PowerShell)
         run: |
-          BIN=$(find bin -name 'supervizio-windows-amd64*' | head -1)
-          ssh ${SSH_OPTS} ${SSH_USER}@${VM_IP} "powershell -NoProfile -Command \"New-Item -ItemType Directory -Force -Path 'C:\\build' | Out-Null\""
-          scp ${SSH_OPTS} "$BIN" ${SSH_USER}@${VM_IP}:C:/build/supervizio.exe
-          scp ${SSH_OPTS} "${GITHUB_WORKSPACE}/crasher.exe" ${SSH_USER}@${VM_IP}:C:/build/crasher.exe
-          scp ${SSH_OPTS} agent/e2e/scenario-battery.ps1 ${SSH_USER}@${VM_IP}:C:/build/scenario-battery.ps1
-          ssh ${SSH_OPTS} ${SSH_USER}@${VM_IP} "powershell -NoProfile -ExecutionPolicy Bypass -File C:\\build\\scenario-battery.ps1 -Sv C:\\build\\supervizio.exe -Crasher C:\\build\\crasher.exe"
-
-      - name: Release VM (unlock)
-        if: always()
-        run: |
-          chmod +x agent/.github/scripts/vm-release.sh
-          agent/.github/scripts/vm-release.sh "${{ steps.vm.outputs.VMID || matrix.name }}"
+          set -euo pipefail
+          # Ran over SSH against a bench VM before; it runs here directly. The
+          # battery is the same file, invoked with the same two arguments.
+          # Converted on their own lines, not inline: a failing command
+          # substitution inside an argument does NOT trip `set -e`, and
+          # scenario-battery.ps1 runs with ErrorActionPreference=Continue, so a
+          # missing cygpath would surface as "every scenario count=0" rather
+          # than as an error.
+          SV_W=$(cygpath -w "$SVZ_BIN")
+          CRASHER_W=$(cygpath -w "${GITHUB_WORKSPACE}/crasher.exe")
+          pwsh -NoProfile -ExecutionPolicy Bypass -File agent/e2e/scenario-battery.ps1 \
+            -Sv "$SV_W" -Crasher "$CRASHER_W"
 
       - name: Report status (result)
         if: always() && needs.resolve.outputs.sha != ''
@@ -969,8 +880,129 @@ jobs:
           STATE="success"; DESC="Passed"
           if [ "${{ job.status }}" != "success" ]; then STATE="failure"; DESC="Failed"; fi
           curl -sf -X POST -H "Authorization: Bearer $GH_TOKEN" -H "Accept: application/vnd.github+json" \
-            "https://api.github.com/repos/supervizio/agent/statuses/${{ needs.resolve.outputs.sha }}" \
-            -d "{\"state\":\"$STATE\",\"context\":\"e2e/windows/${{ matrix.name }}\",\"description\":\"$DESC\",\"target_url\":\"${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}\"}"
+            "https://api.github.com/repos/${{ needs.resolve.outputs.source_repo }}/statuses/${{ needs.resolve.outputs.sha }}" \
+            -d "{\"state\":\"$STATE\",\"context\":\"e2e/windows/amd64\",\"description\":\"$DESC\",\"target_url\":\"${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}\"}"
+
+  e2e-windows-arm64:
+    name: E2E Windows arm64
+    needs: [resolve]
+    # NEW COVERAGE, not a migration. The bench has no Windows arm64 VM and
+    # never had one: agent cross-compiles windows-arm64 and nothing has ever
+    # executed it. windows-11-arm is a real arm64 host, so this is the first
+    # time the supervisor's SCM behaviour is exercised on that architecture.
+    #
+    # Windows 11 rather than Server, because GitHub offers no arm64 Server
+    # image -- a deliberate difference from the amd64 leg, not an oversight.
+    runs-on: windows-11-arm
+    timeout-minutes: 20
+    # The three other VM legs carry this guard; this one did not, so an
+    # arm_only dispatch used to acquire a bench VM while vm-cleanup was
+    # skipped — a leaked lease, and the bench does not reclaim those
+    # implicitly. Harmless now that no VM is taken, kept for consistency.
+    if: ${{ github.event.inputs.arm_only != 'true' }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: windows-11
+    defaults:
+      run:
+        # Git Bash ships on the Windows runners. The status-reporting steps are
+        # shared verbatim with the other legs, so keep one shell for the job and
+        # call pwsh explicitly where PowerShell is actually wanted.
+        shell: bash
+    steps:
+      - name: Report status (pending)
+        if: needs.resolve.outputs.sha != ''
+        continue-on-error: true
+        env:
+          GH_TOKEN: ${{ secrets.AGENT_REPO_TOKEN }}
+        run: |
+          [ -z "$GH_TOKEN" ] && exit 0
+          curl -sf -X POST -H "Authorization: Bearer $GH_TOKEN" -H "Accept: application/vnd.github+json" \
+            "https://api.github.com/repos/${{ needs.resolve.outputs.source_repo }}/statuses/${{ needs.resolve.outputs.sha }}" \
+            -d '{"state":"pending","context":"e2e/windows/arm64","description":"Running...","target_url":"${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"}'
+
+      - name: Checkout agent code
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          repository: ${{ needs.resolve.outputs.source_repo }}
+          ref: ${{ needs.resolve.outputs.ref }}
+          token: ${{ secrets.AGENT_REPO_TOKEN }}
+          path: agent
+          persist-credentials: false
+
+      - name: Set up Go
+        uses: actions/setup-go@4b73464bb391d4059bd26b0524d20df3927bd417 # v6.3.0
+        with:
+          go-version-file: agent/go.work
+
+      - name: Build Windows crasher
+        run: |
+          set -euo pipefail
+          # The supervision battery supervises a separate crasher.exe (pure Go,
+          # CGO_ENABLED=0); without it supervizio cannot spawn anything and every
+          # scenario reports count=0. Built natively now — this runner IS Windows,
+          # so the cross-build the bench leg needed is gone.
+          ( cd agent/e2e/behavioral/crasher && \
+            CGO_ENABLED=0 GOWORK=off go build -ldflags="-s -w" -o "${GITHUB_WORKSPACE}/crasher.exe" . )
+          ls -la "${GITHUB_WORKSPACE}/crasher.exe"
+
+      # zot is on the lab network and unreachable from a hosted runner, which is
+      # the only reason this leg ever needed the bench. Agent CI mirrors the
+      # E2E-consumed binaries to GitHub artifacts, so the same bytes the bench
+      # built are fetchable cross-repo.
+      - name: Download binary from the agent run (cross-repo)
+        uses: actions/download-artifact@70fc10c6e5e1ce46ad2ea6f2b72d43f7d47b13c3 # v8.0.0
+        with:
+          name: supervizio-windows-arm64
+          path: bin
+          repository: ${{ needs.resolve.outputs.source_repo }}
+          run-id: ${{ needs.resolve.outputs.run_id }}
+          github-token: ${{ secrets.AGENT_REPO_TOKEN }}
+
+      - name: Verify the binary arrived
+        run: |
+          set -euo pipefail
+          ls -la bin/
+          # An empty download would otherwise surface as an opaque PowerShell
+          # error deep inside the battery; fail where the cause is legible.
+          # Absolute: the battery is invoked from pwsh, and a relative path only
+          # resolves because pwsh happens to inherit the workspace cwd.
+          BIN=$(find "$PWD/bin" -name 'supervizio-windows-arm64*' | head -1)
+          [ -n "$BIN" ] && [ -s "$BIN" ] || {
+            echo "::error::supervizio-windows-arm64 missing or empty — did agent's CI publish it? (E2E_BRIDGE_PLATFORMS)" >&2
+            exit 1
+          }
+          echo "SVZ_BIN=$BIN" >> "$GITHUB_ENV"
+
+      - name: Supervision scenarios (PowerShell)
+        run: |
+          set -euo pipefail
+          # Ran over SSH against a bench VM before; it runs here directly. The
+          # battery is the same file, invoked with the same two arguments.
+          # Converted on their own lines, not inline: a failing command
+          # substitution inside an argument does NOT trip `set -e`, and
+          # scenario-battery.ps1 runs with ErrorActionPreference=Continue, so a
+          # missing cygpath would surface as "every scenario count=0" rather
+          # than as an error.
+          SV_W=$(cygpath -w "$SVZ_BIN")
+          CRASHER_W=$(cygpath -w "${GITHUB_WORKSPACE}/crasher.exe")
+          pwsh -NoProfile -ExecutionPolicy Bypass -File agent/e2e/scenario-battery.ps1 \
+            -Sv "$SV_W" -Crasher "$CRASHER_W"
+
+      - name: Report status (result)
+        if: always() && needs.resolve.outputs.sha != ''
+        continue-on-error: true
+        env:
+          GH_TOKEN: ${{ secrets.AGENT_REPO_TOKEN }}
+        run: |
+          [ -z "$GH_TOKEN" ] && exit 0
+          STATE="success"; DESC="Passed"
+          if [ "${{ job.status }}" != "success" ]; then STATE="failure"; DESC="Failed"; fi
+          curl -sf -X POST -H "Authorization: Bearer $GH_TOKEN" -H "Accept: application/vnd.github+json" \
+            "https://api.github.com/repos/${{ needs.resolve.outputs.source_repo }}/statuses/${{ needs.resolve.outputs.sha }}" \
+            -d "{\"state\":\"$STATE\",\"context\":\"e2e/windows/arm64\",\"description\":\"$DESC\",\"target_url\":\"${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}\"}"
 
   # ===========================================================================
   # E2E VM TESTS (Proxmox, self-hosted)
@@ -1031,18 +1063,10 @@ jobs:
             binary_artifact: supervizio-linux-amd64-musl
             pkg_artifact: supervizio-amd64.apk
             pkg_ext: apk
-          - name: freebsd
-            binary_artifact: supervizio-freebsd-amd64
-            pkg_artifact: ""
-            pkg_ext: ""
-          - name: openbsd
-            binary_artifact: supervizio-openbsd-amd64
-            pkg_artifact: ""
-            pkg_ext: ""
-          - name: netbsd
-            binary_artifact: supervizio-netbsd-amd64
-            pkg_artifact: ""
-            pkg_ext: ""
+          # freebsd/openbsd/netbsd left this matrix: they now run on
+          # ubuntu-24.04 under vmactions (jobs e2e-bsd-*), which needs no bench
+          # VM. openbsd builds natively there rather than consuming an artifact,
+          # because the cross-linked binary cannot start at all.
     env:
       # PROXMOX_API_URL est volontairement absent : depuis un pod, le litteral
       # 192.168.100.1 resout sur le Proxmox de l'hote CI, pas sur le banc (les
@@ -1064,21 +1088,29 @@ jobs:
           curl -sf -X POST \
             -H "Authorization: Bearer $GH_TOKEN" \
             -H "Accept: application/vnd.github+json" \
-            "https://api.github.com/repos/supervizio/agent/statuses/${{ needs.resolve.outputs.sha }}" \
+            "https://api.github.com/repos/${{ needs.resolve.outputs.source_repo }}/statuses/${{ needs.resolve.outputs.sha }}" \
             -d '{"state":"pending","context":"e2e/vm/${{ matrix.name }}","description":"Running...","target_url":"${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"}'
 
       - name: Checkout runner-template (for VM scripts)
         uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
         with:
           path: runner-template
+          # The workspace is synced wholesale into guests and read by later
+          # steps; a persisted credential would travel with it as a base64
+          # AUTHORIZATION header that Actions log-masking does not cover.
+          persist-credentials: false
 
       - name: Checkout agent code
         uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
         with:
-          repository: supervizio/agent
+          repository: ${{ needs.resolve.outputs.source_repo }}
           ref: ${{ needs.resolve.outputs.ref }}
           token: ${{ secrets.AGENT_REPO_TOKEN }}
           path: agent
+          # The workspace is synced wholesale into guests and read by later
+          # steps; a persisted credential would travel with it as a base64
+          # AUTHORIZATION header that Actions log-masking does not cover.
+          persist-credentials: false
 
       - name: Init libprobe submodule (needs its own token; AGENT_REPO_TOKEN can't reach the private libprobe repo)
         working-directory: agent
@@ -1449,8 +1481,559 @@ jobs:
           curl -sf -X POST \
             -H "Authorization: Bearer $GH_TOKEN" \
             -H "Accept: application/vnd.github+json" \
-            "https://api.github.com/repos/supervizio/agent/statuses/${{ needs.resolve.outputs.sha }}" \
+            "https://api.github.com/repos/${{ needs.resolve.outputs.source_repo }}/statuses/${{ needs.resolve.outputs.sha }}" \
             -d "{\"state\":\"$STATE\",\"context\":\"e2e/vm/${{ matrix.name }}\",\"description\":\"$DESC\",\"target_url\":\"${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}\"}"
+
+  e2e-bsd-freebsd-amd64:
+    name: E2E BSD freebsd amd64
+    needs: [resolve]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    if: ${{ github.event.inputs.arm_only != 'true' }}
+    steps:
+      - name: Report status (pending)
+        if: needs.resolve.outputs.sha != ''
+        continue-on-error: true
+        env:
+          GH_TOKEN: ${{ secrets.AGENT_REPO_TOKEN }}
+        run: |
+          [ -z "$GH_TOKEN" ] && exit 0
+          curl -sf -X POST -H "Authorization: Bearer $GH_TOKEN" -H "Accept: application/vnd.github+json" \
+            "https://api.github.com/repos/${{ needs.resolve.outputs.source_repo }}/statuses/${{ needs.resolve.outputs.sha }}" \
+            -d '{"state":"pending","context":"e2e/bsd/freebsd-amd64","description":"Running...","target_url":"${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"}'
+
+      - name: Checkout agent code
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          repository: ${{ needs.resolve.outputs.source_repo }}
+          ref: ${{ needs.resolve.outputs.ref }}
+          token: ${{ secrets.AGENT_REPO_TOKEN }}
+          persist-credentials: false
+
+      # The bench pulled this from zot; the hosted runner takes the same bytes
+      # from the GitHub artifact agent's CI mirrors. Downloaded on the HOST and
+      # synced into the guest by vmactions -- the token never enters the VM.
+      - name: Download binary from the agent run (cross-repo)
+        uses: actions/download-artifact@70fc10c6e5e1ce46ad2ea6f2b72d43f7d47b13c3 # v8.0.0
+        with:
+          name: supervizio-freebsd-amd64
+          path: bin
+          repository: ${{ needs.resolve.outputs.source_repo }}
+          run-id: ${{ needs.resolve.outputs.run_id }}
+          github-token: ${{ secrets.AGENT_REPO_TOKEN }}
+
+      - name: Verify the binary arrived
+        run: |
+          set -euo pipefail
+          ls -la bin/
+          [ -s "bin/supervizio-freebsd-amd64" ] || {
+            echo "::error::supervizio-freebsd-amd64 missing or empty — did agent's CI publish it? (E2E_BRIDGE_PLATFORMS)" >&2
+            exit 1
+          }
+          mv "bin/supervizio-freebsd-amd64" bin/supervizio
+
+      - name: Install, validate and uninstall in a freebsd guest
+        uses: vmactions/freebsd-vm@4469451fe39bee80be4066836c5170362e9349f3 # v1.5.7
+        with:
+          usesh: true
+          # Pinned, for the same reason the Windows leg pins its image: an
+          # unpinned guest floats with the action's default and moves coverage
+          # with no diff. agent/e2e/expected-matrix.json expects "FreeBSD 15"; the bench builds 15.0-RELEASE.
+          # The action's default here is 15.1.
+          release: '15.0'
+          copyback: false
+          prepare: pkg install -y jq
+          run: |
+            set -e
+            WS="$(pwd)"
+            echo "=== Platform ==="; uname -a
+            export SUPERVIZIO_LOCAL_BIN="$WS/bin/supervizio"
+            chmod +x "$SUPERVIZIO_LOCAL_BIN"
+
+            echo "=== Install ==="
+            sh "$WS/setup/install.sh"
+
+            echo "=== Verify install ==="
+            [ -x /usr/local/bin/supervizio ] || { echo "binary not installed"; exit 1; }
+            /usr/local/bin/supervizio --version
+
+            echo "=== Validate probe ==="
+            sh "$WS/e2e/validate-probe.sh" /usr/local/bin/supervizio
+
+            echo "=== Supervision scenarios ==="
+            sh "$WS/e2e/scenario-battery.sh" /usr/local/bin/supervizio
+
+            echo "=== Uninstall ==="
+            # uninstall.sh PROMPTS before removing the config dir unless this is
+            # set, and there is no tty here: the read either takes EOF and trips
+            # `set -e`, or blocks until the job timeout. The bench leg this
+            # replaces sets it; the BSDs need it most, because install.sh puts
+            # their config under /usr/local/etc where the prompt actually fires.
+            SUPERVIZIO_NON_INTERACTIVE=true; export SUPERVIZIO_NON_INTERACTIVE
+            sh "$WS/setup/uninstall.sh"
+            [ -x /usr/local/bin/supervizio ] && echo "::warning::binary still present after uninstall" || true
+
+      - name: Report status (result)
+        if: always() && needs.resolve.outputs.sha != ''
+        continue-on-error: true
+        env:
+          GH_TOKEN: ${{ secrets.AGENT_REPO_TOKEN }}
+        run: |
+          [ -z "$GH_TOKEN" ] && exit 0
+          STATE="success"; DESC="Passed"
+          if [ "${{ job.status }}" != "success" ]; then STATE="failure"; DESC="Failed"; fi
+          curl -sf -X POST -H "Authorization: Bearer $GH_TOKEN" -H "Accept: application/vnd.github+json" \
+            "https://api.github.com/repos/${{ needs.resolve.outputs.source_repo }}/statuses/${{ needs.resolve.outputs.sha }}" \
+            -d "{\"state\":\"$STATE\",\"context\":\"e2e/bsd/freebsd-amd64\",\"description\":\"$DESC\",\"target_url\":\"${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}\"}"
+
+  e2e-bsd-netbsd-amd64:
+    name: E2E BSD netbsd amd64
+    needs: [resolve]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    if: ${{ github.event.inputs.arm_only != 'true' }}
+    steps:
+      - name: Report status (pending)
+        if: needs.resolve.outputs.sha != ''
+        continue-on-error: true
+        env:
+          GH_TOKEN: ${{ secrets.AGENT_REPO_TOKEN }}
+        run: |
+          [ -z "$GH_TOKEN" ] && exit 0
+          curl -sf -X POST -H "Authorization: Bearer $GH_TOKEN" -H "Accept: application/vnd.github+json" \
+            "https://api.github.com/repos/${{ needs.resolve.outputs.source_repo }}/statuses/${{ needs.resolve.outputs.sha }}" \
+            -d '{"state":"pending","context":"e2e/bsd/netbsd-amd64","description":"Running...","target_url":"${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"}'
+
+      - name: Checkout agent code
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          repository: ${{ needs.resolve.outputs.source_repo }}
+          ref: ${{ needs.resolve.outputs.ref }}
+          token: ${{ secrets.AGENT_REPO_TOKEN }}
+          persist-credentials: false
+
+      # The bench pulled this from zot; the hosted runner takes the same bytes
+      # from the GitHub artifact agent's CI mirrors. Downloaded on the HOST and
+      # synced into the guest by vmactions -- the token never enters the VM.
+      - name: Download binary from the agent run (cross-repo)
+        uses: actions/download-artifact@70fc10c6e5e1ce46ad2ea6f2b72d43f7d47b13c3 # v8.0.0
+        with:
+          name: supervizio-netbsd-amd64
+          path: bin
+          repository: ${{ needs.resolve.outputs.source_repo }}
+          run-id: ${{ needs.resolve.outputs.run_id }}
+          github-token: ${{ secrets.AGENT_REPO_TOKEN }}
+
+      - name: Verify the binary arrived
+        run: |
+          set -euo pipefail
+          ls -la bin/
+          [ -s "bin/supervizio-netbsd-amd64" ] || {
+            echo "::error::supervizio-netbsd-amd64 missing or empty — did agent's CI publish it? (E2E_BRIDGE_PLATFORMS)" >&2
+            exit 1
+          }
+          mv "bin/supervizio-netbsd-amd64" bin/supervizio
+
+      - name: Install, validate and uninstall in a netbsd guest
+        uses: vmactions/netbsd-vm@20ee93a005c9fc78743e6e05269f4cb023b87413 # v1.5.0
+        with:
+          usesh: true
+          # Pinned, for the same reason the Windows leg pins its image: an
+          # unpinned guest floats with the action's default and moves coverage
+          # with no diff. expected-matrix.json expects "NetBSD 10\\.1"; the action now defaults to 11.0, a different MAJOR.
+          # The action's default here is 11.0.
+          release: '10.1'
+          copyback: false
+          prepare: /usr/sbin/pkg_add jq
+          run: |
+            set -e
+            WS="$(pwd)"
+            echo "=== Platform ==="; uname -a
+            export SUPERVIZIO_LOCAL_BIN="$WS/bin/supervizio"
+            chmod +x "$SUPERVIZIO_LOCAL_BIN"
+
+            echo "=== Install ==="
+            sh "$WS/setup/install.sh"
+
+            echo "=== Verify install ==="
+            [ -x /usr/local/bin/supervizio ] || { echo "binary not installed"; exit 1; }
+            /usr/local/bin/supervizio --version
+
+            echo "=== Validate probe ==="
+            sh "$WS/e2e/validate-probe.sh" /usr/local/bin/supervizio
+
+            echo "=== Supervision scenarios ==="
+            sh "$WS/e2e/scenario-battery.sh" /usr/local/bin/supervizio
+
+            echo "=== Uninstall ==="
+            # uninstall.sh PROMPTS before removing the config dir unless this is
+            # set, and there is no tty here: the read either takes EOF and trips
+            # `set -e`, or blocks until the job timeout. The bench leg this
+            # replaces sets it; the BSDs need it most, because install.sh puts
+            # their config under /usr/local/etc where the prompt actually fires.
+            SUPERVIZIO_NON_INTERACTIVE=true; export SUPERVIZIO_NON_INTERACTIVE
+            sh "$WS/setup/uninstall.sh"
+            [ -x /usr/local/bin/supervizio ] && echo "::warning::binary still present after uninstall" || true
+
+      - name: Report status (result)
+        if: always() && needs.resolve.outputs.sha != ''
+        continue-on-error: true
+        env:
+          GH_TOKEN: ${{ secrets.AGENT_REPO_TOKEN }}
+        run: |
+          [ -z "$GH_TOKEN" ] && exit 0
+          STATE="success"; DESC="Passed"
+          if [ "${{ job.status }}" != "success" ]; then STATE="failure"; DESC="Failed"; fi
+          curl -sf -X POST -H "Authorization: Bearer $GH_TOKEN" -H "Accept: application/vnd.github+json" \
+            "https://api.github.com/repos/${{ needs.resolve.outputs.source_repo }}/statuses/${{ needs.resolve.outputs.sha }}" \
+            -d "{\"state\":\"$STATE\",\"context\":\"e2e/bsd/netbsd-amd64\",\"description\":\"$DESC\",\"target_url\":\"${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}\"}"
+
+  e2e-bsd-openbsd-amd64:
+    name: E2E BSD openbsd amd64
+    needs: [resolve]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    if: ${{ github.event.inputs.arm_only != 'true' }}
+    steps:
+      - name: Report status (pending)
+        if: needs.resolve.outputs.sha != ''
+        continue-on-error: true
+        env:
+          GH_TOKEN: ${{ secrets.AGENT_REPO_TOKEN }}
+        run: |
+          [ -z "$GH_TOKEN" ] && exit 0
+          curl -sf -X POST -H "Authorization: Bearer $GH_TOKEN" -H "Accept: application/vnd.github+json" \
+            "https://api.github.com/repos/${{ needs.resolve.outputs.source_repo }}/statuses/${{ needs.resolve.outputs.sha }}" \
+            -d '{"state":"pending","context":"e2e/bsd/openbsd-amd64","description":"Running...","target_url":"${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"}'
+
+      - name: Checkout agent code
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          repository: ${{ needs.resolve.outputs.source_repo }}
+          ref: ${{ needs.resolve.outputs.ref }}
+          token: ${{ secrets.AGENT_REPO_TOKEN }}
+          # The workspace is synced wholesale into the guest; a persisted
+          # credential would travel with it.
+          persist-credentials: false
+
+      # OpenBSD is the one platform whose SHIPPED binary is not the
+      # cross-compiled one: upstream lld cannot produce a runnable OpenBSD
+      # executable, so agent's bench VM rebuilds it natively and that rebuild is
+      # what the .tgz carries -- what the release publishes, and what
+      # install.sh's pkg_add installs.
+      #
+      # This leg used to build the agent inside its own guest instead. That
+      # validated a THIRD binary, one that ships nowhere: the cross build is
+      # broken, the guest rebuild was untested, and the bench build is what
+      # users get. agent's native-platform.yml now bridges the native package,
+      # so this consumes exactly what a user consumes, through the same path.
+      - name: Download the native OpenBSD package from the agent run
+        uses: actions/download-artifact@70fc10c6e5e1ce46ad2ea6f2b72d43f7d47b13c3 # v8.0.0
+        with:
+          name: supervizio-openbsd-pkg
+          path: pkg
+          repository: ${{ needs.resolve.outputs.source_repo }}
+          run-id: ${{ needs.resolve.outputs.run_id }}
+          github-token: ${{ secrets.AGENT_REPO_TOKEN }}
+
+      - name: Verify the package arrived
+        run: |
+          set -euo pipefail
+          ls -la pkg/
+          TGZ=$(find pkg -name '*.tgz' | head -1)
+          [ -n "$TGZ" ] && [ -s "$TGZ" ] || {
+            echo "::error::no OpenBSD .tgz - did agent's native-openbsd job publish supervizio-openbsd-pkg?" >&2
+            exit 1
+          }
+          mv "$TGZ" supervizio-openbsd.tgz
+          # Prove it carries the NATIVE binary, not the cross one. The two are
+          # distinguishable by the build path Go embeds: the bench VM builds
+          # under /home/kodflow, the cross job under /home/runner/_work.
+          tar xzf supervizio-openbsd.tgz usr/local/bin/supervizio 2>/dev/null || true
+          if [ -f usr/local/bin/supervizio ]; then
+            if strings usr/local/bin/supervizio | grep -q '_work/agent/agent/dist/lib/openbsd'; then
+              echo "::error::this package carries the CROSS-built binary, which cannot start on OpenBSD" >&2
+              exit 1
+            fi
+            echo "package carries a natively-built binary"
+          fi
+          rm -rf usr
+
+      - name: Install, validate and uninstall in an OpenBSD guest
+        uses: vmactions/openbsd-vm@86cdc08415d9d0865267e686561e276c52d62530 # v1.4.7
+        with:
+          usesh: true
+          # Pinned, for the same reason the Windows leg pins its image: an
+          # unpinned guest floats with the action's default and moves coverage
+          # with no diff. matches the bench (packer pins install79.iso) and expected-matrix.json.
+          # The action's default here is 7.9.
+          release: '7.9'
+          copyback: false
+          prepare: pkg_add -I jq
+          run: |
+            set -e
+            WS="$(pwd)"
+            echo "=== Platform ==="; uname -a
+
+            # The real install path: install.sh prefers the native package and
+            # calls pkg_add, which is exactly what a user gets. No Go toolchain
+            # in this guest at all any more.
+            echo "=== Install (package path) ==="
+            SUPERVIZIO_LOCAL_PKG="$WS/supervizio-openbsd.tgz"
+            export SUPERVIZIO_LOCAL_PKG
+            sh "$WS/setup/install.sh"
+
+            echo "=== Verify install ==="
+            [ -x /usr/local/bin/supervizio ] || { echo "binary not installed"; exit 1; }
+            # The assertion that matters here: the shipped OpenBSD binary has to
+            # START. The cross-built one SIGSEGVs in ld.so before main(), so a
+            # successful install proves nothing on its own.
+            /usr/local/bin/supervizio --version
+
+            echo "=== Validate probe ==="
+            sh "$WS/e2e/validate-probe.sh"
+
+            echo "=== Supervision scenarios ==="
+            sh "$WS/e2e/scenario-battery.sh" /usr/local/bin/supervizio
+
+            echo "=== Uninstall ==="
+            SUPERVIZIO_NON_INTERACTIVE=true; export SUPERVIZIO_NON_INTERACTIVE
+            sh "$WS/setup/uninstall.sh"
+
+      - name: Report status (result)
+        if: always() && needs.resolve.outputs.sha != ''
+        continue-on-error: true
+        env:
+          GH_TOKEN: ${{ secrets.AGENT_REPO_TOKEN }}
+        run: |
+          [ -z "$GH_TOKEN" ] && exit 0
+          STATE="success"; DESC="Passed"
+          if [ "${{ job.status }}" != "success" ]; then STATE="failure"; DESC="Failed"; fi
+          curl -sf -X POST -H "Authorization: Bearer $GH_TOKEN" -H "Accept: application/vnd.github+json" \
+            "https://api.github.com/repos/${{ needs.resolve.outputs.source_repo }}/statuses/${{ needs.resolve.outputs.sha }}" \
+            -d "{\"state\":\"$STATE\",\"context\":\"e2e/bsd/openbsd-amd64\",\"description\":\"$DESC\",\"target_url\":\"${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}\"}"
+
+  e2e-bsd-freebsd-arm64:
+    name: E2E BSD freebsd arm64
+    needs: [resolve]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 180
+    if: ${{ github.event.inputs.arm_only != 'true' }}
+    steps:
+      - name: Report status (pending)
+        if: needs.resolve.outputs.sha != ''
+        continue-on-error: true
+        env:
+          GH_TOKEN: ${{ secrets.AGENT_REPO_TOKEN }}
+        run: |
+          [ -z "$GH_TOKEN" ] && exit 0
+          curl -sf -X POST -H "Authorization: Bearer $GH_TOKEN" -H "Accept: application/vnd.github+json" \
+            "https://api.github.com/repos/${{ needs.resolve.outputs.source_repo }}/statuses/${{ needs.resolve.outputs.sha }}" \
+            -d '{"state":"pending","context":"e2e/bsd/freebsd-arm64","description":"Running...","target_url":"${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"}'
+
+      - name: Checkout agent code
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          repository: ${{ needs.resolve.outputs.source_repo }}
+          ref: ${{ needs.resolve.outputs.ref }}
+          token: ${{ secrets.AGENT_REPO_TOKEN }}
+          persist-credentials: false
+
+      # The bench pulled this from zot; the hosted runner takes the same bytes
+      # from the GitHub artifact agent's CI mirrors. Downloaded on the HOST and
+      # synced into the guest by vmactions -- the token never enters the VM.
+      - name: Download binary from the agent run (cross-repo)
+        uses: actions/download-artifact@70fc10c6e5e1ce46ad2ea6f2b72d43f7d47b13c3 # v8.0.0
+        with:
+          name: supervizio-freebsd-arm64
+          path: bin
+          repository: ${{ needs.resolve.outputs.source_repo }}
+          run-id: ${{ needs.resolve.outputs.run_id }}
+          github-token: ${{ secrets.AGENT_REPO_TOKEN }}
+
+      - name: Verify the binary arrived
+        run: |
+          set -euo pipefail
+          ls -la bin/
+          [ -s "bin/supervizio-freebsd-arm64" ] || {
+            echo "::error::supervizio-freebsd-arm64 missing or empty — did agent's CI publish it? (E2E_BRIDGE_PLATFORMS)" >&2
+            exit 1
+          }
+          mv "bin/supervizio-freebsd-arm64" bin/supervizio
+
+      - name: Install, validate and uninstall in a freebsd guest
+        uses: vmactions/freebsd-vm@4469451fe39bee80be4066836c5170362e9349f3 # v1.5.7
+        with:
+          usesh: true
+          # aarch64 guest on an x86_64 HOST. The action's own README is explicit:
+          # "When you run with aarch64, the host runner should still be the
+          # normal x86_64 runner... It's not recommended to use
+          # ubuntu-24.04-arm as runner, it's much more slower." There is no
+          # nested KVM on GitHub's arm64 fleet either way, so the guest is
+          # TCG-emulated whichever host you pick -- measured at roughly 26x the
+          # KVM path, which is why this leg budgets 180 minutes where its amd64
+          # sibling needs 30.
+          arch: aarch64
+          # Pinned, for the same reason the Windows leg pins its image: an
+          # unpinned guest floats with the action's default and moves coverage
+          # with no diff. agent/e2e/expected-matrix.json expects "FreeBSD 15"; the bench builds 15.0-RELEASE.
+          # The action's default here is 15.1.
+          release: '15.0'
+          copyback: false
+          prepare: pkg install -y jq
+          run: |
+            set -e
+            WS="$(pwd)"
+            echo "=== Platform ==="; uname -a
+            export SUPERVIZIO_LOCAL_BIN="$WS/bin/supervizio"
+            chmod +x "$SUPERVIZIO_LOCAL_BIN"
+
+            echo "=== Install ==="
+            sh "$WS/setup/install.sh"
+
+            echo "=== Verify install ==="
+            [ -x /usr/local/bin/supervizio ] || { echo "binary not installed"; exit 1; }
+            /usr/local/bin/supervizio --version
+
+            echo "=== Validate probe ==="
+            sh "$WS/e2e/validate-probe.sh" /usr/local/bin/supervizio
+
+            echo "=== Supervision scenarios ==="
+            sh "$WS/e2e/scenario-battery.sh" /usr/local/bin/supervizio
+
+            echo "=== Uninstall ==="
+            # uninstall.sh PROMPTS before removing the config dir unless this is
+            # set, and there is no tty here: the read either takes EOF and trips
+            # `set -e`, or blocks until the job timeout. The bench leg this
+            # replaces sets it; the BSDs need it most, because install.sh puts
+            # their config under /usr/local/etc where the prompt actually fires.
+            SUPERVIZIO_NON_INTERACTIVE=true; export SUPERVIZIO_NON_INTERACTIVE
+            sh "$WS/setup/uninstall.sh"
+            [ -x /usr/local/bin/supervizio ] && echo "::warning::binary still present after uninstall" || true
+
+      - name: Report status (result)
+        if: always() && needs.resolve.outputs.sha != ''
+        continue-on-error: true
+        env:
+          GH_TOKEN: ${{ secrets.AGENT_REPO_TOKEN }}
+        run: |
+          [ -z "$GH_TOKEN" ] && exit 0
+          STATE="success"; DESC="Passed"
+          if [ "${{ job.status }}" != "success" ]; then STATE="failure"; DESC="Failed"; fi
+          curl -sf -X POST -H "Authorization: Bearer $GH_TOKEN" -H "Accept: application/vnd.github+json" \
+            "https://api.github.com/repos/${{ needs.resolve.outputs.source_repo }}/statuses/${{ needs.resolve.outputs.sha }}" \
+            -d "{\"state\":\"$STATE\",\"context\":\"e2e/bsd/freebsd-arm64\",\"description\":\"$DESC\",\"target_url\":\"${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}\"}"
+
+  e2e-bsd-netbsd-arm64:
+    name: E2E BSD netbsd arm64
+    needs: [resolve]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 180
+    if: ${{ github.event.inputs.arm_only != 'true' }}
+    steps:
+      - name: Report status (pending)
+        if: needs.resolve.outputs.sha != ''
+        continue-on-error: true
+        env:
+          GH_TOKEN: ${{ secrets.AGENT_REPO_TOKEN }}
+        run: |
+          [ -z "$GH_TOKEN" ] && exit 0
+          curl -sf -X POST -H "Authorization: Bearer $GH_TOKEN" -H "Accept: application/vnd.github+json" \
+            "https://api.github.com/repos/${{ needs.resolve.outputs.source_repo }}/statuses/${{ needs.resolve.outputs.sha }}" \
+            -d '{"state":"pending","context":"e2e/bsd/netbsd-arm64","description":"Running...","target_url":"${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"}'
+
+      - name: Checkout agent code
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          repository: ${{ needs.resolve.outputs.source_repo }}
+          ref: ${{ needs.resolve.outputs.ref }}
+          token: ${{ secrets.AGENT_REPO_TOKEN }}
+          persist-credentials: false
+
+      # The bench pulled this from zot; the hosted runner takes the same bytes
+      # from the GitHub artifact agent's CI mirrors. Downloaded on the HOST and
+      # synced into the guest by vmactions -- the token never enters the VM.
+      - name: Download binary from the agent run (cross-repo)
+        uses: actions/download-artifact@70fc10c6e5e1ce46ad2ea6f2b72d43f7d47b13c3 # v8.0.0
+        with:
+          name: supervizio-netbsd-arm64
+          path: bin
+          repository: ${{ needs.resolve.outputs.source_repo }}
+          run-id: ${{ needs.resolve.outputs.run_id }}
+          github-token: ${{ secrets.AGENT_REPO_TOKEN }}
+
+      - name: Verify the binary arrived
+        run: |
+          set -euo pipefail
+          ls -la bin/
+          [ -s "bin/supervizio-netbsd-arm64" ] || {
+            echo "::error::supervizio-netbsd-arm64 missing or empty — did agent's CI publish it? (E2E_BRIDGE_PLATFORMS)" >&2
+            exit 1
+          }
+          mv "bin/supervizio-netbsd-arm64" bin/supervizio
+
+      - name: Install, validate and uninstall in a netbsd guest
+        uses: vmactions/netbsd-vm@20ee93a005c9fc78743e6e05269f4cb023b87413 # v1.5.0
+        with:
+          usesh: true
+          # aarch64 guest on an x86_64 HOST. The action's own README is explicit:
+          # "When you run with aarch64, the host runner should still be the
+          # normal x86_64 runner... It's not recommended to use
+          # ubuntu-24.04-arm as runner, it's much more slower." There is no
+          # nested KVM on GitHub's arm64 fleet either way, so the guest is
+          # TCG-emulated whichever host you pick -- measured at roughly 26x the
+          # KVM path, which is why this leg budgets 180 minutes where its amd64
+          # sibling needs 30.
+          arch: aarch64
+          # Pinned, for the same reason the Windows leg pins its image: an
+          # unpinned guest floats with the action's default and moves coverage
+          # with no diff. expected-matrix.json expects "NetBSD 10\\.1"; the action now defaults to 11.0, a different MAJOR.
+          # The action's default here is 11.0.
+          release: '10.1'
+          copyback: false
+          prepare: /usr/sbin/pkg_add jq
+          run: |
+            set -e
+            WS="$(pwd)"
+            echo "=== Platform ==="; uname -a
+            export SUPERVIZIO_LOCAL_BIN="$WS/bin/supervizio"
+            chmod +x "$SUPERVIZIO_LOCAL_BIN"
+
+            echo "=== Install ==="
+            sh "$WS/setup/install.sh"
+
+            echo "=== Verify install ==="
+            [ -x /usr/local/bin/supervizio ] || { echo "binary not installed"; exit 1; }
+            /usr/local/bin/supervizio --version
+
+            echo "=== Validate probe ==="
+            sh "$WS/e2e/validate-probe.sh" /usr/local/bin/supervizio
+
+            echo "=== Supervision scenarios ==="
+            sh "$WS/e2e/scenario-battery.sh" /usr/local/bin/supervizio
+
+            echo "=== Uninstall ==="
+            # uninstall.sh PROMPTS before removing the config dir unless this is
+            # set, and there is no tty here: the read either takes EOF and trips
+            # `set -e`, or blocks until the job timeout. The bench leg this
+            # replaces sets it; the BSDs need it most, because install.sh puts
+            # their config under /usr/local/etc where the prompt actually fires.
+            SUPERVIZIO_NON_INTERACTIVE=true; export SUPERVIZIO_NON_INTERACTIVE
+            sh "$WS/setup/uninstall.sh"
+            [ -x /usr/local/bin/supervizio ] && echo "::warning::binary still present after uninstall" || true
+
+      - name: Report status (result)
+        if: always() && needs.resolve.outputs.sha != ''
+        continue-on-error: true
+        env:
+          GH_TOKEN: ${{ secrets.AGENT_REPO_TOKEN }}
+        run: |
+          [ -z "$GH_TOKEN" ] && exit 0
+          STATE="success"; DESC="Passed"
+          if [ "${{ job.status }}" != "success" ]; then STATE="failure"; DESC="Failed"; fi
+          curl -sf -X POST -H "Authorization: Bearer $GH_TOKEN" -H "Accept: application/vnd.github+json" \
+            "https://api.github.com/repos/${{ needs.resolve.outputs.source_repo }}/statuses/${{ needs.resolve.outputs.sha }}" \
+            -d "{\"state\":\"$STATE\",\"context\":\"e2e/bsd/netbsd-arm64\",\"description\":\"$DESC\",\"target_url\":\"${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}\"}"
 
   # ===========================================================================
   # VM CLEANUP: reset the VMs this run acquired
@@ -1479,11 +2062,12 @@ jobs:
   # que cette liste. Une VM que ce run n'a jamais prise n'est jamais reinitialisee.
   vm-cleanup:
     name: VM Cleanup
-    # e2e-macos et e2e-windows tiennent aussi des VM de la bande (215 sequoia,
-    # 214 windows) : elles etaient reinitialisees par le balayage. Il faut donc
-    # les attendre, sinon leur claim n'existe pas encore au telechargement et
-    # leur VM ne serait jamais rendue propre.
-    needs: [e2e-vm, e2e-macos, e2e-windows]
+    # e2e-macos (215 sequoia) et e2e-windows (214) tenaient aussi des VM de la
+    # bande, d'ou leur presence ici : sans les attendre, leur claim n'existait
+    # pas encore au telechargement. Les deux tournent desormais sur des runners
+    # GitHub et ne prennent plus rien, donc seul e2e-vm reste a attendre.
+    # Ce job disparait entierement le jour ou e2e-vm quitte le banc a son tour.
+    needs: [e2e-vm]
     if: always() && github.event.inputs.arm_only != 'true'
     runs-on: supervizio-runner
     timeout-minutes: 10
@@ -1575,67 +2159,113 @@ jobs:
 
   report:
     name: Report Results
-    needs: [resolve, e2e-docker, e2e-docker-arm64, e2e-macos, e2e-macos-arm64, e2e-vm]
+    # e2e-windows belongs here. Without it the aggregate reports green while
+    # the Windows leg is red: it is not in needs, so its result is never read
+    # and the job does not even wait for it.
+    needs: [resolve, e2e-docker-amd64, e2e-docker-arm64, e2e-macos, e2e-macos-arm64, e2e-vm, e2e-windows-amd64, e2e-windows-arm64,
+             e2e-bsd-freebsd-amd64, e2e-bsd-netbsd-amd64, e2e-bsd-openbsd-amd64,
+             e2e-bsd-freebsd-arm64, e2e-bsd-netbsd-arm64]
     if: always()
     runs-on: ubuntu-24.04
     steps:
-      - name: Aggregate results
+      # One verdict, computed once. The three consumers below (commit status,
+      # dispatch callback, fail-the-job) used to each carry their own copy of
+      # the same twelve-element array and the same loop — three places to keep
+      # in sync, and the `skipped` bug lived in all three at once.
+      - name: Compute verdict
+        id: verdict
         run: |
+          LEGS=(
+            "docker-amd64=${{ needs.e2e-docker-amd64.result }}"
+            "docker-arm64=${{ needs.e2e-docker-arm64.result }}"
+            "macos-x86_64=${{ needs.e2e-macos.result }}"
+            "macos-arm64=${{ needs.e2e-macos-arm64.result }}"
+            "vm=${{ needs.e2e-vm.result }}"
+            "windows-amd64=${{ needs.e2e-windows-amd64.result }}"
+            "windows-arm64=${{ needs.e2e-windows-arm64.result }}"
+            "bsd-freebsd-amd64=${{ needs.e2e-bsd-freebsd-amd64.result }}"
+            "bsd-freebsd-arm64=${{ needs.e2e-bsd-freebsd-arm64.result }}"
+            "bsd-netbsd-amd64=${{ needs.e2e-bsd-netbsd-amd64.result }}"
+            "bsd-netbsd-arm64=${{ needs.e2e-bsd-netbsd-arm64.result }}"
+            "bsd-openbsd-amd64=${{ needs.e2e-bsd-openbsd-amd64.result }}"
+          )
+
           echo "=== E2E Results ==="
-          echo "e2e-docker:       ${{ needs.e2e-docker.result }}"
-          echo "e2e-docker-arm64: ${{ needs.e2e-docker-arm64.result }}"
-          echo "e2e-macos:        ${{ needs.e2e-macos.result }}"
-          echo "e2e-macos-arm64:  ${{ needs.e2e-macos-arm64.result }}"
-          echo "e2e-vm:           ${{ needs.e2e-vm.result }}"
+          BAD=0
+          OFFENDERS=""
+          for entry in "${LEGS[@]}"; do
+            leg="${entry%%=*}"
+            res="${entry#*=}"
+            printf '  %-22s %s\n' "$leg" "$res"
+            # Only "success" passes — `skipped` included.
+            #
+            # The old loop tested failure/cancelled only, so any leg that never
+            # ran counted as fine. An `arm_only` dispatch skips 11 of these 12
+            # and still produced a green `e2e/runner-template` on the agent SHA:
+            # a verdict asserting the artifact was validated on twelve platforms
+            # when it ran on one.
+            if [ "$res" != "success" ]; then
+              BAD=$((BAD + 1))
+              OFFENDERS="${OFFENDERS}${leg}:${res} "
+            fi
+          done
+
+          if [ "$BAD" -gt 0 ]; then
+            echo "state=failure" >> "$GITHUB_OUTPUT"
+            echo "description=$BAD/${#LEGS[@]} legs did not pass: ${OFFENDERS%% }" >> "$GITHUB_OUTPUT"
+            echo ""
+            echo "VERDICT: failure — $BAD of ${#LEGS[@]} legs did not succeed"
+            echo "  $OFFENDERS"
+          else
+            echo "state=success" >> "$GITHUB_OUTPUT"
+            echo "description=All ${#LEGS[@]} E2E legs passed" >> "$GITHUB_OUTPUT"
+            echo ""
+            echo "VERDICT: success — all ${#LEGS[@]} legs passed"
+          fi
 
       - name: Report final status
-        if: needs.resolve.outputs.sha != ''
+        # !cancelled() matters now that `cancelled` counts as a failure below:
+        # `if: always()` on this job makes it run even when the whole run was
+        # cancelled by cancel-in-progress, and it would then post a red verdict
+        # for a SHA whose superseding run goes green half an hour later.
+        # A debug `arm_only` dispatch runs 4 of 26 legs. It must not write a
+        # verdict at all — green would be a lie, and red would blame the SHA for
+        # legs the operator chose not to run.
+        if: ${{ !cancelled() && needs.resolve.outputs.sha != '' && github.event.inputs.arm_only != 'true' }}
         continue-on-error: true
         env:
           GH_TOKEN: ${{ secrets.AGENT_REPO_TOKEN }}
+          STATE: ${{ steps.verdict.outputs.state }}
+          DESC: ${{ steps.verdict.outputs.description }}
         run: |
           [ -z "$GH_TOKEN" ] && { echo "AGENT_REPO_TOKEN not set, skipping"; exit 0; }
-          RESULTS=("${{ needs.e2e-docker.result }}" "${{ needs.e2e-docker-arm64.result }}" \
-                   "${{ needs.e2e-macos.result }}" "${{ needs.e2e-macos-arm64.result }}" \
-                   "${{ needs.e2e-vm.result }}")
-          STATE="success"
-          DESC="All E2E tests passed"
-          for r in "${RESULTS[@]}"; do
-            if [ "$r" = "failure" ]; then
-              STATE="failure"
-              DESC="E2E tests failed"
-              break
-            fi
-          done
           curl -sf -X POST \
             -H "Authorization: Bearer $GH_TOKEN" \
             -H "Accept: application/vnd.github+json" \
-            "https://api.github.com/repos/supervizio/agent/statuses/${{ needs.resolve.outputs.sha }}" \
-            -d "{\"state\":\"$STATE\",\"context\":\"e2e/runner-template\",\"description\":\"$DESC\",\"target_url\":\"${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}\"}"
+            "https://api.github.com/repos/${{ needs.resolve.outputs.source_repo }}/statuses/${{ needs.resolve.outputs.sha }}" \
+            -d "$(jq -nc --arg s "$STATE" --arg d "$DESC" --arg u "${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}" \
+                  '{state:$s, context:"e2e/runner-template", description:$d, target_url:$u}')"
 
       - name: Dispatch callback to agent repo
-        if: needs.resolve.outputs.sha != ''
+        # Same reason as the status above: a cancelled run must not tell agent
+        # its E2E failed.
+        if: ${{ !cancelled() && needs.resolve.outputs.sha != '' && github.event.inputs.arm_only != 'true' }}
         continue-on-error: true
         env:
           GH_TOKEN: ${{ secrets.AGENT_REPO_TOKEN }}
+          STATE: ${{ steps.verdict.outputs.state }}
+          SOURCE_REPO: ${{ needs.resolve.outputs.source_repo }}
         run: |
           [ -z "$GH_TOKEN" ] && { echo "AGENT_REPO_TOKEN not set, skipping"; exit 0; }
-          RESULTS=("${{ needs.e2e-docker.result }}" "${{ needs.e2e-docker-arm64.result }}" \
-                   "${{ needs.e2e-macos.result }}" "${{ needs.e2e-macos-arm64.result }}" \
-                   "${{ needs.e2e-vm.result }}")
-          STATE="success"
-          for r in "${RESULTS[@]}"; do
-            if [ "$r" = "failure" ]; then
-              STATE="failure"
-              break
-            fi
-          done
           curl -sf -X POST \
             -H "Authorization: Bearer $GH_TOKEN" \
             -H "Accept: application/vnd.github+json" \
-            "https://api.github.com/repos/supervizio/agent/dispatches" \
-            -d "{\"event_type\":\"e2e-result\",\"client_payload\":{\"state\":\"$STATE\",\"sha\":\"${{ needs.resolve.outputs.sha }}\",\"run_id\":\"${{ github.run_id }}\",\"target_url\":\"${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}\"}}"
-          echo "Dispatched e2e-result to supervizio/agent (state=$STATE)"
+            "https://api.github.com/repos/${SOURCE_REPO}/dispatches" \
+            -d "$(jq -nc --arg s "$STATE" --arg sha "${{ needs.resolve.outputs.sha }}" \
+                  --arg rid "${{ github.run_id }}" \
+                  --arg u "${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}" \
+                  '{event_type:"e2e-result", client_payload:{state:$s, sha:$sha, run_id:$rid, target_url:$u}}')"
+          echo "Dispatched e2e-result to ${SOURCE_REPO} (state=$STATE)"
 
       - name: Summary
         if: always()
@@ -1645,11 +2275,18 @@ jobs:
             echo ""
             echo "| Job | Result |"
             echo "|-----|--------|"
-            echo "| Docker amd64 | \`${{ needs.e2e-docker.result }}\` |"
+            echo "| Docker amd64 | \`${{ needs.e2e-docker-amd64.result }}\` |"
             echo "| Docker arm64 | \`${{ needs.e2e-docker-arm64.result }}\` |"
             echo "| macOS x86_64 | \`${{ needs.e2e-macos.result }}\` |"
             echo "| macOS ARM64 | \`${{ needs.e2e-macos-arm64.result }}\` |"
             echo "| VM E2E | \`${{ needs.e2e-vm.result }}\` |"
+            echo "| Windows amd64 | \`${{ needs.e2e-windows-amd64.result }}\` |"
+            echo "| Windows arm64 | \`${{ needs.e2e-windows-arm64.result }}\` |"
+            echo "| BSD freebsd amd64 | \`${{ needs.e2e-bsd-freebsd-amd64.result }}\` |"
+            echo "| BSD freebsd arm64 | \`${{ needs.e2e-bsd-freebsd-arm64.result }}\` |"
+            echo "| BSD netbsd amd64 | \`${{ needs.e2e-bsd-netbsd-amd64.result }}\` |"
+            echo "| BSD netbsd arm64 | \`${{ needs.e2e-bsd-netbsd-arm64.result }}\` |"
+            echo "| BSD openbsd amd64 | \`${{ needs.e2e-bsd-openbsd-amd64.result }}\` |"
             echo ""
             echo "**Agent ref:** \`${{ needs.resolve.outputs.ref }}\`"
             echo "**Agent SHA:** \`${{ needs.resolve.outputs.sha }}\`"
@@ -1657,14 +2294,17 @@ jobs:
           } >> "$GITHUB_STEP_SUMMARY"
 
       - name: Fail if any E2E failed
+        # !cancelled() for the same reason the two posting steps carry it: this
+        # step used to have no guard at all, so a run superseded by
+        # cancel-in-progress went red here while the posting steps deliberately
+        # declined to report it — a failed job with no status explaining why.
+        if: ${{ !cancelled() }}
+        env:
+          STATE: ${{ steps.verdict.outputs.state }}
+          DESC: ${{ steps.verdict.outputs.description }}
         run: |
-          RESULTS=("${{ needs.e2e-docker.result }}" "${{ needs.e2e-docker-arm64.result }}" \
-                   "${{ needs.e2e-macos.result }}" "${{ needs.e2e-macos-arm64.result }}" \
-                   "${{ needs.e2e-vm.result }}")
-          for r in "${RESULTS[@]}"; do
-            if [ "$r" = "failure" ]; then
-              echo "FAILED: At least one E2E job failed"
-              exit 1
-            fi
-          done
-          echo "SUCCESS: All E2E tests passed"
+          if [ "$STATE" != "success" ]; then
+            echo "::error::$DESC"
+            exit 1
+          fi
+          echo "SUCCESS: $DESC"

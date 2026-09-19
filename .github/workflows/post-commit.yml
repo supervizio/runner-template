@@ -44,7 +44,7 @@ permissions:
 
 jobs:
   post-commit:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 10
     # The verdict travels to the job below, which is the one allowed to write
     # to the pull request. Job outputs survive a failed job, which is the only
@@ -101,7 +101,7 @@ jobs:
           && github.event_name == 'pull_request'
           && github.event.pull_request.draft == false
           && github.event.pull_request.head.repo.full_name == github.repository }}
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 5
     permissions:
       pull-requests: write
