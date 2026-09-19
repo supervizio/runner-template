@@ -1537,7 +1537,7 @@ jobs:
             export SUPERVIZIO_LOCAL_PKG="$WS/pkg/supervizio-amd64.apk"
 
             echo "=== Install ==="
-            sh "$WS/setup/install.sh"
+            sh "$WS/setup/install.sh" || { echo "::error::install.sh failed"; exit 1; }
 
             echo "=== Verify install ==="
             [ -x /usr/local/bin/supervizio ] || { echo "binary not installed"; exit 1; }
@@ -1548,10 +1548,12 @@ jobs:
             echo "OK: OpenRC knows supervizio"
 
             echo "=== Validate probe ==="
-            sh "$WS/e2e/validate-probe.sh" /usr/local/bin/supervizio
+            sh "$WS/e2e/validate-probe.sh" /usr/local/bin/supervizio \
+              || { echo "::error::validate-probe.sh failed"; exit 1; }
 
             echo "=== Supervision scenarios ==="
-            sh "$WS/e2e/scenario-battery.sh" /usr/local/bin/supervizio
+            sh "$WS/e2e/scenario-battery.sh" /usr/local/bin/supervizio \
+              || { echo "::error::scenario-battery.sh failed"; exit 1; }
 
             echo "=== Uninstall ==="
             # No tty here: uninstall.sh's config-dir prompt would either take EOF
@@ -1650,7 +1652,7 @@ jobs:
             export SUPERVIZIO_LOCAL_PKG="$WS/pkg/supervizio-amd64.deb"
 
             echo "=== Install ==="
-            sh "$WS/setup/install.sh"
+            sh "$WS/setup/install.sh" || { echo "::error::install.sh failed"; exit 1; }
 
             echo "=== Verify install ==="
             [ -x /usr/local/bin/supervizio ] || { echo "binary not installed"; exit 1; }
@@ -1661,10 +1663,12 @@ jobs:
             echo "OK: systemd has supervizio enabled"
 
             echo "=== Validate probe ==="
-            sh "$WS/e2e/validate-probe.sh" /usr/local/bin/supervizio
+            sh "$WS/e2e/validate-probe.sh" /usr/local/bin/supervizio \
+              || { echo "::error::validate-probe.sh failed"; exit 1; }
 
             echo "=== Supervision scenarios ==="
-            sh "$WS/e2e/scenario-battery.sh" /usr/local/bin/supervizio
+            sh "$WS/e2e/scenario-battery.sh" /usr/local/bin/supervizio \
+              || { echo "::error::scenario-battery.sh failed"; exit 1; }
 
             echo "=== Uninstall ==="
             # No tty here: uninstall.sh's config-dir prompt would either take EOF
@@ -1763,7 +1767,7 @@ jobs:
             export SUPERVIZIO_LOCAL_PKG="$WS/pkg/supervizio-amd64.rpm"
 
             echo "=== Install ==="
-            sh "$WS/setup/install.sh"
+            sh "$WS/setup/install.sh" || { echo "::error::install.sh failed"; exit 1; }
 
             echo "=== Verify install ==="
             [ -x /usr/local/bin/supervizio ] || { echo "binary not installed"; exit 1; }
@@ -1774,10 +1778,12 @@ jobs:
             echo "OK: systemd has supervizio enabled"
 
             echo "=== Validate probe ==="
-            sh "$WS/e2e/validate-probe.sh" /usr/local/bin/supervizio
+            sh "$WS/e2e/validate-probe.sh" /usr/local/bin/supervizio \
+              || { echo "::error::validate-probe.sh failed"; exit 1; }
 
             echo "=== Supervision scenarios ==="
-            sh "$WS/e2e/scenario-battery.sh" /usr/local/bin/supervizio
+            sh "$WS/e2e/scenario-battery.sh" /usr/local/bin/supervizio \
+              || { echo "::error::scenario-battery.sh failed"; exit 1; }
 
             echo "=== Uninstall ==="
             # No tty here: uninstall.sh's config-dir prompt would either take EOF
@@ -1896,7 +1902,7 @@ jobs:
 
             echo "=== Install ==="
             export SUPERVIZIO_LOCAL_PKG="$PKG"
-            sh /root/install.sh
+            sh /root/install.sh || { echo "::error::install.sh failed"; exit 1; }
 
             echo "=== Verify install ==="
             [ -x /usr/local/bin/supervizio ] || { echo "::error::binary not installed"; exit 1; }
@@ -1908,10 +1914,12 @@ jobs:
             echo "OK: systemd has supervizio enabled"
 
             echo "=== Validate probe ==="
-            sh /root/validate-probe.sh /usr/local/bin/supervizio
+            sh /root/validate-probe.sh /usr/local/bin/supervizio \
+              || { echo "::error::validate-probe.sh failed"; exit 1; }
 
             echo "=== Supervision scenarios ==="
-            sh /root/scenario-battery.sh /usr/local/bin/supervizio
+            sh /root/scenario-battery.sh /usr/local/bin/supervizio \
+              || { echo "::error::scenario-battery.sh failed"; exit 1; }
 
             echo "=== Uninstall ==="
             SUPERVIZIO_NON_INTERACTIVE=true; export SUPERVIZIO_NON_INTERACTIVE
@@ -2032,7 +2040,7 @@ jobs:
 
             echo "=== Install ==="
             export SUPERVIZIO_LOCAL_PKG="$PKG"
-            sh /root/install.sh
+            sh /root/install.sh || { echo "::error::install.sh failed"; exit 1; }
 
             echo "=== Verify install ==="
             [ -x /usr/local/bin/supervizio ] || { echo "::error::binary not installed"; exit 1; }
@@ -2053,10 +2061,12 @@ jobs:
             echo "OK: systemd has supervizio enabled"
 
             echo "=== Validate probe ==="
-            sh /root/validate-probe.sh /usr/local/bin/supervizio
+            sh /root/validate-probe.sh /usr/local/bin/supervizio \
+              || { echo "::error::validate-probe.sh failed"; exit 1; }
 
             echo "=== Supervision scenarios ==="
-            sh /root/scenario-battery.sh /usr/local/bin/supervizio
+            sh /root/scenario-battery.sh /usr/local/bin/supervizio \
+              || { echo "::error::scenario-battery.sh failed"; exit 1; }
 
             echo "=== Uninstall ==="
             SUPERVIZIO_NON_INTERACTIVE=true; export SUPERVIZIO_NON_INTERACTIVE
@@ -2167,7 +2177,7 @@ jobs:
 
             echo "=== Install ==="
             export SUPERVIZIO_LOCAL_PKG="$WS/pkg/supervizio-amd64.apk"
-            sh "$WS/setup/install.sh"
+            sh "$WS/setup/install.sh" || { echo "::error::install.sh failed"; exit 1; }
 
             echo "=== Verify install ==="
             [ -x /usr/local/bin/supervizio ] || { echo "::error::binary not installed"; exit 1; }
@@ -2181,10 +2191,12 @@ jobs:
             echo "OK: runit scandir has supervizio"
 
             echo "=== Validate probe ==="
-            sh "$WS/e2e/validate-probe.sh" /usr/local/bin/supervizio
+            sh "$WS/e2e/validate-probe.sh" /usr/local/bin/supervizio \
+              || { echo "::error::validate-probe.sh failed"; exit 1; }
 
             echo "=== Supervision scenarios ==="
-            sh "$WS/e2e/scenario-battery.sh" /usr/local/bin/supervizio
+            sh "$WS/e2e/scenario-battery.sh" /usr/local/bin/supervizio \
+              || { echo "::error::scenario-battery.sh failed"; exit 1; }
 
             echo "=== Uninstall ==="
             SUPERVIZIO_NON_INTERACTIVE=true; export SUPERVIZIO_NON_INTERACTIVE
@@ -2295,7 +2307,7 @@ jobs:
 
             echo "=== Install ==="
             export SUPERVIZIO_LOCAL_PKG="$WS/pkg/supervizio-amd64.apk"
-            sh "$WS/setup/install.sh"
+            sh "$WS/setup/install.sh" || { echo "::error::install.sh failed"; exit 1; }
 
             echo "=== Verify install ==="
             [ -x /usr/local/bin/supervizio ] || { echo "::error::binary not installed"; exit 1; }
@@ -2309,10 +2321,12 @@ jobs:
             echo "OK: s6 scandir has supervizio"
 
             echo "=== Validate probe ==="
-            sh "$WS/e2e/validate-probe.sh" /usr/local/bin/supervizio
+            sh "$WS/e2e/validate-probe.sh" /usr/local/bin/supervizio \
+              || { echo "::error::validate-probe.sh failed"; exit 1; }
 
             echo "=== Supervision scenarios ==="
-            sh "$WS/e2e/scenario-battery.sh" /usr/local/bin/supervizio
+            sh "$WS/e2e/scenario-battery.sh" /usr/local/bin/supervizio \
+              || { echo "::error::scenario-battery.sh failed"; exit 1; }
 
             echo "=== Uninstall ==="
             SUPERVIZIO_NON_INTERACTIVE=true; export SUPERVIZIO_NON_INTERACTIVE
@@ -2399,17 +2413,19 @@ jobs:
             chmod +x "$SUPERVIZIO_LOCAL_BIN"
 
             echo "=== Install ==="
-            sh "$WS/setup/install.sh"
+            sh "$WS/setup/install.sh" || { echo "::error::install.sh failed"; exit 1; }
 
             echo "=== Verify install ==="
             [ -x /usr/local/bin/supervizio ] || { echo "binary not installed"; exit 1; }
             /usr/local/bin/supervizio --version
 
             echo "=== Validate probe ==="
-            sh "$WS/e2e/validate-probe.sh" /usr/local/bin/supervizio
+            sh "$WS/e2e/validate-probe.sh" /usr/local/bin/supervizio \
+              || { echo "::error::validate-probe.sh failed"; exit 1; }
 
             echo "=== Supervision scenarios ==="
-            sh "$WS/e2e/scenario-battery.sh" /usr/local/bin/supervizio
+            sh "$WS/e2e/scenario-battery.sh" /usr/local/bin/supervizio \
+              || { echo "::error::scenario-battery.sh failed"; exit 1; }
 
             echo "=== Uninstall ==="
             # uninstall.sh PROMPTS before removing the config dir unless this is
@@ -2501,17 +2517,19 @@ jobs:
             chmod +x "$SUPERVIZIO_LOCAL_BIN"
 
             echo "=== Install ==="
-            sh "$WS/setup/install.sh"
+            sh "$WS/setup/install.sh" || { echo "::error::install.sh failed"; exit 1; }
 
             echo "=== Verify install ==="
             [ -x /usr/local/bin/supervizio ] || { echo "binary not installed"; exit 1; }
             /usr/local/bin/supervizio --version
 
             echo "=== Validate probe ==="
-            sh "$WS/e2e/validate-probe.sh" /usr/local/bin/supervizio
+            sh "$WS/e2e/validate-probe.sh" /usr/local/bin/supervizio \
+              || { echo "::error::validate-probe.sh failed"; exit 1; }
 
             echo "=== Supervision scenarios ==="
-            sh "$WS/e2e/scenario-battery.sh" /usr/local/bin/supervizio
+            sh "$WS/e2e/scenario-battery.sh" /usr/local/bin/supervizio \
+              || { echo "::error::scenario-battery.sh failed"; exit 1; }
 
             echo "=== Uninstall ==="
             # uninstall.sh PROMPTS before removing the config dir unless this is
@@ -2629,7 +2647,7 @@ jobs:
             echo "=== Install (package path) ==="
             SUPERVIZIO_LOCAL_PKG="$WS/supervizio-openbsd.tgz"
             export SUPERVIZIO_LOCAL_PKG
-            sh "$WS/setup/install.sh"
+            sh "$WS/setup/install.sh" || { echo "::error::install.sh failed"; exit 1; }
 
             echo "=== Verify install ==="
             [ -x /usr/local/bin/supervizio ] || { echo "binary not installed"; exit 1; }
@@ -2642,7 +2660,8 @@ jobs:
             sh "$WS/e2e/validate-probe.sh"
 
             echo "=== Supervision scenarios ==="
-            sh "$WS/e2e/scenario-battery.sh" /usr/local/bin/supervizio
+            sh "$WS/e2e/scenario-battery.sh" /usr/local/bin/supervizio \
+              || { echo "::error::scenario-battery.sh failed"; exit 1; }
 
             echo "=== Uninstall ==="
             SUPERVIZIO_NON_INTERACTIVE=true; export SUPERVIZIO_NON_INTERACTIVE
@@ -2737,17 +2756,19 @@ jobs:
             chmod +x "$SUPERVIZIO_LOCAL_BIN"
 
             echo "=== Install ==="
-            sh "$WS/setup/install.sh"
+            sh "$WS/setup/install.sh" || { echo "::error::install.sh failed"; exit 1; }
 
             echo "=== Verify install ==="
             [ -x /usr/local/bin/supervizio ] || { echo "binary not installed"; exit 1; }
             /usr/local/bin/supervizio --version
 
             echo "=== Validate probe ==="
-            sh "$WS/e2e/validate-probe.sh" /usr/local/bin/supervizio
+            sh "$WS/e2e/validate-probe.sh" /usr/local/bin/supervizio \
+              || { echo "::error::validate-probe.sh failed"; exit 1; }
 
             echo "=== Supervision scenarios ==="
-            sh "$WS/e2e/scenario-battery.sh" /usr/local/bin/supervizio
+            sh "$WS/e2e/scenario-battery.sh" /usr/local/bin/supervizio \
+              || { echo "::error::scenario-battery.sh failed"; exit 1; }
 
             # Detection vs ground truth, ADVISORY. The freebsd-arm64 /
             # netbsd-arm64 entries in expected-matrix.json are seeded from their
@@ -2871,17 +2892,19 @@ jobs:
             chmod +x "$SUPERVIZIO_LOCAL_BIN"
 
             echo "=== Install ==="
-            sh "$WS/setup/install.sh"
+            sh "$WS/setup/install.sh" || { echo "::error::install.sh failed"; exit 1; }
 
             echo "=== Verify install ==="
             [ -x /usr/local/bin/supervizio ] || { echo "binary not installed"; exit 1; }
             /usr/local/bin/supervizio --version
 
             echo "=== Validate probe ==="
-            sh "$WS/e2e/validate-probe.sh" /usr/local/bin/supervizio
+            sh "$WS/e2e/validate-probe.sh" /usr/local/bin/supervizio \
+              || { echo "::error::validate-probe.sh failed"; exit 1; }
 
             echo "=== Supervision scenarios ==="
-            sh "$WS/e2e/scenario-battery.sh" /usr/local/bin/supervizio
+            sh "$WS/e2e/scenario-battery.sh" /usr/local/bin/supervizio \
+              || { echo "::error::scenario-battery.sh failed"; exit 1; }
 
             # Detection vs ground truth, ADVISORY. The freebsd-arm64 /
             # netbsd-arm64 entries in expected-matrix.json are seeded from their
