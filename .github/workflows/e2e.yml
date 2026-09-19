@@ -125,10 +125,12 @@ jobs:
             exit 1
           fi
           # Advisory, not fatal: this one comes from a job that only runs on a
-          # bench dispatch, so its absence is expected until supervizio/agent#210
-          # builds it on a hosted runner. The openbsd leg reports its own red.
+          # bench dispatch, so its absence is expected until a hosted build
+          # replaces it (supervizio/agent#211, which also needs wiring into
+          # ci.yml before it produces anything). The openbsd leg reports its
+          # own red, which is the honest place for it.
           if ! printf '%s\n' "$names" | grep -qx 'supervizio-openbsd-pkg'; then
-            echo "::warning::no supervizio-openbsd-pkg in run $SRC_RUN - e2e-bsd-openbsd-amd64 will fail (see supervizio/agent#210)"
+            echo "::warning::no supervizio-openbsd-pkg in run $SRC_RUN - e2e-bsd-openbsd-amd64 will fail. Its only producer is agent's native-openbsd job, gated off since agent#205; agent#211 replaces it with a hosted build and still needs wiring into ci.yml."
           fi
 
       - name: Display resolved parameters
