@@ -66,6 +66,50 @@ if [ "$PVE_AUTH" = "PVEAPIToken==" ] || [[ "$PVE_AUTH" == *"==" && ! "$PVE_AUTH"
   exit 1
 fi
 
+# Bench Proxmox host, reachable over SSH. Same variable name and default as
+# supervizio/agent's vm-common.sh, so both acquire scripts are steered by one
+# knob. The default is the NAT bridge IP and it is CORRECT today: the ARC pods
+# do reach the bench there (verified on run 34805462277, where every DHCP lease
+# lookup resolved). It is named rather than hardcoded because the two Proxmox
+# hosts run twin, never-routed 192.168.100.0/24 subnets — the day a caller runs
+# somewhere else, this is the one value that has to change, and a literal buried
+# mid-function is exactly how that breakage stays silent.
+PROXMOX_HOST_IP="${PROXMOX_HOST_IP:-192.168.100.1}"
+
+# The bench's forced command (labs #152) whitelists ONLY `qm …`, `pvesh …`,
+# `cat /var/lib/misc/dnsmasq.leases` and the ci-vm-up/ci-vm-down wrappers, so
+# host_ssh may only be handed one of those. Keepalives are long enough to cover
+# ci-vm-up's flock (<=600s) plus rollback and start.
+host_ssh() {
+  ssh ${SSH_OPTS} -o ConnectTimeout=5 -o ServerAliveInterval=15 \
+    -o ServerAliveCountMax=44 "root@${PROXMOX_HOST_IP}" "$@"
+}
+
+# ci-vm-up (labs #160) performs the whole reset atomically ON THE HOST under the
+# per-VM flock (#159, race-safe with the 04:03 UTC dev-snapshot rebuild):
+#   flock + qm stop + qm rollback dev||base + vm-admission + qm start
+# Return contract:
+#   0                 VM up
+#   2                 VM QUARANTINED — operator required, caller MUST fail fast
+#   75 (EX_TEMPFAIL)  admission pending (host RAM / drain / maintenance) → retry
+#   CI_VM_ABSENT_RC   wrapper not deployed yet → caller falls back to direct start
+#   other             transient host/SSH failure → retry
+CI_VM_ABSENT_RC=66
+ci_vm_up() {
+  local vmid="$1" out="" rc=0
+  out=$(host_ssh "ci-vm-up ${vmid}" 2>&1) || rc=$?
+  # Match the forced command's EXACT banner. A bare "not permitted" would also
+  # match the POSIX EPERM strerror "Operation not permitted", which qm/ZFS/flock
+  # emit on a GENUINE host error while the wrapper IS deployed — treating that as
+  # "wrapper absent" would route a real failure down the direct-start path and
+  # bypass the very flock and quarantine gate this exists to honour.
+  if [ "$rc" -ne 0 ] && printf '%s' "$out" | grep -qi 'command not permitted'; then
+    return "$CI_VM_ABSENT_RC"
+  fi
+  [ -n "$out" ] && printf '%s\n' "$out" >&2
+  return "$rc"
+}
+
 # Proxmox API helper (curl with auth, timeout, insecure TLS).
 # -f makes curl fail silently on HTTP errors — fine for the action paths below,
 # but it hides WHY a list came back empty, so resolution uses pve_api_diag.
@@ -221,8 +265,7 @@ detect_ip() {
   # filter it here, which is also what the supervizio/agent acquire script does.
   log "Trying DHCP lease detection..."
   for i in $(seq 1 2); do
-    vm_ip=$(ssh ${SSH_OPTS} -o ConnectTimeout=5 root@192.168.100.1 \
-      "cat /var/lib/misc/dnsmasq.leases" 2>/dev/null \
+    vm_ip=$(host_ssh "cat /var/lib/misc/dnsmasq.leases" 2>/dev/null \
       | grep -i "${mac}" | awk '{print $3}' | head -1) || true
     if [ -n "$vm_ip" ]; then
       log "VM IP (DHCP lease): $vm_ip"
@@ -346,10 +389,43 @@ for attempt in $(seq 1 "$MAX_RETRIES"); do
     fi
   fi
 
-  # Start VM if not running
+  # Start VM if not running.
+  #
+  # ci-vm-up is the ONLY start path that honours the bench's always-ON contract:
+  # it takes the per-VM flock, REFUSES a quarantined VM (exit 2), and clears
+  # vm-admission's RAM/drain gate (exit 75 = retry, never red). Posting to the
+  # PVE API directly — as this script used to, unconditionally — walks past all
+  # three. That is how a CI job could boot a VM the fleet had deliberately
+  # quarantined, short-circuiting the operator gate (`make fleet/resume`) and
+  # leaving the guest in a state the fleet believed it had contained. The direct
+  # start survives ONLY as the fallback for a host where the wrapper is not
+  # deployed, so this script is correct before and after that rollout.
   if [ "$vm_st" != "running" ]; then
-    log "Starting VM ${VMID}..."
-    pve_api -X POST "${PROXMOX_API_URL}/nodes/${NODE}/qemu/${VMID}/status/start" > /dev/null 2>&1 || true
+    up_rc=0
+    ci_vm_up "$VMID" || up_rc=$?
+    case "$up_rc" in
+      0)
+        log "VM ${VMID} reset+started via ci-vm-up (flock + rollback dev||base + admission)"
+        ;;
+      2)
+        log "ERROR: VM ${VMID} is in QUARANTINE (ci-vm-up exit 2) — operator intervention required (make fleet/resume), not retrying"
+        exit 1
+        ;;
+      75)
+        log "ci-vm-up: retry-later pending (exit 75: RAM/drain/maintenance) — backing off ${RETRY_INTERVAL}s"
+        [ "$attempt" -lt "$MAX_RETRIES" ] && sleep "$RETRY_INTERVAL"
+        continue
+        ;;
+      "$CI_VM_ABSENT_RC")
+        log "ci-vm-up not deployed on host (labs #160 pending) — legacy direct start"
+        pve_api -X POST "${PROXMOX_API_URL}/nodes/${NODE}/qemu/${VMID}/status/start" > /dev/null 2>&1 || true
+        ;;
+      *)
+        log "ci-vm-up failed (rc=${up_rc}) — re-attempting"
+        [ "$attempt" -lt "$MAX_RETRIES" ] && sleep "$RETRY_INTERVAL"
+        continue
+        ;;
+    esac
     log "Waiting ${BOOT_WAIT}s for VM boot..."
     sleep "${BOOT_WAIT}"
   fi
