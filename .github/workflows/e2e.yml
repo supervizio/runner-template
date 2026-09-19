@@ -92,6 +92,45 @@ jobs:
           esac
           echo "source_repo=$SOURCE_REPO" >> "$GITHUB_OUTPUT"
 
+      # Fail here, in ten seconds, or fail twenty-six times in twenty minutes.
+      #
+      # Every leg downloads a build artifact from the agent run that dispatched
+      # this one. When that run produced none, each leg discovers it separately
+      # and dies at its own download step -- and two of them, e2e-vm, have
+      # already taken a slot on the shared self-hosted pod and started acquiring
+      # a Proxmox guest by then. Run 35446185851 did exactly that: 13 legs red
+      # for one cause, while agent's own CI queued behind the two ARC slots its
+      # own dispatch was holding.
+      #
+      # `needs: [resolve]` means a failure here skips the whole matrix instead.
+      - name: Check the agent run actually produced artifacts
+        env:
+          GH_TOKEN: ${{ secrets.AGENT_REPO_TOKEN }}
+          SRC_REPO: ${{ steps.resolve.outputs.source_repo }}
+          SRC_RUN: ${{ steps.resolve.outputs.run_id }}
+        run: |
+          set -euo pipefail
+          if [ -z "${GH_TOKEN:-}" ]; then
+            echo "::warning::AGENT_REPO_TOKEN not set - cannot pre-check artifacts, letting the legs try"
+            exit 0
+          fi
+          names="$(gh api --paginate "repos/$SRC_REPO/actions/runs/$SRC_RUN/artifacts?per_page=100"                      --jq '.artifacts[].name' 2>/dev/null | sort -u || true)"
+          count="$(printf '%s' "$names" | grep -c . || true)"
+          echo "run $SRC_RUN carries $count artifact(s)"
+          printf '%s\n' "$names" | sed 's/^/  /'
+          # linux-amd64 is the floor: the docker legs cannot run without it, and
+          # no useful subset of this matrix exists when it is missing.
+          if ! printf '%s\n' "$names" | grep -qx 'supervizio-linux-amd64'; then
+            echo "::error::agent run $SRC_RUN published no supervizio-linux-amd64 - nothing here can be tested. If that run is green, the artifact bridge is what is missing (supervizio/agent#202); if it is still going, dispatch again once it finishes." >&2
+            exit 1
+          fi
+          # Advisory, not fatal: this one comes from a job that only runs on a
+          # bench dispatch, so its absence is expected until supervizio/agent#210
+          # builds it on a hosted runner. The openbsd leg reports its own red.
+          if ! printf '%s\n' "$names" | grep -qx 'supervizio-openbsd-pkg'; then
+            echo "::warning::no supervizio-openbsd-pkg in run $SRC_RUN - e2e-bsd-openbsd-amd64 will fail (see supervizio/agent#210)"
+          fi
+
       - name: Display resolved parameters
         run: |
           echo "Agent ref:    ${{ steps.resolve.outputs.ref }}"
