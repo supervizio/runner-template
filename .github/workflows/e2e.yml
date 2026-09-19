@@ -2708,7 +2708,15 @@ jobs:
           # Prove it carries the NATIVE binary, not the cross one. The two are
           # distinguishable by the build path Go embeds: the bench VM builds
           # under /home/kodflow, the cross job under /home/runner/_work.
-          tar xzf supervizio-openbsd.tgz usr/local/bin/supervizio 2>/dev/null || true
+          #
+          # "$TGZ", not the literal supervizio-openbsd.tgz: #84 stopped renaming
+          # the package, so that name no longer exists and the `|| true` turned
+          # this proof into a no-op that reported nothing for two runs. A check
+          # that cannot fail is worse than no check -- it reads as coverage.
+          tar xzf "$TGZ" usr/local/bin/supervizio || {
+            echo "::error::could not extract the binary from $TGZ to verify its origin" >&2
+            exit 1
+          }
           if [ -f usr/local/bin/supervizio ]; then
             if strings usr/local/bin/supervizio | grep -q '_work/agent/agent/dist/lib/openbsd'; then
               echo "::error::this package carries the CROSS-built binary, which cannot start on OpenBSD" >&2
@@ -2745,6 +2753,38 @@ jobs:
             # The real install path: install.sh prefers the native package and
             # calls pkg_add, which is exactly what a user gets. No Go toolchain
             # in this guest at all any more.
+            # pkg_add still answers "Can't find /tmp/supervizio-openbsd-0.0.0.tgz"
+            # for a file that is demonstrably there -- install.sh's own
+            # `[ -f "$SVZ_STAGED_PKG" ]` guard passed, which is how that exact
+            # path reached the command line. So the path is not the problem and
+            # guessing at the next one is how the last two runs were spent.
+            #
+            # One difference is known and unexamined: the bench guest is OpenBSD
+            # 7.8, this one is 7.9. `pkg_add -v` names its objection instead of
+            # collapsing every cause into "Can't find", so this step measures it
+            # once and the real install below still decides the leg.
+            echo "=== pkg_add diagnostics (non-fatal) ==="
+            STAGED="/tmp/$(basename "$OPENBSD_PKG")"
+            cp "$WS/${OPENBSD_PKG}" "$STAGED"
+            ls -l "$STAGED"
+            echo "--- first entries ---"; tar tzf "$STAGED" | head -5 || true
+            echo "--- pkg_add -v ---"
+            pkg_add -v "$STAGED" 2>&1 | head -40 || true
+            echo "--- installed? ---"
+            # Delete by the name pkg_info reports, not a guessed stem: the
+            # package is supervizio-openbsd-<ver>, so `pkg_delete supervizio`
+            # matches nothing and would leave the diagnostic's install in place
+            # for the real one below to trip over.
+            INSTALLED="$(pkg_info -q 2>/dev/null | grep -i '^supervizio' || true)"
+            if [ -n "$INSTALLED" ]; then
+              echo "PRESENT: $INSTALLED"
+              for pkg in $INSTALLED; do pkg_delete -I "$pkg" >/dev/null 2>&1 || true; done
+              echo "after delete: $(pkg_info -q 2>/dev/null | grep -ci '^supervizio' || true) left"
+            else
+              echo "ABSENT"
+            fi
+            rm -f "$STAGED"
+
             echo "=== Install (package path) ==="
             SUPERVIZIO_LOCAL_PKG="$WS/${OPENBSD_PKG}"
             export SUPERVIZIO_LOCAL_PKG
