@@ -3547,6 +3547,219 @@ jobs:
             -d "{\"state\":\"$STATE\",\"context\":\"e2e/bsd/netbsd-arm64\",\"description\":\"$DESC\",\"target_url\":\"${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}\"}"
 
   # ===========================================================================
+  # OpenBSD arm64 -- the last platform with a package nothing had ever run.
+  #
+  # agent cross-built `supervizio-openbsd-arm64` on every PR and release.yml
+  # then deleted it (`rm -f supervizio-openbsd-arm64`), because the cross link
+  # produces a binary that SIGSEGVs in rcrt0.o before main(). There was no
+  # arm64 OpenBSD build host anywhere, so there was no second option and the
+  # platform simply shipped nothing.
+  #
+  # agent's openbsd-native.yml now builds it inside a real aarch64 OpenBSD
+  # guest (TCG-emulated on an x86_64 hosted runner) and publishes
+  # `supervizio-openbsd-arm64-pkg`. This leg is what turns that from bytes
+  # into a claim: it installs the published package the way a user does and
+  # runs the probe and the supervision battery on it.
+  # ===========================================================================
+  e2e-bsd-openbsd-arm64:
+    name: E2E BSD openbsd arm64 (${{ matrix.release }})
+    needs: [resolve]
+    runs-on: ubuntu-24.04
+    # 180, like the freebsd-arm64 and netbsd-arm64 legs: the guest is TCG, and
+    # this one additionally installs a package and runs the eight supervision
+    # scenarios inside it.
+    timeout-minutes: 180
+    if: ${{ github.event.inputs.arm_only != 'true' }}
+    strategy:
+      fail-fast: false
+      matrix:
+        # THE OPENBSD SUPPORT WINDOW, AS A LIST -- the same list, and the same
+        # rule, as the amd64 leg. Not a version to tidy up.
+        #
+        # OpenBSD supports the two most recent releases and guarantees nothing
+        # across them: not the shared-library majors, not the syscall ABI. The
+        # package is therefore tested on every release it claims, and this list
+        # IS that claim.
+        #
+        # Why both and not one, which is the change a future reader will want
+        # to make: a leg that tests the release it was BUILT on proves nothing.
+        # That is not a theory, it is the amd64 leg's own history -- it ran 7.9
+        # on 7.9 and was green for months while the package it installed
+        # started on 7.9 and nowhere else. agent builds on 7.8, the oldest
+        # supported release, so 7.8 alone here would re-create that blind spot
+        # one release lower and leave the forward direction -- now the only
+        # untested one -- covered by nothing.
+        #
+        # On arm64 there is a second reason, specific to this leg being new:
+        # the cross-release portability of the static link was measured on
+        # AMD64 (supervizio/agent#222). On arm64 it was inferred. This matrix
+        # is what turns that inference into a measurement, and it has to keep
+        # running for it to stay one.
+        #
+        # WHEN 8.0 SHIPS: this becomes ['7.9', '8.0'] and agent's
+        # openbsd-native.yml build pin becomes '7.9' -- the oldest entry here.
+        # Those two move together, always, for both arches at once.
+        release: ['7.8', '7.9']
+    steps:
+      - name: Report status (pending)
+        if: needs.resolve.outputs.sha != ''
+        continue-on-error: true
+        env:
+          GH_TOKEN: ${{ secrets.AGENT_REPO_TOKEN }}
+        run: |
+          [ -z "$GH_TOKEN" ] && exit 0
+          curl -sf -X POST -H "Authorization: Bearer $GH_TOKEN" -H "Accept: application/vnd.github+json" \
+            "https://api.github.com/repos/${{ needs.resolve.outputs.source_repo }}/statuses/${{ needs.resolve.outputs.sha }}" \
+            -d '{"state":"pending","context":"e2e/bsd/openbsd-arm64/${{ matrix.release }}","description":"Running...","target_url":"${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"}'
+
+      - name: Checkout agent code
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: ${{ needs.resolve.outputs.source_repo }}
+          ref: ${{ needs.resolve.outputs.ref }}
+          token: ${{ secrets.AGENT_REPO_TOKEN }}
+          # The workspace is synced wholesale into the guest; a persisted
+          # credential would travel with it.
+          persist-credentials: false
+
+      - name: Download the native OpenBSD arm64 package from the agent run
+        uses: actions/download-artifact@70fc10c6e5e1ce46ad2ea6f2b72d43f7d47b13c3 # v8.0.0
+        with:
+          name: supervizio-openbsd-arm64-pkg
+          path: pkg
+          repository: ${{ needs.resolve.outputs.source_repo }}
+          run-id: ${{ needs.resolve.outputs.run_id }}
+          github-token: ${{ secrets.AGENT_REPO_TOKEN }}
+
+      # Everything checkable without paying for a three-minute emulated boot is
+      # checked here, on the host, where the diagnosis is legible.
+      - name: Verify the package arrived, and that it is the right thing
+        run: |
+          set -euo pipefail
+          ls -la pkg/
+          TGZ=$(find pkg -name '*.tgz' | head -1)
+          [ -n "$TGZ" ] && [ -s "$TGZ" ] || {
+            echo "::error::no OpenBSD arm64 .tgz - did agent's openbsd-native.yml arm64 matrix cell publish supervizio-openbsd-arm64-pkg?" >&2
+            exit 1
+          }
+          # Keep the packager's own filename: OpenBSD's pkg_add resolves its
+          # argument as <stem>-<version>, and install.sh restages it to the
+          # name the package DECLARES in +CONTENTS. Renaming it here is what
+          # broke the amd64 leg in #84.
+          OPENBSD_PKG="$TGZ"
+          echo "OPENBSD_PKG=$OPENBSD_PKG" >> "$GITHUB_ENV"
+          ls -l "$OPENBSD_PKG"
+
+          tar xzf "$TGZ" usr/local/bin/supervizio || {
+            echo "::error::could not extract the binary from $TGZ" >&2
+            exit 1
+          }
+          file usr/local/bin/supervizio
+
+          # ARCH. This leg exists because openbsd/arm64 was never built; the
+          # single most plausible regression is an amd64 package published
+          # under the arm64 artifact name, and it would install here and then
+          # fail as something else entirely.
+          if ! file usr/local/bin/supervizio | grep -qi 'aarch64\|ARM aarch64'; then
+            echo "::error::the openbsd-arm64 package does not carry an aarch64 binary: $(file usr/local/bin/supervizio)" >&2
+            exit 1
+          fi
+
+          # STATIC. The static link is what lets one package run on both
+          # releases -- OpenBSD's libc majors differ per release and ld.so
+          # refuses a mismatch, which is how the amd64 package installed
+          # everywhere and started on one release only (agent#222). Assert it
+          # on the HOST, before a guest boot, and judge readelf's own failure
+          # separately: "could not inspect" and "inspected, found nothing" are
+          # different answers and only one of them is a pass.
+          if ! dyn="$(readelf -d usr/local/bin/supervizio 2>&1)"; then
+            echo "::error::readelf could not read the packaged binary, so the static link is unverified: $dyn" >&2
+            exit 1
+          fi
+          if printf '%s\n' "$dyn" | grep -i NEEDED; then
+            echo "::error::the packaged openbsd-arm64 binary has NEEDED entries - the static link did not take, and it will start on its build release only" >&2
+            exit 1
+          fi
+          echo "aarch64, no NEEDED entries"
+          rm -rf usr
+
+      - name: Install, validate and uninstall in an OpenBSD arm64 guest
+        uses: vmactions/openbsd-vm@86cdc08415d9d0865267e686561e276c52d62530 # v1.4.7
+        with:
+          usesh: true
+          # aarch64 guest on an x86_64 HOST, for the reason the freebsd-arm64
+          # leg records from the action's own README: there is no nested KVM on
+          # GitHub's arm64 fleet either, so the guest is TCG whichever host you
+          # pick, and ubuntu-24.04-arm is measurably slower.
+          arch: aarch64
+          # Driven by the matrix above, which is the support window. The full
+          # argument lives there; the short version is that pinning matters (an
+          # unpinned guest floats with the action's default and moves coverage
+          # with no diff) and that ONE pin is never enough, because a leg
+          # testing its own build release proves nothing.
+          release: ${{ matrix.release }}
+          copyback: false
+          # `run:` executes INSIDE the guest over ssh, and ssh forwards no
+          # environment: OPENBSD_PKG is a HOST variable until it is named here.
+          # The amd64 leg lost a run to exactly this (35438753244), and the
+          # qemu-vm self-test lost eight at once.
+          envs: OPENBSD_PKG
+          prepare: pkg_add -I jq
+          run: |
+            set -e
+            # TCG, not KVM: this guest has no physical CPU clock, so the probe
+            # reports .cpu.frequency_mhz as null and validate-probe.sh would
+            # otherwise call that a missing field. The amd64 sibling runs under
+            # KVM and reports one, which is why only the arm64 legs need this.
+            SVZ_EMULATED_CPU=1; export SVZ_EMULATED_CPU
+            WS="$(pwd)"
+            echo "=== Platform ==="; uname -a
+
+            echo "=== Install (package path) ==="
+            # The real install path: install.sh prefers the native package and
+            # calls pkg_add, which is exactly what a user gets. No Go toolchain
+            # in this guest at all -- this leg validates a published artifact,
+            # it does not build one.
+            SUPERVIZIO_LOCAL_PKG="$WS/${OPENBSD_PKG}"
+            export SUPERVIZIO_LOCAL_PKG
+            sh "$WS/setup/install.sh" || { echo "::error::install.sh failed"; exit 1; }
+
+            echo "=== Verify install ==="
+            [ -x /usr/local/bin/supervizio ] || { echo "binary not installed"; exit 1; }
+            # The assertion this whole platform was missing: the shipped
+            # OpenBSD arm64 binary has to START. The cross-built one SIGSEGVs in
+            # ld.so before main(), so a successful install proves nothing on its
+            # own -- that is precisely why release.yml used to delete it.
+            /usr/local/bin/supervizio --version
+
+            echo "=== Validate probe ==="
+            sh "$WS/e2e/validate-probe.sh"
+
+            echo "=== Supervision scenarios ==="
+            sh "$WS/e2e/scenario-battery.sh" /usr/local/bin/supervizio \
+              || { echo "::error::scenario-battery.sh failed"; exit 1; }
+
+            echo "=== Uninstall ==="
+            # uninstall.sh PROMPTS before removing the config dir unless this is
+            # set, and there is no tty here: the read either takes EOF and trips
+            # `set -e`, or blocks until the job timeout.
+            SUPERVIZIO_NON_INTERACTIVE=true; export SUPERVIZIO_NON_INTERACTIVE
+            sh "$WS/setup/uninstall.sh"
+
+      - name: Report status (result)
+        if: always() && needs.resolve.outputs.sha != ''
+        continue-on-error: true
+        env:
+          GH_TOKEN: ${{ secrets.AGENT_REPO_TOKEN }}
+        run: |
+          [ -z "$GH_TOKEN" ] && exit 0
+          STATE="success"; DESC="Passed"
+          if [ "${{ job.status }}" != "success" ]; then STATE="failure"; DESC="Failed"; fi
+          curl -sf -X POST -H "Authorization: Bearer $GH_TOKEN" -H "Accept: application/vnd.github+json" \
+            "https://api.github.com/repos/${{ needs.resolve.outputs.source_repo }}/statuses/${{ needs.resolve.outputs.sha }}" \
+            -d "{\"state\":\"$STATE\",\"context\":\"e2e/bsd/openbsd-arm64/${{ matrix.release }}\",\"description\":\"$DESC\",\"target_url\":\"${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}\"}"
+
+  # ===========================================================================
   # VM CLEANUP: reset the VMs this run acquired
   # ===========================================================================
 
@@ -3581,7 +3794,7 @@ jobs:
              e2e-linux-alpine-runit, e2e-linux-alpine-s6,
              arm64-packages, e2e-linux-arm64,
              e2e-bsd-freebsd-amd64, e2e-bsd-netbsd-amd64, e2e-bsd-openbsd-amd64,
-             e2e-bsd-freebsd-arm64, e2e-bsd-netbsd-arm64]
+             e2e-bsd-freebsd-arm64, e2e-bsd-netbsd-arm64, e2e-bsd-openbsd-arm64]
     if: always()
     runs-on: ubuntu-24.04
     steps:
@@ -3621,6 +3834,13 @@ jobs:
             "bsd-netbsd-amd64=${{ needs.e2e-bsd-netbsd-amd64.result }}"
             "bsd-netbsd-arm64=${{ needs.e2e-bsd-netbsd-arm64.result }}"
             "bsd-openbsd-amd64=${{ needs.e2e-bsd-openbsd-amd64.result }}"
+            # Listed from the day the leg exists, not later. A leg absent from
+            # this array is a leg the aggregate never waits for and never
+            # reads -- which is exactly how e2e-windows could go red under a
+            # green verdict, the defect the comment on `needs:` above records.
+            # openbsd-arm64 is a release matrix, so it arrives as ONE result:
+            # `failure` if either release cell failed.
+            "bsd-openbsd-arm64=${{ needs.e2e-bsd-openbsd-arm64.result }}"
           )
 
           echo "=== E2E Results ==="
