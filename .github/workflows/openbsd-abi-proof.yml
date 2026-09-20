@@ -359,6 +359,24 @@ jobs:
           cat "$W/cc"
           echo "SVZ_CC=$W/cc" >> "$GITHUB_ENV"
 
+          # A second wrapper, differing in one flag, because the first run named
+          # the fault. `-Wl,-no-pie` is a LINKER flag: clang's driver never sees
+          # it, so it still believes it is building PIE and hands the link
+          # OpenBSD's static-PIE startup object, rcrt0.o. rcrt0.o is a copy of
+          # ld.so's self-relocation loop -- which is why the crash is reported
+          # "in ld.so before main()" even for a binary that has no ld.so in it.
+          # Under -static, lld says so outright:
+          #
+          #   ld.lld-21: error: undefined symbol: _DYNAMIC
+          #   >>> referenced by .../usr/lib/rcrt0.o:(.text+0x1e)
+          #
+          # `-nopie` WITHOUT the -Wl, is a driver flag, and it is what makes
+          # clang select crt0.o instead.
+          sed 's/-Qunused-arguments/-nopie -Qunused-arguments/' "$W/cc" > "$W/cc-nopie"
+          chmod +x "$W/cc-nopie"
+          cat "$W/cc-nopie"
+          echo "SVZ_CC_NOPIE=$W/cc-nopie" >> "$GITHUB_ENV"
+
       - name: Cross-build the fixture
         env:
           GOARCH_IN: ${{ matrix.goarch }}
@@ -401,7 +419,7 @@ jobs:
           # explicitly is what makes lld drop PT_INTERP.
           #
           # If this one runs, the native OpenBSD build has no reason to exist.
-          echo "=== cgo cross, statically linked ==="
+          echo "=== cgo cross, statically linked (agent's wrapper) ==="
           CGO_ENABLED=1 GOOS=openbsd GOARCH="$GOARCH_IN" CC="$SVZ_CC" \
           CGO_CFLAGS="" \
           CGO_LDFLAGS="-L$PWD -lfixture -lm -lc++abi" \
@@ -409,6 +427,40 @@ jobs:
               -o "$OUT/${stem}-cgostatic" . > "$OUT/${stem}-cgostatic.log" 2>&1
           echo "static cgo cross link exit=$?"
           sed -n '1,40p' "$OUT/${stem}-cgostatic.log" || true
+
+          # The same link with crt0.o instead of rcrt0.o. If this one runs, the
+          # native OpenBSD build has been working around a missing driver flag.
+          echo "=== cgo cross, statically linked, crt0.o (driver -nopie) ==="
+          CGO_ENABLED=1 GOOS=openbsd GOARCH="$GOARCH_IN" CC="$SVZ_CC_NOPIE" \
+          CGO_CFLAGS="" \
+          CGO_LDFLAGS="-L$PWD -lfixture -lm -lc++abi" \
+            go build -ldflags '-linkmode external -extldflags=-static' \
+              -o "$OUT/${stem}-cgostaticcrt0" . > "$OUT/${stem}-cgostaticcrt0.log" 2>&1
+          echo "static crt0 cgo cross link exit=$?"
+          sed -n '1,40p' "$OUT/${stem}-cgostaticcrt0.log" || true
+
+          # And the dynamic link done properly. OpenBSD's base sets ship
+          # libc.so.103.0 with no unversioned libc.so symlink, so `-lc` in the
+          # cross sysroot resolves to libc.a -- which is how agent's cross
+          # output ends up with an EMPTY DT_NEEDED while still carrying
+          # PT_INTERP. A native OpenBSD ld searches for the highest libc.so.*
+          # itself; upstream lld does not, so give it the symlinks and see
+          # whether a normal dynamic cross binary comes out.
+          echo "=== symlinks, then cgo cross dynamic ==="
+          for l in libc libm libpthread libc++abi; do
+            for v in "$SR"/usr/lib/"${l}".so.*; do
+              [ -e "$v" ] || continue
+              ln -sf "$(basename "$v")" "$SR/usr/lib/${l}.so"
+              echo "ln ${l}.so -> $(basename "$v")"
+              break
+            done
+          done
+          CGO_ENABLED=1 GOOS=openbsd GOARCH="$GOARCH_IN" CC="$SVZ_CC" \
+          CGO_CFLAGS="" \
+          CGO_LDFLAGS="-L$PWD -lfixture -lm -lc++abi" \
+            go build -o "$OUT/${stem}-cgodyn" . > "$OUT/${stem}-cgodyn.log" 2>&1
+          echo "dynamic cgo cross link exit=$?"
+          sed -n '1,40p' "$OUT/${stem}-cgodyn.log" || true
           set -e
 
           echo "=== What came out ==="
