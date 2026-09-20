@@ -2588,11 +2588,42 @@ jobs:
           # PKG, and the same lesson the qemu-vm self-test recorded when eight
           # legs failed at once for want of an `envs:`.
           envs: OPENBSD_PKG
-          # Pinned, for the same reason the Windows leg pins its image: an
-          # unpinned guest floats with the action's default and moves coverage
-          # with no diff. matches the bench (packer pins install79.iso) and expected-matrix.json.
-          # The action's default here is 7.9.
-          release: '7.9'
+          # 7.8, AND THAT IS THE POINT OF THIS LINE. Pinned for the same
+          # reason the Windows leg pins its image -- an unpinned guest floats
+          # with the action's default (7.9 here) and moves coverage with no
+          # diff -- but the OLDER release is a deliberate choice, not a lag for
+          # the next dependency bump to tidy up.
+          #
+          # agent builds this package in a 7.9 guest (openbsd-native.yml pins
+          # `release: '7.9'`). Installing a 7.9 build into a 7.9 guest can only
+          # ever prove "7.9 on 7.9", and that is why this leg was green for its
+          # whole life while the thing it installs started on exactly one
+          # release. The cgo link was dynamic and external, so the binary
+          # carried the majors its build guest happened to have --
+          # libc.so.103.0, libm.so.10.1, libc++abi.so.9.0, libpthread.so.28.1 --
+          # and ld.so refuses a major mismatch:
+          #
+          #   ld.so: supervizio: can't load library 'libc.so.103.0'
+          #   signal 9
+          #
+          # measured on 7.8, 7.7 and 7.6 by openbsd-abi-proof.yml (#98, run
+          # 35505486484). supervizio/agent#222 links it statically, so no NEEDED
+          # entry is left for ld.so to version-match.
+          #
+          # That fixes the loud failure and leaves a quiet one. OpenBSD
+          # guarantees no stable syscall ABI between releases either, so a
+          # static binary freezes the one it was built against: 7.6 through 7.9
+          # is measured, 8.0 is not promised, and such a break would not
+          # announce itself the way a missing library does. A guest older than
+          # the build guest is the only thing that can turn it into a red leg
+          # here instead of a bug report from a user.
+          #
+          # OpenBSD supports the two most recent releases, so 7.8 is the oldest
+          # system this package claims to run on. Move this pin with the SUPPORT
+          # WINDOW, not with the newest release: when 8.0 ships, agent's build
+          # guest becomes 8.0 and this becomes 7.9. Raising it to match the
+          # build guest deletes the coverage without deleting a line.
+          release: '7.8'
           copyback: false
           prepare: pkg_add -I jq
           run: |
@@ -2609,10 +2640,12 @@ jobs:
             # path reached the command line. So the path is not the problem and
             # guessing at the next one is how the last two runs were spent.
             #
-            # One difference is known and unexamined: the bench guest is OpenBSD
-            # 7.8, this one is 7.9. `pkg_add -v` names its objection instead of
-            # collapsing every cause into "Can't find", so this step measures it
-            # once and the real install below still decides the leg.
+            # (Written when the bench guest was 7.8 and this one was 7.9, and
+            # that difference was the unexamined suspect. This guest is 7.8 now
+            # -- see the `release:` note above -- so the difference is gone and
+            # this block is kept only for the objection `pkg_add -v` names,
+            # which "Can't find" collapses. The real install below still decides
+            # the leg.)
             # Everything between here and "Install (package path)" is a
             # MEASUREMENT. It must not be able to fail the leg it measures --
             # which it did in run 35444338161, where a `$RUNNER_TEMP` (a HOST
