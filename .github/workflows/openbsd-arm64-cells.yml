@@ -1,0 +1,187 @@
+# The four cells, measured in one run.
+#
+# supervizio/agent#222 established on AMD64 that an OpenBSD binary carries its
+# BUILD release's expectations and that forward is the forgiving direction: a
+# statically linked package built on 7.9 starts on 7.8 and then takes SIGSYS at
+# the first cgo call, while the same package built on 7.8 runs fully on both.
+#
+# On ARM64 that asymmetry was INFERRED. This workflow is what turns it into a
+# measurement, and it is a measurement instrument, not CI: it exists to produce
+# one table and be cited.
+#
+#            guest 7.8      guest 7.9
+#   built 7.8    ?              ?
+#   built 7.9    ?              ?
+#
+# The 7.8/7.8 cell is the CONTROL. If it is red the instrument or the harness is
+# what is broken, not the release coupling, and no other cell means anything --
+# which is why every cell reports its own verdict instead of the run reporting
+# one.
+#
+# Each cell distinguishes three outcomes, never two:
+#   PASS         installed, started, probed, survived the supervision battery
+#   FAIL         the package was there and the guest rejected it
+#   NOT_MEASURED the artifact never arrived, so nothing was learned
+# A block that always reports something eventually reports a false negative.
+name: OpenBSD arm64 — the four cells
+
+on:
+  workflow_dispatch:
+    inputs:
+      agent_ref:
+        description: 'agent branch to check out (scripts + install.sh come from here)'
+        required: true
+        default: 'feat/openbsd-arm64-native'
+      run_id_built_78:
+        description: 'agent openbsd-native run whose arm64 package was built on 7.8'
+        required: true
+      run_id_built_79:
+        description: 'agent openbsd-native run whose arm64 package was built on 7.9'
+        required: true
+
+permissions:
+  contents: read
+
+concurrency:
+  group: openbsd-arm64-cells-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  cell:
+    name: built ${{ matrix.built }} -> guest ${{ matrix.guest }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 120
+    strategy:
+      # Every cell reports. A fail-fast here would cancel the cells that say
+      # which direction is the forgiving one, which is the entire question.
+      fail-fast: false
+      matrix:
+        built: ['7.8', '7.9']
+        guest: ['7.8', '7.9']
+    steps:
+      - name: Checkout agent code
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: supervizio/agent
+          ref: ${{ inputs.agent_ref }}
+          token: ${{ secrets.AGENT_REPO_TOKEN }}
+          persist-credentials: false
+
+      - name: Download the arm64 package built on ${{ matrix.built }}
+        id: dl
+        continue-on-error: true
+        uses: actions/download-artifact@70fc10c6e5e1ce46ad2ea6f2b72d43f7d47b13c3 # v8.0.0
+        with:
+          name: supervizio-openbsd-arm64-pkg
+          path: pkg
+          repository: supervizio/agent
+          run-id: ${{ matrix.built == '7.8' && inputs.run_id_built_78 || inputs.run_id_built_79 }}
+          github-token: ${{ secrets.AGENT_REPO_TOKEN }}
+
+      - name: Identify what arrived
+        id: ident
+        if: ${{ steps.dl.outcome == 'success' }}
+        run: |
+          set -euo pipefail
+          TGZ=$(find pkg -name '*.tgz' | head -1)
+          [ -n "$TGZ" ] && [ -s "$TGZ" ] || { echo "::error::no .tgz in the artifact"; exit 1; }
+          echo "OPENBSD_PKG=$TGZ" >> "$GITHUB_ENV"
+          tar xzf "$TGZ" usr/local/bin/supervizio
+          echo "file: $(file usr/local/bin/supervizio)"
+          echo "sha256: $(sha256sum usr/local/bin/supervizio | cut -d' ' -f1)"
+          # Report the link shape rather than gate on it: this instrument is
+          # here to observe, and a dynamic binary failing on the other release
+          # is itself a result worth seeing named.
+          if dyn="$(readelf -d usr/local/bin/supervizio 2>&1)"; then
+            printf '%s\n' "$dyn" | grep -i NEEDED || echo "NEEDED: none (static)"
+          else
+            echo "readelf could not read it: $dyn"
+          fi
+          rm -rf usr
+
+      - name: Install and exercise it in an OpenBSD ${{ matrix.guest }} arm64 guest
+        id: guest
+        if: ${{ steps.dl.outcome == 'success' }}
+        continue-on-error: true
+        uses: vmactions/openbsd-vm@86cdc08415d9d0865267e686561e276c52d62530 # v1.4.7
+        with:
+          usesh: true
+          arch: aarch64
+          release: ${{ matrix.guest }}
+          copyback: false
+          envs: OPENBSD_PKG
+          prepare: pkg_add -I jq
+          run: |
+            set -e
+            SVZ_EMULATED_CPU=1; export SVZ_EMULATED_CPU
+            WS="$(pwd)"
+            echo "=== Guest ==="; uname -a
+
+            SUPERVIZIO_LOCAL_PKG="$WS/${OPENBSD_PKG}"
+            export SUPERVIZIO_LOCAL_PKG
+            sh "$WS/setup/install.sh"
+
+            [ -x /usr/local/bin/supervizio ] || { echo "binary not installed"; exit 1; }
+            echo "=== --version (never enters cgo) ==="
+            /usr/local/bin/supervizio --version
+            echo "=== --probe (crosses the FFI boundary; this is where 7.9-built amd64 died) ==="
+            /usr/local/bin/supervizio --probe > /tmp/p.json
+            [ -s /tmp/p.json ] || { echo "--probe exited 0 and wrote nothing"; exit 1; }
+            echo "probe wrote $(wc -c < /tmp/p.json) bytes"
+            echo "=== validate-probe ==="
+            sh "$WS/e2e/validate-probe.sh"
+            echo "=== supervision battery S1-S8 ==="
+            sh "$WS/e2e/scenario-battery.sh" /usr/local/bin/supervizio
+
+      - name: Verdict
+        if: ${{ always() }}
+        run: |
+          set -euo pipefail
+          if [ "${{ steps.dl.outcome }}" != "success" ]; then
+            V="NOT_MEASURED (the artifact never arrived from the agent run)"
+          elif [ "${{ steps.guest.outcome }}" = "success" ]; then
+            V="PASS"
+          elif [ "${{ steps.guest.outcome }}" = "skipped" ]; then
+            V="NOT_MEASURED (the guest step never ran)"
+          else
+            V="FAIL"
+          fi
+          echo "built ${{ matrix.built }} -> guest ${{ matrix.guest }}: $V"
+          mkdir -p out
+          printf '%s|%s|%s\n' "${{ matrix.built }}" "${{ matrix.guest }}" "$V" > "out/cell-${{ matrix.built }}-${{ matrix.guest }}.txt"
+          {
+            echo "### built ${{ matrix.built }} -> guest ${{ matrix.guest }}: **$V**"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Upload the cell
+        if: ${{ always() }}
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: cell-${{ matrix.built }}-${{ matrix.guest }}
+          path: out/
+          retention-days: 14
+          if-no-files-found: warn
+
+  table:
+    name: The table
+    needs: [cell]
+    if: ${{ always() }}
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/download-artifact@70fc10c6e5e1ce46ad2ea6f2b72d43f7d47b13c3 # v8.0.0
+        with:
+          pattern: cell-*
+          path: cells
+          merge-multiple: true
+      - name: Assemble
+        run: |
+          set -euo pipefail
+          get() { cat "cells/cell-$1-$2.txt" 2>/dev/null | cut -d'|' -f3 || echo "NOT_MEASURED (no cell artifact)"; }
+          {
+            echo "| arm64 package | guest 7.8 | guest 7.9 |"
+            echo "|---|---|---|"
+            echo "| built on 7.8 | $(get 7.8 7.8) | $(get 7.8 7.9) |"
+            echo "| built on 7.9 | $(get 7.9 7.8) | $(get 7.9 7.9) |"
+            echo ""
+            echo "Control cell is built 7.8 -> guest 7.8. If it is not PASS, read nothing else here."
+          } | tee -a "$GITHUB_STEP_SUMMARY"
