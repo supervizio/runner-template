@@ -2276,6 +2276,503 @@ jobs:
             "https://api.github.com/repos/${{ needs.resolve.outputs.source_repo }}/statuses/${{ needs.resolve.outputs.sha }}" \
             -d "{\"state\":\"$STATE\",\"context\":\"e2e/vm/alpine-s6\",\"description\":\"$DESC\",\"target_url\":\"${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}\"}"
 
+  # ===========================================================================
+  # E2E LINUX arm64 — the same nine init systems, on a real aarch64 machine
+  # ===========================================================================
+  #
+  # ubuntu-24.04-arm is a GitHub-hosted arm64 runner, free on a public repo,
+  # and the docker-arm64 legs above have run on it since #77. Native: `uname
+  # -m` says aarch64 because the machine is, no QEMU and no binfmt.
+  #
+  # Containers rather than VMs, and that is forced rather than preferred:
+  # every VM substrate the amd64 legs use is x86-only. vmactions/* ship
+  # x86_64 guest images, and .github/actions/qemu-vm boots x86_64 cloud
+  # images. On an aarch64 host either one is whole-CPU emulation — the cost
+  # this repo spent #77..#95 moving off the bench to avoid.
+  # bench-leg-substrates-proof.yml already settled the container substrate for
+  # the two legs believed to require a VM; the other seven take the same
+  # shape. Each of the nine was run on an aarch64 kernel before being written
+  # here, and then on the runner itself (run 35508327017, nine of nine):
+  # package install, init election, the graft assertion, validate-probe.sh
+  # 92 passed / 0 failed / 3 skipped, scenario-battery.sh 9/9, uninstall.
+  # One of those three skips is the CPU clock this hardware does not expose --
+  # see the comment on it in the validate step, it is measured, not assumed.
+  #
+  # What the containers do NOT cover is what the proof workflow already named:
+  # boot ordering and clean shutdown. Unchanged by this addition, and the same
+  # on both architectures.
+  #
+  # Two columns change substrate, for reasons that are facts about the
+  # distributions and not choices:
+  #
+  #   artix-dinit -> alpine-dinit  Artix has no ARM port. The image the amd64
+  #                  leg pins (artixlinux/artixlinux) answers with a single
+  #                  amd64 manifest, not a manifest list. Alpine 3.23 ships
+  #                  dinit 0.19.4 for aarch64, so dinit-as-PID-1 keeps an
+  #                  arm64 column. What arm64 cannot reproduce is Artix's
+  #                  pacman+dinit PAIRING — pacman keeps its own column below,
+  #                  and apk+dinit is a combination no amd64 leg covers.
+  #
+  #   arch-pacman    Arch Linux publishes no aarch64 image: archlinux:base is
+  #                  an amd64-only manifest and Arch Linux ARM is a separate
+  #                  project. menci/archlinuxarm is an ALARM rootfs image
+  #                  (ID=archarm, pacman 7.1.0), pinned by digest. It is the
+  #                  one base here not published by the distribution itself —
+  #                  recorded, not hidden.
+
+  # The packages agent does not bridge.
+  #
+  # agent's packaging jobs upload to the public E2E bridge under
+  # `if: matrix.pkg_arch == 'amd64'`, with the reason written in its ci.yml:
+  # "the eight e2e-vm legs are all amd64 ... bridging the other arches would
+  # ship bytes with no consumer". Measured on agent run 35502058605: the four
+  # .deb/.rpm/.apk/.pkg.tar.zst artifacts are amd64 only, while the BINARIES
+  # supervizio-linux-arm64 and -arm64-musl are bridged and already feed the
+  # docker-arm64 legs.
+  #
+  # So this job builds the four arm64 packages from those shipped binaries,
+  # with agent's own nfpm.yaml, agent's own postinstall/preremove scripts and
+  # the same pinned nfpm — the recipe from agent's packages-glibc/musl/
+  # archlinux jobs, run once here instead of nine times.
+  #
+  # Honest about what that costs: these are not the bytes a release publishes,
+  # they are bytes assembled from the same binary by the same config. What the
+  # nine legs assert — that the postinstall grafts onto whichever service
+  # manager is live — is untouched by it, because that logic ships inside the
+  # package from the agent checkout. The day agent drops the amd64 condition
+  # on its bridge, this job is deleted and the legs download the real
+  # packages; nothing else about them changes.
+  #
+  # One job, not nine: a broken binary bridge fails here once, before nine
+  # containers start, which is the same reason `resolve` pre-checks artifacts.
+  arm64-packages:
+    name: Build arm64 packages
+    needs: [resolve]
+    runs-on: ubuntu-24.04-arm
+    timeout-minutes: 20
+    steps:
+      - name: Checkout agent code
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: ${{ needs.resolve.outputs.source_repo }}
+          ref: ${{ needs.resolve.outputs.ref }}
+          token: ${{ secrets.AGENT_REPO_TOKEN }}
+          persist-credentials: false
+
+      - name: Download the arm64 glibc binary from the agent run (cross-repo)
+        uses: actions/download-artifact@70fc10c6e5e1ce46ad2ea6f2b72d43f7d47b13c3 # v8.0.0
+        with:
+          name: supervizio-linux-arm64
+          path: dl-glibc
+          repository: ${{ needs.resolve.outputs.source_repo }}
+          run-id: ${{ needs.resolve.outputs.run_id }}
+          github-token: ${{ secrets.AGENT_REPO_TOKEN }}
+
+      - name: Download the arm64 musl binary from the agent run (cross-repo)
+        uses: actions/download-artifact@70fc10c6e5e1ce46ad2ea6f2b72d43f7d47b13c3 # v8.0.0
+        with:
+          name: supervizio-linux-arm64-musl
+          path: dl-musl
+          repository: ${{ needs.resolve.outputs.source_repo }}
+          run-id: ${{ needs.resolve.outputs.run_id }}
+          github-token: ${{ secrets.AGENT_REPO_TOKEN }}
+
+      - name: Install nfpm (pinned, checksum-verified)
+        env:
+          NFPM_VER: 2.44.1
+          NFPM_SHA256: 2264e8d533184df26f4b94fd0ee538b860ff9c1b0d0ff592acd7191f2b677e46
+        run: |
+          set -euo pipefail
+          # Same version agent pins, the arm64 asset instead of x86_64. The
+          # checksum is verified here and not in agent's copy of this step
+          # because what comes out of it is installed as root inside nine
+          # containers a few minutes later.
+          ok=0
+          for i in 1 2 3; do
+            if curl -fsSL "https://github.com/goreleaser/nfpm/releases/download/v${NFPM_VER}/nfpm_${NFPM_VER}_Linux_arm64.tar.gz" -o /tmp/nfpm.tgz; then ok=1; break; fi
+            echo "::warning::nfpm download attempt $i failed; retrying"; sleep $((i*5))
+          done
+          [ "$ok" = 1 ] || { echo "::error::nfpm download failed after 3 attempts"; exit 1; }
+          echo "${NFPM_SHA256}  /tmp/nfpm.tgz" | sha256sum -c -
+          sudo tar -xzf /tmp/nfpm.tgz -C /usr/local/bin nfpm
+          nfpm --version
+          # envsubst, for nfpm.yaml's ${VERSION}/${PKG_ARCH}/${BIN_ARCH}. On
+          # the hosted image it is already there; installing it blind would
+          # cost an apt-get update for nothing.
+          command -v envsubst >/dev/null || sudo apt-get install -y -qq gettext-base
+
+      - name: Build the four arm64 packages
+        env:
+          VERSION: "0.0.0"
+          PKG_ARCH: arm64
+          BIN_ARCH: arm64
+        run: |
+          set -euo pipefail
+          glibc=$(find dl-glibc -type f | head -1)
+          musl=$(find dl-musl -type f | head -1)
+          [ -s "$glibc" ] && [ -s "$musl" ] || {
+            echo "::error::agent run ${{ needs.resolve.outputs.run_id }} did not bridge both arm64 binaries (E2E_BRIDGE_PLATFORMS)" >&2
+            exit 1
+          }
+          file "$glibc" "$musl"
+          mkdir -p pkgs
+
+          # nfpm.yaml reads ./supervizio-linux-${BIN_ARCH} relative to the
+          # agent checkout, so each flavour takes its turn under that one name
+          # — exactly what agent's packages-musl job does with its `mv`.
+          cp "$glibc" "supervizio-linux-${BIN_ARCH}"
+          chmod +x "supervizio-linux-${BIN_ARCH}"
+          envsubst < nfpm.yaml > nfpm-resolved.yaml
+          for packager in deb rpm archlinux; do
+            nfpm package --config nfpm-resolved.yaml --packager "$packager" --target pkgs/
+          done
+
+          # .apk is musl-linked, and this is not cosmetic: the three Alpine
+          # legs below run a musl userland.
+          cp "$musl" "supervizio-linux-${BIN_ARCH}"
+          chmod +x "supervizio-linux-${BIN_ARCH}"
+          nfpm package --config nfpm-resolved.yaml --packager apk --target pkgs/
+
+          # nfpm emits packager-native, version-qualified names; only agent's
+          # release.yml renames them. The legs below want one predictable name
+          # each, so normalise here rather than nine times downstream.
+          cd pkgs
+          for ext in deb rpm apk pkg.tar.zst; do
+            found=$(find . -maxdepth 1 -type f -name "*.${ext}" ! -name "supervizio-arm64.*" | head -1)
+            [ -n "$found" ] || { echo "::error::nfpm produced no *.${ext}"; exit 1; }
+            mv "$found" "supervizio-arm64.${ext}"
+          done
+          ls -l
+
+      - name: Upload the arm64 packages for this run's legs
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: supervizio-arm64-packages
+          path: pkgs/supervizio-arm64.*
+          retention-days: 1
+          if-no-files-found: error
+
+  e2e-linux-arm64:
+    name: E2E Linux arm64 ${{ matrix.name }}
+    needs: [resolve, arm64-packages]
+    runs-on: ubuntu-24.04-arm
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        # Every base is pinned by digest: each one gets a root shell and
+        # installs our package. The tag each digest carried when it was pinned
+        # is in the comment beside it.
+        #
+        #   precheck  asserted INSIDE the untouched base, before prep runs.
+        #   prep      the single RUN line that turns the base into the
+        #             substrate. Installing an init is an INSTALL, not the
+        #             CONVERSION that failed four times in init-swap-proof.yml
+        #             — see `precheck` on debian-sysvinit, which asserts that
+        #             distinction still holds.
+        #   entrypoint/args  what becomes PID 1, and `pid1` is what
+        #             /proc/1/comm must then read. jq and a pgrep are part of
+        #             every prep: validate-probe.sh calls jq 39 times and
+        #             swallows its absence as "Invalid JSON output", and
+        #             scenario-battery.sh needs pgrep.
+        #   runflags  empty except for systemd, which needs a writable cgroup
+        #             tree. cgroupns=host plus a rw /sys/fs/cgroup is enough
+        #             on cgroup v2; --privileged is NOT needed and is not
+        #             given. systemd reports `degraded` in a container (units
+        #             that want real hardware fail) and that is expected — it
+        #             is a real PID 1 managing real units, which is what the
+        #             graft is tested against.
+        #   assert    the graft this leg exists to prove, checked inside the
+        #             container after install.sh returns.
+        include:
+          - name: alpine-openrc
+            pkg: supervizio-arm64.apk
+            base: alpine@sha256:85fe1e81d6758c208f3e1eed4338a1997e19d4be002d4dd32d3100c9a8c010a0 # alpine:3.23
+            # rc_sys="docker" is what tells OpenRC it is not booting a
+            # machine; the three hardware services go with it, since a
+            # container has no modules to load and nothing to probe.
+            prep: 'apk add --no-cache openrc jq >/dev/null && sed -i ''s/^#\?rc_sys=.*/rc_sys="docker"/'' /etc/rc.conf && echo ''rc_env_allow="*"'' >> /etc/rc.conf && rm -f /etc/init.d/hwdrivers /etc/init.d/modules /etc/init.d/modloop'
+            entrypoint: /sbin/init
+            args: ''
+            runflags: ''
+            pid1: init
+            assert: 'rc-update show | grep -q supervizio'
+            precheck: 'true'
+          - name: alpine-runit
+            pkg: supervizio-arm64.apk
+            base: alpine@sha256:85fe1e81d6758c208f3e1eed4338a1997e19d4be002d4dd32d3100c9a8c010a0 # alpine:3.23
+            prep: 'apk add --no-cache runit jq >/dev/null && mkdir -p /etc/service'
+            entrypoint: /usr/bin/runsvdir
+            args: '-P /etc/service'
+            runflags: ''
+            pid1: runsvdir
+            assert: 'test -L /etc/service/supervizio'
+            precheck: 'true'
+          - name: alpine-s6
+            pkg: supervizio-arm64.apk
+            base: alpine@sha256:85fe1e81d6758c208f3e1eed4338a1997e19d4be002d4dd32d3100c9a8c010a0 # alpine:3.23
+            prep: 'apk add --no-cache s6 jq >/dev/null && mkdir -p /run/service'
+            entrypoint: /usr/bin/s6-svscan
+            args: '/run/service'
+            runflags: ''
+            pid1: s6-svscan
+            assert: 'test -L /run/service/supervizio'
+            precheck: 'true'
+          - name: alpine-dinit
+            pkg: supervizio-arm64.apk
+            base: alpine@sha256:85fe1e81d6758c208f3e1eed4338a1997e19d4be002d4dd32d3100c9a8c010a0 # alpine:3.23
+            # dinit needs an explicit service name. Run bare it looks for
+            # `boot`, does not find it, and exits at once; an internal no-op
+            # leaves it a pure service manager, the shape --container is
+            # documented for. Written with printf, not a heredoc: indented
+            # inside a RUN line the closing token carries the indentation and
+            # never terminates.
+            prep: 'apk add --no-cache dinit jq >/dev/null && mkdir -p /etc/dinit.d && printf ''type = internal\n'' > /etc/dinit.d/svzboot'
+            entrypoint: /usr/sbin/dinit
+            args: '--container -d /etc/dinit.d svzboot'
+            runflags: ''
+            pid1: dinit
+            assert: 'test -f /etc/dinit.d/supervizio'
+            precheck: 'true'
+          - name: debian-systemd
+            pkg: supervizio-arm64.deb
+            base: debian@sha256:9cc080028c43b27d2074d63a5f9caf7166d731494965616c1a6d2827a004585c # debian:trixie
+            prep: 'apt-get update -qq && DEBIAN_FRONTEND=noninteractive apt-get install -y -qq systemd systemd-sysv jq procps >/dev/null'
+            entrypoint: /sbin/init
+            args: ''
+            runflags: '--cgroupns=host -v /sys/fs/cgroup:/sys/fs/cgroup:rw --tmpfs /run --tmpfs /run/lock'
+            pid1: systemd
+            assert: 'systemctl is-enabled supervizio'
+            precheck: 'true'
+          - name: debian-sysvinit
+            pkg: supervizio-arm64.deb
+            base: debian@sha256:9cc080028c43b27d2074d63a5f9caf7166d731494965616c1a6d2827a004585c # debian:trixie
+            prep: 'apt-get update -qq && DEBIAN_FRONTEND=noninteractive apt-get install -y -qq sysvinit-core jq procps >/dev/null'
+            entrypoint: /usr/sbin/init
+            args: ''
+            runflags: ''
+            pid1: init
+            assert: 'test -f /etc/init.d/supervizio && test -s /etc/inittab'
+            # The fact the whole leg rests on, asserted and not stated: the
+            # base ships NO init, so installing sysvinit-core is an install.
+            # If a future base starts shipping one this must go red rather
+            # than quietly become the conversion that failed four times.
+            precheck: 'test "$(dpkg -l 2>/dev/null | grep -cE "^ii  (systemd-sysv|init) " || true)" = 0 && test ! -e /sbin/init'
+          - name: rocky-systemd
+            pkg: supervizio-arm64.rpm
+            base: rockylinux/rockylinux@sha256:827d37bc128288ccf160ee318bb3cb92d591164cb217e92f8bc61e3982ae1834 # rockylinux/rockylinux:10
+            prep: 'dnf install -y -q systemd jq procps-ng >/dev/null 2>&1 && dnf clean all >/dev/null'
+            entrypoint: /sbin/init
+            args: ''
+            runflags: '--cgroupns=host -v /sys/fs/cgroup:/sys/fs/cgroup:rw --tmpfs /run --tmpfs /run/lock'
+            pid1: systemd
+            assert: 'systemctl is-enabled supervizio'
+            precheck: 'true'
+          - name: opensuse-zypper
+            # Leap 16.0, the same release the amd64 leg boots as a cloud image.
+            pkg: supervizio-arm64.rpm
+            base: opensuse/leap@sha256:f239b4819f4dd322d99509f1b5b14f2107bf23857f9ccd3c14333f0928a2bcc6 # opensuse/leap:16.0
+            prep: 'zypper --non-interactive --quiet install -y systemd jq procps >/dev/null 2>&1'
+            entrypoint: /usr/lib/systemd/systemd
+            args: ''
+            runflags: '--cgroupns=host -v /sys/fs/cgroup:/sys/fs/cgroup:rw --tmpfs /run --tmpfs /run/lock'
+            pid1: systemd
+            assert: 'systemctl is-enabled supervizio && rpm -q supervizio'
+            precheck: 'true'
+          - name: arch-pacman
+            pkg: supervizio-arm64.pkg.tar.zst
+            base: menci/archlinuxarm@sha256:bdff28eb12cdcd8799b8fa94465e0cbdead7c6aaea1f621c034ea8a0437dde99 # menci/archlinuxarm:base
+            # DisableSandbox, and it belongs in [options]: appended to the end
+            # of pacman.conf it lands in the last repo section and pacman says
+            # "directive not recognized" while still failing. pacman 7 uses
+            # Landlock, which the container cannot apply, and without this the
+            # sync dies with "switching to sandbox user 'alpm' failed".
+            prep: 'sed -i ''s/^\[options\]/[options]\nDisableSandbox/'' /etc/pacman.conf && pacman -Sy --noconfirm --needed systemd jq procps-ng >/dev/null'
+            entrypoint: /usr/lib/systemd/systemd
+            args: ''
+            runflags: '--cgroupns=host -v /sys/fs/cgroup:/sys/fs/cgroup:rw --tmpfs /run --tmpfs /run/lock'
+            pid1: systemd
+            # The pacman DISCOVERY adapter walks /var/lib/pacman/local looking
+            # for a `desc` per package; this is the only arm64 leg where that
+            # path is populated by a real supervizio install.
+            assert: 'systemctl is-enabled supervizio && pacman -Q supervizio && ls -d /var/lib/pacman/local/supervizio-*'
+            precheck: 'true'
+    steps:
+      - name: Report status (pending)
+        if: needs.resolve.outputs.sha != ''
+        continue-on-error: true
+        env:
+          GH_TOKEN: ${{ secrets.AGENT_REPO_TOKEN }}
+        run: |
+          [ -z "$GH_TOKEN" ] && exit 0
+          curl -sf -X POST -H "Authorization: Bearer $GH_TOKEN" -H "Accept: application/vnd.github+json" \
+            "https://api.github.com/repos/${{ needs.resolve.outputs.source_repo }}/statuses/${{ needs.resolve.outputs.sha }}" \
+            -d '{"state":"pending","context":"e2e/linux-arm64/${{ matrix.name }}","description":"Running...","target_url":"${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"}'
+
+      - name: Checkout agent code
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: ${{ needs.resolve.outputs.source_repo }}
+          ref: ${{ needs.resolve.outputs.ref }}
+          token: ${{ secrets.AGENT_REPO_TOKEN }}
+          persist-credentials: false
+
+      # From THIS run, not from agent's: see arm64-packages above.
+      - name: Download the arm64 packages built in this run
+        uses: actions/download-artifact@70fc10c6e5e1ce46ad2ea6f2b72d43f7d47b13c3 # v8.0.0
+        with:
+          name: supervizio-arm64-packages
+          path: pkg
+
+      - name: Build the substrate and boot it
+        env:
+          BASE: ${{ matrix.base }}
+          PREP: ${{ matrix.prep }}
+          ENTRYPOINT: ${{ matrix.entrypoint }}
+          ARGS: ${{ matrix.args }}
+          RUNFLAGS: ${{ matrix.runflags }}
+          PID1: ${{ matrix.pid1 }}
+          PRECHECK: ${{ matrix.precheck }}
+        run: |
+          set -euo pipefail
+          docker pull -q "$BASE"
+          echo "=== base is really aarch64 ==="
+          # An image that has no arm64 variant would be pulled as amd64 and
+          # silently run under emulation, which would make this whole job a
+          # slower copy of the amd64 legs. Refuse instead.
+          arch=$(docker run --rm "$BASE" uname -m)
+          echo "uname -m in the base: $arch"
+          [ "$arch" = "aarch64" ] || { echo "::error::$BASE is $arch, not aarch64 — it has no arm64 variant"; exit 1; }
+          # Run inside the base image, never eval'd on the host.
+          docker run --rm "$BASE" sh -c "$PRECHECK" || {
+            echo "::error::substrate precheck failed in $BASE: $PRECHECK"; exit 1; }
+
+          # Empty build context on purpose: the agent checkout is in the
+          # workspace and would otherwise be uploaded to the daemon whole.
+          mkdir -p /tmp/ctx
+          printf '%s\n' "FROM $BASE" "RUN $PREP" > /tmp/ctx/Dockerfile
+          cat /tmp/ctx/Dockerfile
+          docker build -q -t svz-leg /tmp/ctx >/dev/null
+          # RUNFLAGS and ARGS are lists of words, deliberately split.
+          # shellcheck disable=SC2086
+          docker run -d --name svz $RUNFLAGS --entrypoint "$ENTRYPOINT" svz-leg $ARGS >/dev/null
+          sleep 8
+          [ "$(docker inspect -f '{{.State.Running}}' svz)" = "true" ] || {
+            echo "::error::$PID1 exited (code $(docker inspect -f '{{.State.ExitCode}}' svz))"
+            docker logs svz 2>&1 || true; exit 1; }
+          pid1=$(docker exec svz cat /proc/1/comm)
+          echo "PID 1 = $pid1, $(docker exec svz uname -m)"
+          [ "$pid1" = "$PID1" ] || { echo "::error::PID 1 is '$pid1', expected $PID1"; exit 1; }
+
+      - name: Install through the package, validate, uninstall
+        env:
+          PKG: ${{ matrix.pkg }}
+          ASSERT: ${{ matrix.assert }}
+        run: |
+          set -euo pipefail
+          [ -s "pkg/$PKG" ] || { echo "::error::pkg/$PKG missing from the arm64-packages artifact"; exit 1; }
+          # /opt, not /tmp. `docker cp` writes through the container's rootfs
+          # on the host, and systemd mounts a tmpfs OVER /tmp as it boots — so
+          # files copied to /tmp in a systemd leg are there on disk and gone
+          # inside the container, and install.sh dies with "cannot open
+          # /tmp/setup/install.sh". Measured; /opt is mounted by nobody.
+          docker exec svz mkdir -p /opt/svz
+          docker cp "pkg/$PKG" "svz:/opt/svz/$PKG"
+          docker cp setup svz:/opt/svz/setup
+          docker cp e2e/validate-probe.sh svz:/opt/svz/validate-probe.sh
+          docker cp e2e/scenario-battery.sh svz:/opt/svz/scenario-battery.sh
+
+          echo "=== Install, as a user would ==="
+          # Through the PACKAGE, not the raw binary: these legs exist to prove
+          # the postinstall grafts onto whatever service manager is live, and
+          # install.sh picks its branch by `command -v`, never by
+          # /etc/os-release.
+          docker exec -e SUPERVIZIO_LOCAL_PKG="/opt/svz/$PKG" svz sh /opt/svz/setup/install.sh
+          docker exec svz /usr/local/bin/supervizio --version
+
+          echo "=== The graft this leg exists for ==="
+          docker exec svz sh -c "$ASSERT" || {
+            echo "::error::graft assertion failed: $ASSERT"
+            docker exec svz sh -c 'cat /usr/lib/supervizio/grafted-init 2>/dev/null; cat /proc/1/comm' || true
+            exit 1; }
+          docker exec svz sh -c 'cat /usr/lib/supervizio/grafted-init'
+
+          echo "=== Validate probe ==="
+          # .cpu.frequency_mhz, and why this one field is exempted here.
+          #
+          # The probe does not fail to read a clock on this host, it declares
+          # there is none. Measured on run 35507794810, all nine legs, word for
+          # word the same:
+          #
+          #   "brand": {"value": "ARM"}
+          #   "frequency_mhz": {"value": null, "reason": "NOT_PRESENT",
+          #     "kind": "ABSENT", "detail": "no cpu MHz line in /proc/cpuinfo,
+          #     no sysfs cpufreq node, and the brand string matched no database
+          #     entry"}
+          #
+          # libprobe says the same in linux/procfs/cpu.rs: "cpu MHz is absent
+          # from /proc/cpuinfo on every aarch64 kernel, the sysfs cpufreq nodes
+          # are absent on a VM with no cpufreq driver, and the brand rebuilt
+          # from CPU implementer/CPU part matches no database entry ...
+          # published as an absence, never as a reading".
+          #
+          # validate-probe.sh has exactly one knob for this field,
+          # SVZ_EMULATED_CPU, named after the first case that reached it -- the
+          # TCG-emulated BSD arm64 legs. ubuntu-24.04-arm is NOT emulated; it
+          # is native aarch64 hardware that exposes no clock. The knob is the
+          # right one, its name is one case too narrow. (Worth renaming in
+          # agent, e.g. SVZ_NO_CPU_CLOCK; not this repo's file.)
+          #
+          # TWO independent conditions, both required, so this cannot become a
+          # way to go green: the probe must DECLARE the absence, and the host
+          # must genuinely have no clock to read. A regression that returns
+          # null where a clock exists still fails this leg.
+          EMU=0
+          docker exec svz sh -c '/usr/local/bin/supervizio --probe > /opt/svz/probe.json'
+          echo "probe reports .cpu.frequency_mhz = $(docker exec svz jq -c '.cpu.frequency_mhz' /opt/svz/probe.json)"
+          has_clock=0
+          if docker exec svz sh -c 'grep -q "^cpu MHz" /proc/cpuinfo \
+               || test -r /sys/devices/system/cpu/cpu0/cpufreq/scaling_cur_freq \
+               || test -r /sys/devices/system/cpu/cpu0/cpufreq/cpuinfo_max_freq \
+               || test -r /sys/devices/system/cpu/cpu0/cpufreq/base_frequency'; then
+            has_clock=1
+          fi
+          echo "this host exposes a readable CPU clock: $has_clock"
+          value=$(docker exec svz jq -r '.cpu.frequency_mhz.value' /opt/svz/probe.json)
+          kind=$(docker exec svz jq -r '.cpu.frequency_mhz.kind // ""' /opt/svz/probe.json)
+          if [ "$has_clock" = 0 ] && [ "$value" = "null" ] && [ "$kind" = "ABSENT" ]; then
+            EMU=1
+            echo "::notice::.cpu.frequency_mhz exempted on this host: $(docker exec svz jq -r '.cpu.frequency_mhz.detail' /opt/svz/probe.json)"
+          fi
+          docker exec -e SVZ_EMULATED_CPU="$EMU" svz sh /opt/svz/validate-probe.sh /usr/local/bin/supervizio
+
+          echo "=== Supervision scenarios ==="
+          docker exec svz sh /opt/svz/scenario-battery.sh /usr/local/bin/supervizio
+
+          echo "=== Uninstall ==="
+          docker exec -e SUPERVIZIO_NON_INTERACTIVE=true svz sh /opt/svz/setup/uninstall.sh
+
+      - name: Collect the container console on failure
+        if: failure()
+        run: docker logs svz 2>&1 || true
+
+      - name: Tear down
+        if: always()
+        run: docker rm -f svz >/dev/null 2>&1 || true
+
+      - name: Report status (result)
+        if: always() && needs.resolve.outputs.sha != ''
+        continue-on-error: true
+        env:
+          GH_TOKEN: ${{ secrets.AGENT_REPO_TOKEN }}
+        run: |
+          [ -z "$GH_TOKEN" ] && exit 0
+          STATE="success"; DESC="Passed"
+          if [ "${{ job.status }}" != "success" ]; then STATE="failure"; DESC="Failed"; fi
+          curl -sf -X POST -H "Authorization: Bearer $GH_TOKEN" -H "Accept: application/vnd.github+json" \
+            "https://api.github.com/repos/${{ needs.resolve.outputs.source_repo }}/statuses/${{ needs.resolve.outputs.sha }}" \
+            -d "{\"state\":\"$STATE\",\"context\":\"e2e/linux-arm64/${{ matrix.name }}\",\"description\":\"$DESC\",\"target_url\":\"${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}\"}"
+
   e2e-bsd-freebsd-amd64:
     name: E2E BSD freebsd amd64
     needs: [resolve]
@@ -3040,6 +3537,7 @@ jobs:
     needs: [resolve, e2e-docker-amd64, e2e-docker-arm64, e2e-macos, e2e-macos-arm64, e2e-linux-artix-dinit, e2e-linux-debian-sysvinit, e2e-windows-amd64, e2e-windows-arm64,
              e2e-linux-alpine-openrc, e2e-linux-debian-systemd, e2e-linux-rocky-systemd, e2e-linux-opensuse-zypper, e2e-linux-arch-pacman,
              e2e-linux-alpine-runit, e2e-linux-alpine-s6,
+             arm64-packages, e2e-linux-arm64,
              e2e-bsd-freebsd-amd64, e2e-bsd-netbsd-amd64, e2e-bsd-openbsd-amd64,
              e2e-bsd-freebsd-arm64, e2e-bsd-netbsd-arm64]
     if: always()
@@ -3066,6 +3564,14 @@ jobs:
             "linux-arch-pacman=${{ needs.e2e-linux-arch-pacman.result }}"
             "linux-alpine-runit=${{ needs.e2e-linux-alpine-runit.result }}"
             "linux-alpine-s6=${{ needs.e2e-linux-alpine-s6.result }}"
+            # The nine arm64 Linux legs are one matrix job, so they arrive as
+            # one result here -- a matrix is `failure` if any of its entries
+            # is. `arm64-packages` is listed beside it because it is what
+            # those nine consume: when it fails they are `skipped`, which this
+            # loop already counts as not-success, and naming it says which of
+            # the two broke.
+            "arm64-packages=${{ needs.arm64-packages.result }}"
+            "linux-arm64=${{ needs.e2e-linux-arm64.result }}"
             "windows-amd64=${{ needs.e2e-windows-amd64.result }}"
             "windows-arm64=${{ needs.e2e-windows-arm64.result }}"
             "bsd-freebsd-amd64=${{ needs.e2e-bsd-freebsd-amd64.result }}"
@@ -3166,6 +3672,8 @@ jobs:
             echo "| macOS ARM64 | \`${{ needs.e2e-macos-arm64.result }}\` |"
             echo "| Linux artix-dinit | \`${{ needs.e2e-linux-artix-dinit.result }}\` |"
             echo "| Linux debian-sysvinit | \`${{ needs.e2e-linux-debian-sysvinit.result }}\` |"
+            echo "| Linux arm64 (9 inits) | \`${{ needs.e2e-linux-arm64.result }}\` |"
+            echo "| arm64 packages | \`${{ needs.arm64-packages.result }}\` |"
             echo "| Windows amd64 | \`${{ needs.e2e-windows-amd64.result }}\` |"
             echo "| Windows arm64 | \`${{ needs.e2e-windows-arm64.result }}\` |"
             echo "| BSD freebsd amd64 | \`${{ needs.e2e-bsd-freebsd-amd64.result }}\` |"
