@@ -389,8 +389,27 @@ jobs:
           CGO_LDFLAGS="-L$PWD -lfixture -lm -lc++abi" \
             go build -o "$OUT/${stem}-cgo" . > "$OUT/${stem}-cgo.log" 2>&1
           echo "cgo cross link exit=$?"
-          set -e
           sed -n '1,40p' "$OUT/${stem}-cgo.log" || true
+
+          # The variant the first run made worth trying. agent's cross output
+          # already has an EMPTY DT_NEEDED -- the OpenBSD sysroot ships no
+          # unversioned libc.so symlink, so lld pulled libc.a in statically --
+          # and yet it still carries PT_INTERP and still asks ld.so to load it.
+          # A static binary that hands control to the dynamic loader is a
+          # contradiction, and it is a far better candidate for the SIGSEGV
+          # than "upstream lld lacks OpenBSD's patches". Asking for -static
+          # explicitly is what makes lld drop PT_INTERP.
+          #
+          # If this one runs, the native OpenBSD build has no reason to exist.
+          echo "=== cgo cross, statically linked ==="
+          CGO_ENABLED=1 GOOS=openbsd GOARCH="$GOARCH_IN" CC="$SVZ_CC" \
+          CGO_CFLAGS="" \
+          CGO_LDFLAGS="-L$PWD -lfixture -lm -lc++abi" \
+            go build -ldflags '-linkmode external -extldflags=-static' \
+              -o "$OUT/${stem}-cgostatic" . > "$OUT/${stem}-cgostatic.log" 2>&1
+          echo "static cgo cross link exit=$?"
+          sed -n '1,40p' "$OUT/${stem}-cgostatic.log" || true
+          set -e
 
           echo "=== What came out ==="
           for b in "$OUT/${stem}"-*; do
