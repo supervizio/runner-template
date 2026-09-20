@@ -370,9 +370,12 @@ jobs:
           #   ld.lld-21: error: undefined symbol: _DYNAMIC
           #   >>> referenced by .../usr/lib/rcrt0.o:(.text+0x1e)
           #
-          # `-nopie` WITHOUT the -Wl, is a driver flag, and it is what makes
-          # clang select crt0.o instead.
-          sed 's/-Qunused-arguments/-nopie -Qunused-arguments/' "$W/cc" > "$W/cc-nopie"
+          # The same spelling WITHOUT the -Wl, is a driver flag, and it is what
+          # makes clang select crt0.o instead.
+          # `-no-pie`, not `-nopie`: that is OpenBSD's own clang spelling and
+          # upstream clang-21 rejects it outright -- "unsupported option
+          # '-nopie' for target 'aarch64-unknown-openbsd'", measured.
+          sed 's/-Qunused-arguments/-no-pie -Qunused-arguments/' "$W/cc" > "$W/cc-nopie"
           chmod +x "$W/cc-nopie"
           cat "$W/cc-nopie"
           echo "SVZ_CC_NOPIE=$W/cc-nopie" >> "$GITHUB_ENV"
