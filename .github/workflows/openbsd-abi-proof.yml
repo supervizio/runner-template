@@ -372,10 +372,35 @@ jobs:
           #
           # The same spelling WITHOUT the -Wl, is a driver flag, and it is what
           # makes clang select crt0.o instead.
-          # `-no-pie`, not `-nopie`: that is OpenBSD's own clang spelling and
-          # upstream clang-21 rejects it outright -- "unsupported option
+          # `-no-pie`, not `-nopie`: the latter is OpenBSD's own clang spelling
+          # and upstream clang-21 rejects it outright -- "unsupported option
           # '-nopie' for target 'aarch64-unknown-openbsd'", measured.
-          sed 's/-Qunused-arguments/-no-pie -Qunused-arguments/' "$W/cc" > "$W/cc-nopie"
+          #
+          # And a linker wrapper underneath it, because asking for -no-pie makes
+          # clang's OpenBSD driver emit `-nopie` TO THE LINKER, which upstream
+          # ld.lld does not know:
+          #
+          #   ld.lld-21: error: unknown argument '-nopie', did you mean '-no-pie'
+          #
+          # This is the one place where "upstream lld lacks OpenBSD's linker
+          # patches" is literally true, and the cc wrapper cannot fix it: clang
+          # generates that argument internally, after the cc wrapper has already
+          # exec'd. Only something standing in for ld can translate it.
+          cat > "$W/ldwrap" <<'LDEOF'
+          #!/bin/sh
+          args=""
+          for a in "$@"; do
+            case "$a" in
+              -nopie) a="-no-pie" ;;
+            esac
+            args="$args $a"
+          done
+          exec /usr/bin/ld.lld-21 $args
+          LDEOF
+          chmod +x "$W/ldwrap"
+          sed -e 's/-Qunused-arguments/-no-pie -Qunused-arguments/' \
+              -e "s#-fuse-ld=/usr/bin/ld.lld-21#-fuse-ld=$W/ldwrap#" \
+              "$W/cc" > "$W/cc-nopie"
           chmod +x "$W/cc-nopie"
           cat "$W/cc-nopie"
           echo "SVZ_CC_NOPIE=$W/cc-nopie" >> "$GITHUB_ENV"
