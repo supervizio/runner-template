@@ -1,0 +1,611 @@
+# =============================================================================
+# Three questions about the OpenBSD binary, answered by running it, not by
+# reasoning about it.
+#
+#   1. agent builds OpenBSD natively on a 7.9 guest (agent's openbsd-native.yml
+#      pins `release: '7.9'`). Does that binary run on 7.8, 7.7, 7.6?
+#   2. Would static linking make it version-portable?
+#   3. Does cross-compiling from Linux produce a binary that runs at all? The
+#      repo says no -- "upstream lld lacks OpenBSD's linker patches, the result
+#      SIGSEGVs in ld.so before main(), even for --version"
+#      (agent/native-platform.yml, the "Rebuild agent natively on VM" step).
+#      But since that was written, build-bsd-cross moved to clang-21/ld.lld-21
+#      specifically to emit PT_OPENBSD_NOBTCFI, and its comment now claims the
+#      cross binary "runs under 7.9". Both statements are in the tree. Only one
+#      can be true, and nothing has ever executed the cross binary to find out:
+#      openbsd is excluded from E2E_BRIDGE_PLATFORMS, so no leg receives it.
+#
+# The fixture is not the agent -- it is the agent's LINK SHAPE: a Go program
+# whose cgo half calls into a static .a and drags in -lm and -lc++abi, exactly
+# the three things agent's own link line carries
+# (`CGO_LDFLAGS="-L... -lprobe -lm -lc++abi"`, openbsd-native.yml). What decides
+# version portability on OpenBSD is which shared objects the binary NEEDs and
+# at which major, and that is a property of the link line, not of the source.
+# The honest delta: libprobe is Rust, and this fixture is C. It is the same
+# staticlib-into-cgo shape, not the same code.
+#
+# NOTHING HERE GATES. Every leg measures and reports; only the control
+# assertion (a 7.9-native binary must run on 7.9) can fail a job, because if
+# that breaks the rest of the table means nothing.
+#
+# Kept in the tree after it goes green, like bench-leg-substrates-proof.yml and
+# qemu-vm-selftest.yml: the point of a proof workflow is that the next person
+# reads the run instead of re-deriving the answer.
+# =============================================================================
+name: OpenBSD ABI proof
+
+on:
+  workflow_dispatch:
+  # Scoped to this one file. workflow_dispatch alone would make it unrunnable
+  # until it reaches the default branch -- the trap qemu-vm-selftest.yml records.
+  push:
+    paths:
+      - '.github/workflows/openbsd-abi-proof.yml'
+
+permissions:
+  contents: read
+
+env:
+  # Same toolchain agent's openbsd-native.yml installs in its guest, same
+  # digests, so a difference in the table cannot be a difference in Go.
+  GO_VERSION: '1.27.1'
+  GO_SHA256_OPENBSD_AMD64: 'db0566b3b3ddf6eda09cb3434a9401eb2583ffa539475e45592812813f11c792'
+
+jobs:
+  # ---------------------------------------------------------------------------
+  # One source tree, built five different ways. Generated rather than committed
+  # so the fixture cannot drift away from the workflow that explains it.
+  # ---------------------------------------------------------------------------
+  fixture:
+    name: Fixture source
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - name: Write the fixture
+        run: |
+          set -euo pipefail
+          mkdir -p fixture
+          cat > fixture/go.mod <<'MOD'
+          module openbsdabi
+
+          go 1.27.1
+          MOD
+
+          # The C half. uname(2) is a real syscall, getpid(2) another, and
+          # exp/lround force -lm onto the link line -- so this .a exercises the
+          # same three things agent's cgo boundary does: a syscall entered from
+          # cgo, a libc call, and a second shared library at a second major.
+          cat > fixture/fixture.c <<'CSRC'
+          #include <math.h>
+          #include <sys/utsname.h>
+          #include <unistd.h>
+
+          int fixture_answer(void) {
+            struct utsname u;
+
+            if (uname(&u) != 0) {
+              return -1;
+            }
+            if (getpid() <= 0) {
+              return -2;
+            }
+            return (int)(lround(exp(0.0)) * 42);
+          }
+          CSRC
+
+          cat > fixture/main.go <<'GOSRC'
+          package main
+
+          import (
+          	"fmt"
+          	"os"
+          	"runtime"
+          )
+
+          func main() {
+          	fmt.Printf("RUNS mode=%s goos=%s goarch=%s go=%s answer=%d args=%v\n",
+          		mode, runtime.GOOS, runtime.GOARCH, runtime.Version(), answer(), os.Args[1:])
+          }
+          GOSRC
+
+          # Two halves behind a build tag, so the SAME package builds with and
+          # without cgo. A single file with `import "C"` cannot be built at
+          # CGO_ENABLED=0 at all, and the pure-Go leg is the control that
+          # separates "Go on OpenBSD" from "cgo on OpenBSD".
+          cat > fixture/answer_cgo.go <<'GOSRC'
+          //go:build cgo
+
+          package main
+
+          // int fixture_answer(void);
+          import "C"
+
+          const mode = "cgo"
+
+          func answer() int { return int(C.fixture_answer()) }
+          GOSRC
+
+          cat > fixture/answer_nocgo.go <<'GOSRC'
+          //go:build !cgo
+
+          package main
+
+          const mode = "purego"
+
+          func answer() int { return 42 }
+          GOSRC
+
+          ls -l fixture/
+
+      - name: Upload
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: openbsd-abi-fixture
+          path: fixture/
+          retention-days: 7
+          if-no-files-found: error
+
+  # ---------------------------------------------------------------------------
+  # Q2 lives here. Three link modes, built by OpenBSD's own patched toolchain on
+  # the exact release agent builds on, so whatever the static attempt does it
+  # does under the friendliest possible conditions.
+  # ---------------------------------------------------------------------------
+  build-native-79:
+    name: Build on OpenBSD 7.9 (native, as agent does)
+    needs: [fixture]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    steps:
+      - name: Fetch the fixture
+        uses: actions/download-artifact@70fc10c6e5e1ce46ad2ea6f2b72d43f7d47b13c3 # v8.0.0
+        with:
+          name: openbsd-abi-fixture
+          path: fixture
+
+      - name: Build three ways inside a real OpenBSD 7.9
+        uses: vmactions/openbsd-vm@86cdc08415d9d0865267e686561e276c52d62530 # v1.4.7
+        with:
+          usesh: true
+          # Pinned to what agent's openbsd-native.yml pins. An unpinned release
+          # floats with the action's default and would move the very thing this
+          # workflow measures.
+          release: '7.9'
+          copyback: true
+          # `run:` executes in the GUEST over ssh, which forwards no
+          # environment. Anything the script reads has to be named here -- the
+          # lesson e2e.yml's OpenBSD leg records after losing a run to an unset
+          # $RUNNER_TEMP.
+          envs: GO_VERSION GO_SHA256_OPENBSD_AMD64
+          run: |
+            set -e
+            WS="$(pwd)"
+            mkdir -p "$WS/out"
+
+            echo "=== Guest ==="
+            uname -a
+            echo "=== Shared libraries this release ships ==="
+            ls -l /usr/lib/libc.so.* /usr/lib/libm.so.* /usr/lib/libc++abi.so.* 2>/dev/null || true
+
+            # go.dev, not pkg_add: OpenBSD packages a Go older than the `go`
+            # directive this fixture declares, same reason agent's
+            # openbsd-native.yml installs it by hand. `ftp` and `sha256` are
+            # both in base, so nothing has to be installed to get a pinned one.
+            GO_TGZ="go${GO_VERSION}.openbsd-amd64.tar.gz"
+            echo "=== Toolchain: $GO_TGZ ==="
+            ftp -V -o "/tmp/$GO_TGZ" "https://go.dev/dl/$GO_TGZ"
+            got="$(sha256 -q "/tmp/$GO_TGZ")"
+            if [ "$got" != "$GO_SHA256_OPENBSD_AMD64" ]; then
+              echo "::error::toolchain checksum mismatch: got $got" >&2
+              exit 1
+            fi
+            rm -rf /usr/local/go
+            tar -C /usr/local -xzf "/tmp/$GO_TGZ"
+            export PATH="/usr/local/go/bin:$PATH"
+            go version
+
+            cd "$WS/fixture"
+            echo "=== The static archive, built by OpenBSD's own clang ==="
+            cc -O2 -fPIC -c fixture.c -o fixture.o
+            ar rcs libfixture.a fixture.o
+            ls -l libfixture.a
+
+            # 1. No cgo at all. On OpenBSD this is NOT a static binary: since
+            #    Go 1.16 the runtime enters the kernel through libc rather than
+            #    issuing syscalls itself (golang/go#36435), so even this one
+            #    carries a NEEDED libc. Measured below rather than asserted.
+            echo "=== 1/3 pure Go ==="
+            CGO_ENABLED=0 go build -o "$WS/out/native79-purego" .
+
+            # 2. agent's own link line shape.
+            echo "=== 2/3 cgo + static .a + -lm -lc++abi (agent's shape) ==="
+            CGO_ENABLED=1 \
+            CGO_CFLAGS="" \
+            CGO_LDFLAGS="-L$WS/fixture -lfixture -lm -lc++abi" \
+            go build -o "$WS/out/native79-cgo" .
+
+            # 3. THE QUESTION. Does OpenBSD even let you link this statically?
+            #    Allowed to fail: a refusal here is the answer, not an accident.
+            echo "=== 3/3 the static attempt ==="
+            set +e
+            CGO_ENABLED=1 \
+            CGO_CFLAGS="" \
+            CGO_LDFLAGS="-L$WS/fixture -lfixture -lm -lc++abi" \
+            go build -ldflags '-linkmode external -extldflags "-static"' \
+              -o "$WS/out/native79-cgo-static" . > "$WS/out/static-attempt.log" 2>&1
+            rc=$?
+            set -e
+            echo "static link exit=$rc"
+            sed -n '1,60p' "$WS/out/static-attempt.log" || true
+            echo "static-link-exit=$rc" > "$WS/out/static-attempt.status"
+
+            echo "=== What each one actually is ==="
+            for b in "$WS"/out/native79-*; do
+              case "$b" in *.log|*.status) continue ;; esac
+              [ -f "$b" ] || continue
+              echo "---------- $(basename "$b") ----------"
+              file "$b" || true
+              # DT_NEEDED is the mechanism, and `ldd` only shows what resolved
+              # HERE. The recorded name is what decides portability: OpenBSD's
+              # ld.so treats an unversioned "libc.so" as "any version" and a
+              # versioned "libc.so.100.3" as "this major only".
+              readelf -d "$b" 2>/dev/null | grep -i 'NEEDED' || true
+              ldd "$b" 2>&1 | head -20 || true
+            done
+
+            # The control. If a 7.9-native binary cannot run on 7.9, every other
+            # number in this workflow is noise -- so this one is allowed to fail
+            # the job, and it is the only thing that is.
+            echo "=== Control: they run HERE, on 7.9 ==="
+            "$WS/out/native79-purego" control
+            "$WS/out/native79-cgo" control
+
+      - name: Upload the 7.9-native binaries
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: openbsd-abi-bin-native79
+          path: out/
+          retention-days: 7
+          if-no-files-found: error
+
+  # ---------------------------------------------------------------------------
+  # Q3 lives here: agent's build-bsd-cross recipe, verbatim, on a fixture small
+  # enough that the output can be carried into a guest and executed. This is the
+  # step nothing in either repo performs today.
+  #
+  # Two sysroots on amd64, because "build against the oldest, run everywhere" is
+  # the standard portability answer and deserves to be tested rather than
+  # assumed. 7.6 is gone from cdn.openbsd.org (404, checked), so 7.7 is the
+  # oldest sysroot obtainable -- and it is still two releases below the guest
+  # the native build uses.
+  # ---------------------------------------------------------------------------
+  build-cross:
+    name: Cross ${{ matrix.goarch }} / sysroot ${{ matrix.sysroot }}
+    needs: [fixture]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { goarch: amd64, sysroot: '7.9', target: x86_64-unknown-openbsd, obsdarch: amd64 }
+          - { goarch: amd64, sysroot: '7.7', target: x86_64-unknown-openbsd, obsdarch: amd64 }
+          - { goarch: arm64, sysroot: '7.9', target: aarch64-unknown-openbsd, obsdarch: arm64 }
+    steps:
+      - name: Fetch the fixture
+        uses: actions/download-artifact@70fc10c6e5e1ce46ad2ea6f2b72d43f7d47b13c3 # v8.0.0
+        with:
+          name: openbsd-abi-fixture
+          path: fixture
+
+      - uses: actions/setup-go@4b73464bb391d4059bd26b0524d20df3927bd417 # v6.3.0
+        with:
+          go-version: ${{ env.GO_VERSION }}
+          cache: false
+
+      - name: clang-21 + ld.lld-21
+        run: |
+          set -euo pipefail
+          # 21, not the distro clang: agent's ci.yml installs exactly this, and
+          # the reason is the linker, not the compiler -- ld.lld-18 answers
+          # "unknown -z value: nobtcfi" and DROPS the flag, so the binary ships
+          # without PT_OPENBSD_NOBTCFI and dies under 7.9's branch-target CFI.
+          curl -fsSL -o /tmp/llvm.sh https://apt.llvm.org/llvm.sh
+          sudo bash /tmp/llvm.sh 21
+          sudo apt-get install -y -qq clang-21 lld-21 llvm-21
+          /usr/bin/clang-21 --version
+          /usr/bin/ld.lld-21 --version
+
+      - name: Sysroot ${{ matrix.sysroot }} ${{ matrix.obsdarch }}
+        env:
+          OBSD_REL: ${{ matrix.sysroot }}
+          OBSD_ARCH: ${{ matrix.obsdarch }}
+        run: |
+          set -euo pipefail
+          tag="$(echo "$OBSD_REL" | tr -d '.')"
+          SR="$HOME/sysroot"
+          mkdir -p "$SR"
+          for s in base comp; do
+            f="/tmp/${s}${tag}.tgz"
+            url="https://cdn.openbsd.org/pub/OpenBSD/${OBSD_REL}/${OBSD_ARCH}/${s}${tag}.tgz"
+            # -4: the hosted runner reaches the CDN over v4; happy-eyeballs on a
+            # Fastly AAAA is what agent's ci.yml hit here.
+            curl -4 -fsSL --retry 5 --retry-delay 5 --connect-timeout 15 -o "$f" "$url"
+            # Targeted extraction; device and permission entries in base*.tgz
+            # are not needed and would need root.
+            tar -C "$SR" -xzf "$f" ./usr/lib ./usr/include ./lib 2>/dev/null || true
+          done
+          ls "$SR/usr/lib/libc.a" "$SR/usr/lib/libm.a" "$SR/usr/lib/rcrt0.o" 2>/dev/null || true
+          echo "SR=$SR" >> "$GITHUB_ENV"
+
+      - name: The cc wrapper, exactly as build-bsd-cross builds it
+        env:
+          TARGET: ${{ matrix.target }}
+        run: |
+          set -euo pipefail
+          W="$HOME/wrap"; mkdir -p "$W"
+          cat > "$W/cc" <<EOF
+          #!/bin/sh
+          args=""
+          for a in "\$@"; do
+            case "\$a" in
+              -Wl,-nopie) a="-Wl,-no-pie" ;;
+            esac
+            args="\$args \$a"
+          done
+          exec /usr/bin/clang-21 --target=$TARGET --sysroot=$SR -fuse-ld=/usr/bin/ld.lld-21 -Qunused-arguments -Wl,-z,nobtcfi \$args
+          EOF
+          chmod +x "$W/cc"
+          cat "$W/cc"
+          echo "SVZ_CC=$W/cc" >> "$GITHUB_ENV"
+
+      - name: Cross-build the fixture
+        env:
+          GOARCH_IN: ${{ matrix.goarch }}
+          SRTAG: ${{ matrix.sysroot }}
+        run: |
+          set -euo pipefail
+          OUT="$GITHUB_WORKSPACE/out"; mkdir -p "$OUT"
+          srtag="$(echo "$SRTAG" | tr -d '.')"
+          stem="cross-${GOARCH_IN}-sr${srtag}"
+          cd fixture
+
+          echo "=== The static archive, built by the CROSS clang ==="
+          "$SVZ_CC" -O2 -fPIC -c fixture.c -o fixture.o
+          llvm-ar-21 rcs libfixture.a fixture.o
+
+          # Control: plain Go, no cgo, no C toolchain involved. If this one runs
+          # in the guest and the cgo one does not, the fault is the C link and
+          # not "cross-compiling to OpenBSD".
+          echo "=== pure Go cross ==="
+          CGO_ENABLED=0 GOOS=openbsd GOARCH="$GOARCH_IN" \
+            go build -o "$OUT/${stem}-purego" .
+
+          # agent's recipe.
+          echo "=== cgo cross (agent's recipe) ==="
+          set +e
+          CGO_ENABLED=1 GOOS=openbsd GOARCH="$GOARCH_IN" CC="$SVZ_CC" \
+          CGO_CFLAGS="" \
+          CGO_LDFLAGS="-L$PWD -lfixture -lm -lc++abi" \
+            go build -o "$OUT/${stem}-cgo" . > "$OUT/${stem}-cgo.log" 2>&1
+          echo "cgo cross link exit=$?"
+          set -e
+          sed -n '1,40p' "$OUT/${stem}-cgo.log" || true
+
+          echo "=== What came out ==="
+          for b in "$OUT/${stem}"-*; do
+            case "$b" in *.log) continue ;; esac
+            [ -f "$b" ] || continue
+            echo "---------- $(basename "$b") ----------"
+            file "$b" || true
+            # The two things that decide whether it can start: the interpreter
+            # it asks for, and whether it carries the NOBTCFI opt-out. Both are
+            # invisible in `file` output.
+            readelf -lWd "$b" 2>/dev/null | grep -Ei 'interpreter|NEEDED|OPENBSD' || true
+          done
+
+      - name: Upload the cross binaries
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: openbsd-abi-bin-cross-${{ matrix.goarch }}-${{ matrix.sysroot }}
+          path: out/
+          retention-days: 7
+          if-no-files-found: warn
+
+  # ---------------------------------------------------------------------------
+  # Q1 lives here. Same binaries, four releases, one table.
+  # 7.9 is the control row; 7.8/7.7/7.6 are the question.
+  # ---------------------------------------------------------------------------
+  run-amd64:
+    name: Run on OpenBSD ${{ matrix.release }} (amd64)
+    needs: [build-native-79, build-cross]
+    if: ${{ always() && needs.build-native-79.result == 'success' }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    strategy:
+      fail-fast: false
+      matrix:
+        release: ['7.9', '7.8', '7.7', '7.6']
+    steps:
+      - name: Collect every binary produced
+        uses: actions/download-artifact@70fc10c6e5e1ce46ad2ea6f2b72d43f7d47b13c3 # v8.0.0
+        with:
+          pattern: openbsd-abi-bin-*
+          merge-multiple: true
+          path: bin
+
+      - name: Try them all in an OpenBSD ${{ matrix.release }} guest
+        uses: vmactions/openbsd-vm@86cdc08415d9d0865267e686561e276c52d62530 # v1.4.7
+        with:
+          usesh: true
+          release: ${{ matrix.release }}
+          copyback: true
+          envs: ABI_REL
+          run: |
+            WS="$(pwd)"
+            R="$WS/result-${ABI_REL}.txt"
+            : > "$R"
+
+            echo "=== Guest ==="
+            uname -a
+            echo "=== Shared libraries this release ships ==="
+            ls /usr/lib/libc.so.* /usr/lib/libm.so.* /usr/lib/libc++abi.so.* 2>/dev/null || true
+            # The single number that decides everything downstream: ld.so
+            # matches a NEEDED library on its MAJOR and refuses a mismatch.
+            LIBC="$(ls /usr/lib/libc.so.* 2>/dev/null | head -1)"
+            echo "libc|${ABI_REL}|$(basename "${LIBC:-none}")" >> "$R"
+
+            # No `set -e` past this point ON PURPOSE. Every invocation below is
+            # expected to fail somewhere in the table, and a shell that exits on
+            # the first one would report a single cell instead of the matrix.
+            for b in "$WS"/bin/*; do
+              [ -f "$b" ] || continue
+              n="$(basename "$b")"
+              case "$n" in
+                *.log|*.status) continue ;;
+                # arm64 payloads have their own guest; here they would only
+                # produce "Exec format error" noise.
+                *arm64*) continue ;;
+              esac
+              chmod +x "$b" 2>/dev/null
+              echo "---------------- $n ----------------"
+              file "$b" 2>/dev/null
+              readelf -d "$b" 2>/dev/null | grep -i 'NEEDED' || true
+              ldd "$b" 2>&1 | head -12
+              out="$("$b" probe 2>&1)"
+              rc=$?
+              echo "EXIT=$rc"
+              echo "OUT=$out"
+              # 128+N means a signal: 139 = SIGSEGV (the ld.so crash this repo
+              # documents), 134 = SIGABRT (what OpenBSD's pinsyscalls delivers
+              # when a syscall is entered from an unregistered address).
+              echo "run|${ABI_REL}|${n}|${rc}|$(echo "$out" | head -1 | tr '|' '/')" >> "$R"
+            done
+
+            echo "=== TABLE for ${ABI_REL} ==="
+            cat "$R"
+
+        env:
+          ABI_REL: ${{ matrix.release }}
+
+      - name: Upload the row
+        if: ${{ always() }}
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: openbsd-abi-result-${{ matrix.release }}
+          path: result-${{ matrix.release }}.txt
+          retention-days: 7
+          if-no-files-found: warn
+
+  # ---------------------------------------------------------------------------
+  # Q4: `P2 Build openbsd-arm64` is green in agent's CI and no leg has ever
+  # executed its output. libprobe's external-e2e.yml already runs
+  # vmactions/openbsd-vm with arch aarch64 against release 7.9, so the guest
+  # exists -- what is unknown is whether the arm64 binary agent cross-builds can
+  # start inside it. TCG, so it is slow; that cost is the finding too.
+  # ---------------------------------------------------------------------------
+  run-arm64:
+    name: Run on OpenBSD 7.9 (arm64, emulated)
+    needs: [build-cross]
+    if: ${{ always() }}
+    # x86_64 host with an aarch64 guest, as e2e.yml's BSD arm64 legs already do:
+    # there is no nested KVM on GitHub's arm64 fleet, so the guest is TCG either
+    # way and the action's README calls ubuntu-24.04-arm the slower of the two.
+    runs-on: ubuntu-24.04
+    timeout-minutes: 180
+    steps:
+      - name: Collect every binary produced
+        uses: actions/download-artifact@70fc10c6e5e1ce46ad2ea6f2b72d43f7d47b13c3 # v8.0.0
+        with:
+          pattern: openbsd-abi-bin-*
+          merge-multiple: true
+          path: bin
+
+      - name: Try the arm64 binaries in an aarch64 guest
+        uses: vmactions/openbsd-vm@86cdc08415d9d0865267e686561e276c52d62530 # v1.4.7
+        with:
+          usesh: true
+          release: '7.9'
+          arch: aarch64
+          copyback: true
+          run: |
+            WS="$(pwd)"
+            R="$WS/result-arm64.txt"
+            : > "$R"
+
+            echo "=== Guest ==="
+            uname -a
+            ls /usr/lib/libc.so.* 2>/dev/null || true
+            LIBC="$(ls /usr/lib/libc.so.* 2>/dev/null | head -1)"
+            echo "libc|7.9-arm64|$(basename "${LIBC:-none}")" >> "$R"
+
+            for b in "$WS"/bin/*arm64*; do
+              [ -f "$b" ] || continue
+              n="$(basename "$b")"
+              case "$n" in *.log|*.status) continue ;; esac
+              chmod +x "$b" 2>/dev/null
+              echo "---------------- $n ----------------"
+              file "$b" 2>/dev/null
+              readelf -d "$b" 2>/dev/null | grep -i 'NEEDED' || true
+              ldd "$b" 2>&1 | head -12
+              out="$("$b" probe 2>&1)"
+              rc=$?
+              echo "EXIT=$rc"
+              echo "OUT=$out"
+              echo "run|7.9-arm64|${n}|${rc}|$(echo "$out" | head -1 | tr '|' '/')" >> "$R"
+            done
+
+            echo "=== TABLE for 7.9 arm64 ==="
+            cat "$R"
+
+      - name: Upload the row
+        if: ${{ always() }}
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: openbsd-abi-result-arm64
+          path: result-arm64.txt
+          retention-days: 7
+          if-no-files-found: warn
+
+  # ---------------------------------------------------------------------------
+  # One table, in the run summary, so the answer survives the log retention.
+  # ---------------------------------------------------------------------------
+  table:
+    name: The table
+    needs: [run-amd64, run-arm64]
+    if: ${{ always() }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/download-artifact@70fc10c6e5e1ce46ad2ea6f2b72d43f7d47b13c3 # v8.0.0
+        with:
+          pattern: openbsd-abi-result-*
+          merge-multiple: true
+          path: rows
+        continue-on-error: true
+
+      - name: Render
+        run: |
+          set -uo pipefail
+          {
+            echo "## OpenBSD ABI proof"
+            echo
+            echo "Exit codes: \`0\` runs. \`139\` = SIGSEGV (128+11). \`134\` = SIGABRT (128+6,"
+            echo "what pinsyscalls delivers). Anything else is ld.so or the program itself."
+            echo
+            echo "### libc shipped per release"
+            echo
+            echo "| release | libc |"
+            echo "| --- | --- |"
+            grep -h '^libc|' rows/*.txt 2>/dev/null | awk -F'|' '{print "| " $2 " | " $3 " |"}' | sort -u
+            echo
+            echo "### Every binary, every guest"
+            echo
+            echo "| guest | binary | exit | first line |"
+            echo "| --- | --- | --- | --- |"
+            grep -h '^run|' rows/*.txt 2>/dev/null | awk -F'|' '{print "| " $2 " | `" $3 "` | " $4 " | " $5 " |"}' | sort
+            echo
+            if ! ls rows/*.txt >/dev/null 2>&1; then
+              echo "_No rows collected -- every run leg failed before producing one._"
+            fi
+          } >> "$GITHUB_STEP_SUMMARY"
+          cat "$GITHUB_STEP_SUMMARY"
