@@ -441,22 +441,33 @@ jobs:
           copyback: true
           envs: ABI_REL
           run: |
+            # vmactions runs this script under -e, and the FIRST binary in the
+            # loop below segfaults by design. Run 35504777212 lost all four
+            # guests to that: one crash, and the leg ended before it had
+            # measured anything else. Every command here is a measurement whose
+            # failure is the result, so -e is turned off for the whole script
+            # and the leg exits 0 at the bottom on purpose.
+            set +e
+            # A crashing Go binary dumps ~200 MB of core into cwd, times nine
+            # binaries, on a guest disk that has no room for it.
+            ulimit -c 0
+
             WS="$(pwd)"
             R="$WS/result-${ABI_REL}.txt"
             : > "$R"
 
             echo "=== Guest ==="
             uname -a
+            sysctl kern.version | head -2
             echo "=== Shared libraries this release ships ==="
-            ls /usr/lib/libc.so.* /usr/lib/libm.so.* /usr/lib/libc++abi.so.* 2>/dev/null || true
-            # The single number that decides everything downstream: ld.so
-            # matches a NEEDED library on its MAJOR and refuses a mismatch.
-            LIBC="$(ls /usr/lib/libc.so.* 2>/dev/null | head -1)"
-            echo "libc|${ABI_REL}|$(basename "${LIBC:-none}")" >> "$R"
+            ls /usr/lib/libc.so.* /usr/lib/libm.so.* /usr/lib/libc++abi.so.* /usr/lib/libpthread.so.* 2>/dev/null
+            # The numbers that decide everything downstream: ld.so matches a
+            # versioned NEEDED entry on its MAJOR and refuses a mismatch.
+            for l in libc libm libc++abi libpthread; do
+              f="$(ls /usr/lib/${l}.so.* 2>/dev/null | head -1)"
+              [ -n "$f" ] && echo "lib|${ABI_REL}|$(basename "$f")" >> "$R"
+            done
 
-            # No `set -e` past this point ON PURPOSE. Every invocation below is
-            # expected to fail somewhere in the table, and a shell that exits on
-            # the first one would report a single cell instead of the matrix.
             for b in "$WS"/bin/*; do
               [ -f "$b" ] || continue
               n="$(basename "$b")"
@@ -469,20 +480,29 @@ jobs:
               chmod +x "$b" 2>/dev/null
               echo "---------------- $n ----------------"
               file "$b" 2>/dev/null
-              readelf -d "$b" 2>/dev/null | grep -i 'NEEDED' || true
-              ldd "$b" 2>&1 | head -12
-              out="$("$b" probe 2>&1)"
+              readelf -d "$b" 2>/dev/null | grep -i 'NEEDED'
+              # ldd EXECUTES the binary on OpenBSD (it sets
+              # LD_TRACE_LOADED_OBJECTS and lets ld.so report), so it dies
+              # exactly where the program does. Subshell, so its death is data.
+              ( ldd "$b" 2>&1 ) | head -12
+              "$b" probe > /tmp/abi-run.out 2>&1
               rc=$?
+              out="$(head -1 /tmp/abi-run.out 2>/dev/null | tr '|' '/')"
               echo "EXIT=$rc"
               echo "OUT=$out"
-              # 128+N means a signal: 139 = SIGSEGV (the ld.so crash this repo
-              # documents), 134 = SIGABRT (what OpenBSD's pinsyscalls delivers
-              # when a syscall is entered from an unregistered address).
-              echo "run|${ABI_REL}|${n}|${rc}|$(echo "$out" | head -1 | tr '|' '/')" >> "$R"
+              # 128+N means a signal: 139 = SIGSEGV, 134 = SIGABRT -- which is
+              # what pinsyscalls(2) delivers for a syscall entered from an
+              # address the kernel never registered. From userland the two look
+              # identical, so ask the kernel what it objected to.
+              dmesg | tail -3
+              echo "run|${ABI_REL}|${n}|${rc}|${out}" >> "$R"
             done
 
             echo "=== TABLE for ${ABI_REL} ==="
             cat "$R"
+            # A measurement leg is green when it measured, not when the things
+            # it measured worked.
+            exit 0
 
         env:
           ABI_REL: ${{ matrix.release }}
@@ -528,15 +548,23 @@ jobs:
           arch: aarch64
           copyback: true
           run: |
+            # Same reason as the amd64 legs: -e off, because a crash here is a
+            # result and not an accident. See the note there.
+            set +e
+            ulimit -c 0
+
             WS="$(pwd)"
             R="$WS/result-arm64.txt"
             : > "$R"
 
             echo "=== Guest ==="
             uname -a
-            ls /usr/lib/libc.so.* 2>/dev/null || true
-            LIBC="$(ls /usr/lib/libc.so.* 2>/dev/null | head -1)"
-            echo "libc|7.9-arm64|$(basename "${LIBC:-none}")" >> "$R"
+            sysctl kern.version | head -2
+            ls /usr/lib/libc.so.* /usr/lib/libm.so.* /usr/lib/libc++abi.so.* /usr/lib/libpthread.so.* 2>/dev/null
+            for l in libc libm libc++abi libpthread; do
+              f="$(ls /usr/lib/${l}.so.* 2>/dev/null | head -1)"
+              [ -n "$f" ] && echo "lib|7.9-arm64|$(basename "$f")" >> "$R"
+            done
 
             for b in "$WS"/bin/*arm64*; do
               [ -f "$b" ] || continue
@@ -545,17 +573,20 @@ jobs:
               chmod +x "$b" 2>/dev/null
               echo "---------------- $n ----------------"
               file "$b" 2>/dev/null
-              readelf -d "$b" 2>/dev/null | grep -i 'NEEDED' || true
-              ldd "$b" 2>&1 | head -12
-              out="$("$b" probe 2>&1)"
+              readelf -d "$b" 2>/dev/null | grep -i 'NEEDED'
+              ( ldd "$b" 2>&1 ) | head -12
+              "$b" probe > /tmp/abi-run.out 2>&1
               rc=$?
+              out="$(head -1 /tmp/abi-run.out 2>/dev/null | tr '|' '/')"
               echo "EXIT=$rc"
               echo "OUT=$out"
-              echo "run|7.9-arm64|${n}|${rc}|$(echo "$out" | head -1 | tr '|' '/')" >> "$R"
+              dmesg | tail -3
+              echo "run|7.9-arm64|${n}|${rc}|${out}" >> "$R"
             done
 
             echo "=== TABLE for 7.9 arm64 ==="
             cat "$R"
+            exit 0
 
       - name: Upload the row
         if: ${{ always() }}
@@ -592,11 +623,11 @@ jobs:
             echo "Exit codes: \`0\` runs. \`139\` = SIGSEGV (128+11). \`134\` = SIGABRT (128+6,"
             echo "what pinsyscalls delivers). Anything else is ld.so or the program itself."
             echo
-            echo "### libc shipped per release"
+            echo "### Shared library majors per release"
             echo
-            echo "| release | libc |"
+            echo "| release | library |"
             echo "| --- | --- |"
-            grep -h '^libc|' rows/*.txt 2>/dev/null | awk -F'|' '{print "| " $2 " | " $3 " |"}' | sort -u
+            grep -h '^lib|' rows/*.txt 2>/dev/null | awk -F'|' '{print "| " $2 " | " $3 " |"}' | sort -u
             echo
             echo "### Every binary, every guest"
             echo
