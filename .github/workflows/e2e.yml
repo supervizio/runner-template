@@ -2292,8 +2292,11 @@ jobs:
   # bench-leg-substrates-proof.yml already settled the container substrate for
   # the two legs believed to require a VM; the other seven take the same
   # shape. Each of the nine was run on an aarch64 kernel before being written
-  # here: package install, graft assertion, validate-probe.sh 93/93,
-  # scenario-battery.sh 9/9, uninstall.
+  # here, and then on the runner itself (run 35508327017, nine of nine):
+  # package install, init election, the graft assertion, validate-probe.sh
+  # 92 passed / 0 failed / 3 skipped, scenario-battery.sh 9/9, uninstall.
+  # One of those three skips is the CPU clock this hardware does not expose --
+  # see the comment on it in the validate step, it is measured, not assumed.
   #
   # What the containers do NOT cover is what the proof workflow already named:
   # boot ordering and clean shutdown. Unchanged by this addition, and the same
@@ -2695,7 +2698,53 @@ jobs:
           docker exec svz sh -c 'cat /usr/lib/supervizio/grafted-init'
 
           echo "=== Validate probe ==="
-          docker exec svz sh /opt/svz/validate-probe.sh /usr/local/bin/supervizio
+          # .cpu.frequency_mhz, and why this one field is exempted here.
+          #
+          # The probe does not fail to read a clock on this host, it declares
+          # there is none. Measured on run 35507794810, all nine legs, word for
+          # word the same:
+          #
+          #   "brand": {"value": "ARM"}
+          #   "frequency_mhz": {"value": null, "reason": "NOT_PRESENT",
+          #     "kind": "ABSENT", "detail": "no cpu MHz line in /proc/cpuinfo,
+          #     no sysfs cpufreq node, and the brand string matched no database
+          #     entry"}
+          #
+          # libprobe says the same in linux/procfs/cpu.rs: "cpu MHz is absent
+          # from /proc/cpuinfo on every aarch64 kernel, the sysfs cpufreq nodes
+          # are absent on a VM with no cpufreq driver, and the brand rebuilt
+          # from CPU implementer/CPU part matches no database entry ...
+          # published as an absence, never as a reading".
+          #
+          # validate-probe.sh has exactly one knob for this field,
+          # SVZ_EMULATED_CPU, named after the first case that reached it -- the
+          # TCG-emulated BSD arm64 legs. ubuntu-24.04-arm is NOT emulated; it
+          # is native aarch64 hardware that exposes no clock. The knob is the
+          # right one, its name is one case too narrow. (Worth renaming in
+          # agent, e.g. SVZ_NO_CPU_CLOCK; not this repo's file.)
+          #
+          # TWO independent conditions, both required, so this cannot become a
+          # way to go green: the probe must DECLARE the absence, and the host
+          # must genuinely have no clock to read. A regression that returns
+          # null where a clock exists still fails this leg.
+          EMU=0
+          docker exec svz sh -c '/usr/local/bin/supervizio --probe > /opt/svz/probe.json'
+          echo "probe reports .cpu.frequency_mhz = $(docker exec svz jq -c '.cpu.frequency_mhz' /opt/svz/probe.json)"
+          has_clock=0
+          if docker exec svz sh -c 'grep -q "^cpu MHz" /proc/cpuinfo \
+               || test -r /sys/devices/system/cpu/cpu0/cpufreq/scaling_cur_freq \
+               || test -r /sys/devices/system/cpu/cpu0/cpufreq/cpuinfo_max_freq \
+               || test -r /sys/devices/system/cpu/cpu0/cpufreq/base_frequency'; then
+            has_clock=1
+          fi
+          echo "this host exposes a readable CPU clock: $has_clock"
+          value=$(docker exec svz jq -r '.cpu.frequency_mhz.value' /opt/svz/probe.json)
+          kind=$(docker exec svz jq -r '.cpu.frequency_mhz.kind // ""' /opt/svz/probe.json)
+          if [ "$has_clock" = 0 ] && [ "$value" = "null" ] && [ "$kind" = "ABSENT" ]; then
+            EMU=1
+            echo "::notice::.cpu.frequency_mhz exempted on this host: $(docker exec svz jq -r '.cpu.frequency_mhz.detail' /opt/svz/probe.json)"
+          fi
+          docker exec -e SVZ_EMULATED_CPU="$EMU" svz sh /opt/svz/validate-probe.sh /usr/local/bin/supervizio
 
           echo "=== Supervision scenarios ==="
           docker exec svz sh /opt/svz/scenario-battery.sh /usr/local/bin/supervizio
