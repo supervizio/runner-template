@@ -50,6 +50,7 @@ env:
   # digests, so a difference in the table cannot be a difference in Go.
   GO_VERSION: '1.27.1'
   GO_SHA256_OPENBSD_AMD64: 'db0566b3b3ddf6eda09cb3434a9401eb2583ffa539475e45592812813f11c792'
+  GO_SHA256_OPENBSD_ARM64: '953142ae3734098e65118ddca29ed2f469a85f039a78a1572da98ba271042e65'
 
 jobs:
   # ---------------------------------------------------------------------------
@@ -412,6 +413,85 @@ jobs:
           if-no-files-found: warn
 
   # ---------------------------------------------------------------------------
+  # The other half of Q4. agent publishes no openbsd/arm64 binary today
+  # (release.yml carries an explicit `rm -f supervizio-openbsd-arm64`, because
+  # no machine has ever executed it) and has no arm64 OpenBSD build host. If the
+  # cross binary cannot start, the only remaining way to get a runnable
+  # openbsd/arm64 binary is to build it inside an emulated aarch64 guest -- so
+  # measure whether that is possible and what it costs, rather than declaring
+  # the platform impossible.
+  #
+  # TCG, no KVM anywhere on GitHub's fleet for aarch64, so the compile is the
+  # expensive part and the number this job produces is the whole point.
+  # ---------------------------------------------------------------------------
+  build-native-arm64:
+    name: Build on OpenBSD 7.9 (arm64, native in an emulated guest)
+    needs: [fixture]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 180
+    steps:
+      - name: Fetch the fixture
+        uses: actions/download-artifact@70fc10c6e5e1ce46ad2ea6f2b72d43f7d47b13c3 # v8.0.0
+        with:
+          name: openbsd-abi-fixture
+          path: fixture
+
+      - name: Build inside an aarch64 OpenBSD 7.9
+        uses: vmactions/openbsd-vm@86cdc08415d9d0865267e686561e276c52d62530 # v1.4.7
+        with:
+          usesh: true
+          release: '7.9'
+          arch: aarch64
+          copyback: true
+          envs: GO_VERSION GO_SHA256_OPENBSD_ARM64
+          run: |
+            set -e
+            WS="$(pwd)"
+            mkdir -p "$WS/out"
+
+            echo "=== Guest ==="
+            uname -a
+            echo "started $(date -u +%H:%M:%S)"
+
+            GO_TGZ="go${GO_VERSION}.openbsd-arm64.tar.gz"
+            ftp -V -o "/tmp/$GO_TGZ" "https://go.dev/dl/$GO_TGZ"
+            got="$(sha256 -q "/tmp/$GO_TGZ")"
+            if [ "$got" != "$GO_SHA256_OPENBSD_ARM64" ]; then
+              echo "::error::toolchain checksum mismatch: got $got" >&2
+              exit 1
+            fi
+            rm -rf /usr/local/go
+            tar -C /usr/local -xzf "/tmp/$GO_TGZ"
+            export PATH="/usr/local/go/bin:$PATH"
+            go version
+            echo "toolchain ready $(date -u +%H:%M:%S)"
+
+            cd "$WS/fixture"
+            cc -O2 -fPIC -c fixture.c -o fixture.o
+            ar rcs libfixture.a fixture.o
+
+            echo "=== cgo build, agent's link line, on real aarch64 OpenBSD ==="
+            CGO_ENABLED=1 \
+            CGO_CFLAGS="" \
+            CGO_LDFLAGS="-L$WS/fixture -lfixture -lm -lc++abi" \
+            go build -o "$WS/out/native79arm64-cgo" .
+            echo "built $(date -u +%H:%M:%S)"
+
+            file "$WS/out/native79arm64-cgo"
+            readelf -d "$WS/out/native79arm64-cgo" 2>/dev/null | grep -i NEEDED || true
+            # Control: it runs where it was built.
+            "$WS/out/native79arm64-cgo" control
+
+      - name: Upload
+        if: ${{ always() }}
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: openbsd-abi-bin-native-arm64
+          path: out/
+          retention-days: 7
+          if-no-files-found: warn
+
+  # ---------------------------------------------------------------------------
   # Q1 lives here. Same binaries, four releases, one table.
   # 7.9 is the control row; 7.8/7.7/7.6 are the question.
   # ---------------------------------------------------------------------------
@@ -525,7 +605,7 @@ jobs:
   # ---------------------------------------------------------------------------
   run-arm64:
     name: Run on OpenBSD 7.9 (arm64, emulated)
-    needs: [build-cross]
+    needs: [build-cross, build-native-arm64]
     if: ${{ always() }}
     # x86_64 host with an aarch64 guest, as e2e.yml's BSD arm64 legs already do:
     # there is no nested KVM on GitHub's arm64 fleet, so the guest is TCG either
