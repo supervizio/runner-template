@@ -3550,16 +3550,27 @@ jobs:
   # OpenBSD arm64 -- the last platform with a package nothing had ever run.
   #
   # agent cross-built `supervizio-openbsd-arm64` on every PR and release.yml
-  # then deleted it (`rm -f supervizio-openbsd-arm64`), because the cross link
-  # produces a binary that SIGSEGVs in rcrt0.o before main(). There was no
-  # arm64 OpenBSD build host anywhere, so there was no second option and the
-  # platform simply shipped nothing.
+  # then deleted it (`rm -f supervizio-openbsd-arm64`), because THAT cross
+  # recipe produced a binary that SIGSEGVs in rcrt0.o before main(). There was
+  # no arm64 OpenBSD build host anywhere, so the platform simply shipped
+  # nothing.
   #
-  # agent's openbsd-native.yml now builds it inside a real aarch64 OpenBSD
-  # guest (TCG-emulated on an x86_64 hosted runner) and publishes
-  # `supervizio-openbsd-arm64-pkg`. This leg is what turns that from bytes
-  # into a claim: it installs the published package the way a user does and
-  # runs the probe and the supervision battery on it.
+  # The RECIPE was the fault, not cross-compilation. agent's `P2 Build
+  # openbsd-arm64` now uses a corrected one -- `-no-pie` as a DRIVER flag, an
+  # `ld` shim retranslating the `-nopie` clang then emits internally, and
+  # `-static` -- and the result starts and probes on both supported releases.
+  # bsd-package.yml wraps that binary in a package inside a real aarch64
+  # OpenBSD guest and publishes `supervizio-openbsd-arm64-pkg`.
+  #
+  # Measured, agent run 35549271131: the cross build of the real cmd/agent is
+  # 2 min 18 s end to end, against past 36 minutes for the same compile in an
+  # emulated guest -- which is why a native arm64 build was tried, measured and
+  # withdrawn inside the same pull request.
+  #
+  # This leg is what turns bytes into a claim: it installs the published
+  # package the way a user does and runs the probe and the supervision battery
+  # on it. The binary being cross-built changes nothing here, and that is the
+  # point of validating the PACKAGE rather than the build.
   # ===========================================================================
   e2e-bsd-openbsd-arm64:
     name: E2E BSD openbsd arm64 (${{ matrix.release }})
