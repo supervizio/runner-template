@@ -2773,6 +2773,417 @@ jobs:
             "https://api.github.com/repos/${{ needs.resolve.outputs.source_repo }}/statuses/${{ needs.resolve.outputs.sha }}" \
             -d "{\"state\":\"$STATE\",\"context\":\"e2e/linux-arm64/${{ matrix.name }}\",\"description\":\"$DESC\",\"target_url\":\"${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}\"}"
 
+  # ===========================================================================
+  # E2E LINUX EXOTIC — the eleven packaged Linux targets that had no leg, plus
+  # loong64, under QEMU user-mode emulation on a plain hosted runner.
+  #
+  # Why this exists: agent builds and packages 386/armv7/armv6/riscv64/
+  # ppc64le/s390x in both a glibc and a musl flavour, and until this job none
+  # of them was ever executed anywhere. They were compiled, packaged, uploaded
+  # to a release and shipped to users on the strength of the compiler exiting
+  # zero.
+  #
+  # Why emulation and not a runner: GitHub sells no riscv64, ppc64le, s390x or
+  # loongarch runner, and the bench has no such guest either. binfmt_misc +
+  # qemu-user is the only way to run these bytes at all, and it runs the REAL
+  # artifact -- the same .deb/.apk a user installs -- rather than a rebuild.
+  #
+  # What it does NOT prove, stated plainly so nobody reads more into a green
+  # tick than is there:
+  #   - No init. These legs boot no service manager, so the graft that the
+  #     amd64/arm64 legs prove is not proven here. install.sh takes its
+  #     "no supported init system detected" branch and says so in the log.
+  #   - qemu-user translates instructions, not hardware. /proc and /sys are
+  #     the HOST's for most paths, so a probe field that reads sysfs reads
+  #     x86_64 sysfs through a riscv64 process. What is genuinely exercised is
+  #     the instruction set, the ABI, the endianness (s390x is big-endian and
+  #     is the only leg anywhere in this repo that is), the dynamic linker,
+  #     and the package arch mapping.
+  #   - loong64 is not packaged by agent at all, so its leg installs the bare
+  #     binary. It is the one target here with no package path to test.
+  # ===========================================================================
+
+  e2e-linux-exotic:
+    name: E2E Linux exotic ${{ matrix.name }}
+    needs: [resolve]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    if: ${{ github.event.inputs.arm_only != 'true' }}
+    strategy:
+      fail-fast: false
+      matrix:
+        # base    pinned by digest, as everywhere else in this file. All three
+        #         digests are multi-arch INDEXES, which is what lets one digest
+        #         serve six different platforms.
+        # distro_arch  what the base image's own package database calls itself
+        #         (dpkg --print-architecture / /etc/apk/arch). Asserted before
+        #         anything is installed, and it is the guard that makes this
+        #         job capable of failing: if the platform had no variant in the
+        #         index, docker would silently hand back the amd64 image, and
+        #         this value would read amd64/x86_64 instead. `uname -m` does
+        #         NOT work for that -- measured: a linux/386 container on an
+        #         amd64 host runs natively and reports x86_64, while the same
+        #         image on an arm64 host reports i686.
+        # artifact  the bridged GitHub artifact from agent's run. deb for the
+        #         glibc targets, apk for the musl ones -- see
+        #         E2E_BRIDGE_PKG_ARCHES in agent's ci.yml.
+        include:
+          - name: 386-glibc
+            target: linux-386
+            platform: linux/386
+            base: debian@sha256:9cc080028c43b27d2074d63a5f9caf7166d731494965616c1a6d2827a004585c # debian:trixie
+            distro_arch: i386
+            family: deb
+            artifact: supervizio-386.deb
+            prep: "apt-get update -qq && DEBIAN_FRONTEND=noninteractive apt-get install -y -qq jq procps"
+          - name: 386-musl
+            target: linux-386-musl
+            platform: linux/386
+            base: alpine@sha256:85fe1e81d6758c208f3e1eed4338a1997e19d4be002d4dd32d3100c9a8c010a0 # alpine:3.23
+            distro_arch: x86
+            family: apk
+            artifact: supervizio-386.apk
+            prep: "apk add --no-cache jq"
+          - name: armv7-glibc
+            target: linux-arm
+            platform: linux/arm/v7
+            base: debian@sha256:9cc080028c43b27d2074d63a5f9caf7166d731494965616c1a6d2827a004585c # debian:trixie
+            distro_arch: armhf
+            family: deb
+            artifact: supervizio-arm7.deb
+            prep: "apt-get update -qq && DEBIAN_FRONTEND=noninteractive apt-get install -y -qq jq procps"
+          - name: armv7-musl
+            target: linux-arm-musl
+            platform: linux/arm/v7
+            base: alpine@sha256:85fe1e81d6758c208f3e1eed4338a1997e19d4be002d4dd32d3100c9a8c010a0 # alpine:3.23
+            distro_arch: armv7
+            family: apk
+            artifact: supervizio-arm7.apk
+            prep: "apk add --no-cache jq"
+          # armv6 and armv7 are the SAME qemu-arm and report the same
+          # `uname -m` (armv7l, measured). What separates them is the apk
+          # database: alpine's armv6 image calls itself armhf and refuses an
+          # armv7 package, so installing supervizio-arm6.apk here is the only
+          # thing that checks agent's arm6 -> armhf nfpm mapping.
+          - name: armv6-musl
+            target: linux-armv6-musl
+            platform: linux/arm/v6
+            base: alpine@sha256:85fe1e81d6758c208f3e1eed4338a1997e19d4be002d4dd32d3100c9a8c010a0 # alpine:3.23
+            distro_arch: armhf
+            family: apk
+            artifact: supervizio-arm6.apk
+            prep: "apk add --no-cache jq"
+          - name: riscv64-glibc
+            target: linux-riscv64
+            platform: linux/riscv64
+            base: debian@sha256:9cc080028c43b27d2074d63a5f9caf7166d731494965616c1a6d2827a004585c # debian:trixie
+            distro_arch: riscv64
+            family: deb
+            artifact: supervizio-riscv64.deb
+            prep: "apt-get update -qq && DEBIAN_FRONTEND=noninteractive apt-get install -y -qq jq procps"
+          - name: riscv64-musl
+            target: linux-riscv64-musl
+            platform: linux/riscv64
+            base: alpine@sha256:85fe1e81d6758c208f3e1eed4338a1997e19d4be002d4dd32d3100c9a8c010a0 # alpine:3.23
+            distro_arch: riscv64
+            family: apk
+            artifact: supervizio-riscv64.apk
+            prep: "apk add --no-cache jq"
+          - name: ppc64le-glibc
+            target: linux-ppc64le
+            platform: linux/ppc64le
+            base: debian@sha256:9cc080028c43b27d2074d63a5f9caf7166d731494965616c1a6d2827a004585c # debian:trixie
+            # Debian calls it ppc64el, rpm and apk call it ppc64le. nfpm does
+            # that translation from one PKG_ARCH=ppc64le input; this leg is
+            # where the deb half of it is checked against a real dpkg.
+            distro_arch: ppc64el
+            family: deb
+            artifact: supervizio-ppc64le.deb
+            prep: "apt-get update -qq && DEBIAN_FRONTEND=noninteractive apt-get install -y -qq jq procps"
+          - name: ppc64le-musl
+            target: linux-ppc64le-musl
+            platform: linux/ppc64le
+            base: alpine@sha256:85fe1e81d6758c208f3e1eed4338a1997e19d4be002d4dd32d3100c9a8c010a0 # alpine:3.23
+            distro_arch: ppc64le
+            family: apk
+            artifact: supervizio-ppc64le.apk
+            prep: "apk add --no-cache jq"
+          # The only big-endian leg in this repo. Its binary is built by a
+          # bootlin musl GCC rather than zig (agent's build-cross), and byte
+          # order is exactly the kind of thing a probe that packs structs gets
+          # wrong silently.
+          - name: s390x-glibc
+            target: linux-s390x
+            platform: linux/s390x
+            base: debian@sha256:9cc080028c43b27d2074d63a5f9caf7166d731494965616c1a6d2827a004585c # debian:trixie
+            distro_arch: s390x
+            family: deb
+            artifact: supervizio-s390x.deb
+            prep: "apt-get update -qq && DEBIAN_FRONTEND=noninteractive apt-get install -y -qq jq procps"
+          - name: s390x-musl
+            target: linux-s390x-musl
+            platform: linux/s390x
+            base: alpine@sha256:85fe1e81d6758c208f3e1eed4338a1997e19d4be002d4dd32d3100c9a8c010a0 # alpine:3.23
+            distro_arch: s390x
+            family: apk
+            artifact: supervizio-s390x.apk
+            prep: "apk add --no-cache jq"
+          # loong64: binary, not package. agent builds linux-loong64 and then
+          # stops -- it is in no packaging matrix, so there is no .deb/.apk to
+          # install and the leg runs the bridged executable directly. The base
+          # is a community image because neither Debian nor Alpine publishes a
+          # loongarch64 variant of their official ones (checked: the indexes
+          # for debian:trixie and alpine:3.23 list 386/amd64/arm/arm64/ppc64le/
+          # riscv64/s390x and no loong64).
+          - name: loong64
+            target: linux-loong64
+            platform: linux/loong64
+            base: ghcr.io/loong64/debian@sha256:c57762803d93d8fd71d329e1a7e577bb8ab0b0e3f97a4145f22d8d5c7dabb4d7 # ghcr.io/loong64/debian:trixie
+            distro_arch: loong64
+            family: bin
+            artifact: supervizio-linux-loong64
+            prep: "apt-get update -qq && DEBIAN_FRONTEND=noninteractive apt-get install -y -qq jq procps"
+    steps:
+      - name: Report status (pending)
+        if: needs.resolve.outputs.sha != ''
+        continue-on-error: true
+        env:
+          GH_TOKEN: ${{ secrets.AGENT_REPO_TOKEN }}
+        run: |
+          [ -z "$GH_TOKEN" ] && exit 0
+          curl -sf -X POST -H "Authorization: Bearer $GH_TOKEN" -H "Accept: application/vnd.github+json" \
+            "https://api.github.com/repos/${{ needs.resolve.outputs.source_repo }}/statuses/${{ needs.resolve.outputs.sha }}" \
+            -d '{"state":"pending","context":"e2e/linux-exotic/${{ matrix.name }}","description":"Running...","target_url":"${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"}'
+
+      - name: Checkout agent code
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: ${{ needs.resolve.outputs.source_repo }}
+          ref: ${{ needs.resolve.outputs.ref }}
+          token: ${{ secrets.AGENT_REPO_TOKEN }}
+          persist-credentials: false
+
+      - name: Download the artifact from the agent run (cross-repo)
+        uses: actions/download-artifact@70fc10c6e5e1ce46ad2ea6f2b72d43f7d47b13c3 # v8.0.0
+        with:
+          name: ${{ matrix.artifact }}
+          path: dl
+          repository: ${{ needs.resolve.outputs.source_repo }}
+          run-id: ${{ needs.resolve.outputs.run_id }}
+          github-token: ${{ secrets.AGENT_REPO_TOKEN }}
+
+      # nfpm emits VERSION-qualified, packager-native names inside the
+      # artifact (supervizio_0.0.0_riscv64.deb, ..._armhf.apk); only agent's
+      # release.yml renames them. Resolve by extension and normalise, the same
+      # way the amd64 VM legs do, rather than asserting a name the artifact
+      # never had.
+      - name: Resolve and normalise the payload
+        env:
+          FAMILY: ${{ matrix.family }}
+          ARTIFACT: ${{ matrix.artifact }}
+        run: |
+          set -euo pipefail
+          ls -la dl/
+          if [ "$FAMILY" = bin ]; then
+            found=$(find dl -type f | head -1)
+          else
+            found=$(find dl -type f -name "*.${FAMILY}" | head -1)
+          fi
+          [ -n "$found" ] && [ -s "$found" ] || {
+            echo "::error::no ${FAMILY} payload in artifact ${ARTIFACT} — did agent bridge it? (E2E_BRIDGE_PKG_ARCHES / E2E_BRIDGE_PLATFORMS)" >&2
+            exit 1
+          }
+          mkdir -p payload
+          mv "$found" "payload/${ARTIFACT}"
+          chmod +x "payload/${ARTIFACT}"
+          ls -l "payload/${ARTIFACT}"
+          sha256sum "payload/${ARTIFACT}"
+
+      # ubuntu-24.04 registers NO qemu emulator of its own -- measured on
+      # run 35571941548, where /proc/sys/fs/binfmt_misc held only llvm and
+      # python entries before this step. Without it every leg below would try
+      # to exec a foreign ELF and get "exec format error".
+      #
+      # Pinned by digest like every other image here. `--install all` is what
+      # registers loong64: the default install set does not include it.
+      - name: Register the qemu-user emulators
+        env:
+          PLATFORM: ${{ matrix.platform }}
+        run: |
+          set -euo pipefail
+          docker run --rm --privileged \
+            tonistiigi/binfmt@sha256:400a4873b838d1b89194d982c45e5fb3cda4593fbfd7e08a02e76b03b21166f0 \
+            --install all | tee /tmp/binfmt.json
+          # Assert the platform this leg needs is actually registered, rather
+          # than discovering it as a confusing exec failure three steps later.
+          # The `supported` list spells variants out (linux/arm/v7), so an
+          # exact match is enough for every value this matrix uses.
+          jq -e --arg p "$PLATFORM" '.supported | index($p)' /tmp/binfmt.json >/dev/null || {
+            echo "::error::$PLATFORM is not in tonistiigi/binfmt's supported list — this leg cannot run"
+            jq -c '.supported' /tmp/binfmt.json
+            exit 1
+          }
+          echo "OK: $PLATFORM registered"
+
+      - name: Boot the base and assert it really is ${{ matrix.distro_arch }}
+        env:
+          BASE: ${{ matrix.base }}
+          PLATFORM: ${{ matrix.platform }}
+          FAMILY: ${{ matrix.family }}
+          DISTRO_ARCH: ${{ matrix.distro_arch }}
+          PREP: ${{ matrix.prep }}
+        run: |
+          set -euo pipefail
+          docker pull -q --platform "$PLATFORM" "$BASE"
+
+          # The image's OWN package database, not uname. See the matrix
+          # comment: uname -m is useless as a guard for the 386 legs, and it
+          # cannot tell armv6 from armv7 on any host.
+          if [ "$FAMILY" = apk ]; then
+            got=$(docker run --rm --platform "$PLATFORM" "$BASE" cat /etc/apk/arch)
+          else
+            got=$(docker run --rm --platform "$PLATFORM" "$BASE" dpkg --print-architecture)
+          fi
+          echo "base package arch = '$got' (expected '$DISTRO_ARCH')"
+          [ "$got" = "$DISTRO_ARCH" ] || {
+            echo "::error::$BASE resolved to '$got', not '$DISTRO_ARCH' — the index has no $PLATFORM variant and docker fell back"
+            exit 1
+          }
+
+          docker run -d --name svz --platform "$PLATFORM" \
+            --entrypoint sleep "$BASE" infinity >/dev/null
+          [ "$(docker inspect -f '{{.State.Running}}' svz)" = "true" ] || {
+            echo "::error::the emulated container did not stay up"; docker logs svz 2>&1 || true; exit 1; }
+          echo "uname -m inside: $(docker exec svz uname -m)"
+          docker exec svz sh -c "$PREP" >/dev/null
+
+      - name: Install the artifact and prove the package path was taken
+        env:
+          FAMILY: ${{ matrix.family }}
+          ARTIFACT: ${{ matrix.artifact }}
+        run: |
+          set -euo pipefail
+          docker exec svz mkdir -p /opt/svz
+          docker cp "payload/${ARTIFACT}" "svz:/opt/svz/${ARTIFACT}"
+          docker cp setup svz:/opt/svz/setup
+          docker cp e2e/validate-probe.sh svz:/opt/svz/validate-probe.sh
+          docker cp e2e/scenario-battery.sh svz:/opt/svz/scenario-battery.sh
+
+          if [ "$FAMILY" = bin ]; then
+            # loong64 only: no package exists, so the bridged executable is
+            # installed where the package would have put it.
+            docker exec svz sh -c "install -m 0755 /opt/svz/${ARTIFACT} /usr/local/bin/supervizio"
+            echo "loong64: bare binary installed (agent packages no loong64 target)"
+          else
+            docker exec -e SUPERVIZIO_LOCAL_PKG="/opt/svz/${ARTIFACT}" svz \
+              sh /opt/svz/setup/install.sh 2>&1 | tee /tmp/install.log
+
+            # install.sh has a FALLBACK: when the package fails to install it
+            # downloads the binary from agent's latest PUBLIC RELEASE and
+            # carries on. On a hosted runner with curl that fallback succeeds,
+            # and the leg would then be validating v0.x from a release instead
+            # of the artifact this run was dispatched for -- green, and
+            # meaningless. Two independent assertions close that door.
+            if grep -q 'falling back to manual install' /tmp/install.log; then
+              echo "::error::install.sh fell back to downloading a release binary — the ${FAMILY} package for this arch did not install"
+              exit 1
+            fi
+            if [ "$FAMILY" = apk ]; then
+              docker exec svz apk info -e supervizio >/dev/null || {
+                echo "::error::apk has no record of supervizio — the package path was not taken"; exit 1; }
+            else
+              docker exec svz dpkg -s supervizio >/dev/null || {
+                echo "::error::dpkg has no record of supervizio — the package path was not taken"; exit 1; }
+            fi
+            echo "OK: installed from the ${FAMILY} this run produced, registered in the package database"
+          fi
+
+          docker exec svz /usr/local/bin/supervizio --version
+
+      - name: Probe
+        run: |
+          set -euo pipefail
+          docker exec svz sh -c '/usr/local/bin/supervizio --probe > /opt/svz/probe.json'
+          # Byte count read through `wc -c < file`, never `wc -c file`: the
+          # latter pads and carries the filename on some platforms.
+          bytes=$(docker exec svz sh -c 'wc -c < /opt/svz/probe.json' | tr -d ' ')
+          echo "probe emitted ${bytes} bytes"
+          [ "$bytes" -gt 1000 ] || { echo "::error::--probe produced ${bytes} bytes"; exit 1; }
+          docker exec svz jq -e '.timestamp and .os.platform and (.cpu.cores > 0)' /opt/svz/probe.json >/dev/null || {
+            echo "::error::probe JSON is missing timestamp/os.platform/cpu.cores"
+            docker exec svz head -c 2000 /opt/svz/probe.json; exit 1; }
+          echo "OK: .timestamp, .os.platform and .cpu.cores > 0 all present"
+
+      - name: Validate every probe field
+        run: |
+          set -euo pipefail
+          # .cpu.frequency_mhz, and the same two-condition exemption the arm64
+          # leg carries -- with a different reason for reaching it. Under
+          # qemu-user the guest reads a SYNTHESISED /proc/cpuinfo for some
+          # targets (riscv64, arm, s390x: no `cpu MHz` line) and the host's
+          # real one for others (386, ppc64le, loong64: four lines, measured
+          # on run 35571941548). Whether the sysfs cpufreq nodes exist varies
+          # by runner VM, not by target -- also measured, in the same run.
+          #
+          # So this cannot be decided per-leg in the matrix; it has to be
+          # observed. BOTH conditions are required, which is what stops it
+          # being a way to go green: the probe must DECLARE the absence
+          # (value null, kind ABSENT), and the machine must genuinely expose
+          # no clock. A regression returning null where a clock exists still
+          # fails.
+          EMU=0
+          has_clock=0
+          if docker exec svz sh -c 'grep -q "^cpu MHz" /proc/cpuinfo \
+               || test -r /sys/devices/system/cpu/cpu0/cpufreq/scaling_cur_freq \
+               || test -r /sys/devices/system/cpu/cpu0/cpufreq/cpuinfo_max_freq \
+               || test -r /sys/devices/system/cpu/cpu0/cpufreq/base_frequency'; then
+            has_clock=1
+          fi
+          value=$(docker exec svz jq -r '.cpu.frequency_mhz.value' /opt/svz/probe.json)
+          kind=$(docker exec svz jq -r '.cpu.frequency_mhz.kind // ""' /opt/svz/probe.json)
+          echo "readable CPU clock on this host: $has_clock ; probe says value=$value kind=$kind"
+          if [ "$has_clock" = 0 ] && [ "$value" = "null" ] && [ "$kind" = "ABSENT" ]; then
+            EMU=1
+            echo "::notice::.cpu.frequency_mhz exempted: $(docker exec svz jq -r '.cpu.frequency_mhz.detail' /opt/svz/probe.json)"
+          fi
+          docker exec -e SVZ_EMULATED_CPU="$EMU" svz sh /opt/svz/validate-probe.sh /usr/local/bin/supervizio
+
+      # The supervisor half. Fork, exec, signal delivery, waitpid, rlimits and
+      # cgroup attachment are precisely the parts of a cgo binary that a
+      # cross-compiler cannot check and that differ most between ABIs -- which
+      # is why these legs run it rather than stopping at --probe.
+      - name: Supervision scenarios
+        run: docker exec svz sh /opt/svz/scenario-battery.sh /usr/local/bin/supervizio
+
+      - name: Uninstall
+        if: ${{ matrix.family != 'bin' }}
+        run: |
+          set -euo pipefail
+          docker exec -e SUPERVIZIO_NON_INTERACTIVE=true svz sh /opt/svz/setup/uninstall.sh
+          docker exec svz sh -c '[ -x /usr/local/bin/supervizio ]' \
+            && echo "::warning::binary still present after uninstall" || true
+
+      - name: Collect the container console on failure
+        if: failure()
+        run: docker logs svz 2>&1 || true
+
+      - name: Tear down
+        if: always()
+        run: docker rm -f svz >/dev/null 2>&1 || true
+
+      - name: Report status (result)
+        if: always() && needs.resolve.outputs.sha != ''
+        continue-on-error: true
+        env:
+          GH_TOKEN: ${{ secrets.AGENT_REPO_TOKEN }}
+        run: |
+          [ -z "$GH_TOKEN" ] && exit 0
+          STATE="success"; DESC="Passed"
+          if [ "${{ job.status }}" != "success" ]; then STATE="failure"; DESC="Failed"; fi
+          curl -sf -X POST -H "Authorization: Bearer $GH_TOKEN" -H "Accept: application/vnd.github+json" \
+            "https://api.github.com/repos/${{ needs.resolve.outputs.source_repo }}/statuses/${{ needs.resolve.outputs.sha }}" \
+            -d "{\"state\":\"$STATE\",\"context\":\"e2e/linux-exotic/${{ matrix.name }}\",\"description\":\"$DESC\",\"target_url\":\"${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}\"}"
+
   e2e-bsd-freebsd-amd64:
     name: E2E BSD freebsd amd64
     needs: [resolve]
@@ -3579,7 +3990,7 @@ jobs:
     needs: [resolve, e2e-docker-amd64, e2e-docker-arm64, e2e-macos, e2e-macos-arm64, e2e-linux-artix-dinit, e2e-linux-debian-sysvinit, e2e-windows-amd64, e2e-windows-arm64,
              e2e-linux-alpine-openrc, e2e-linux-debian-systemd, e2e-linux-rocky-systemd, e2e-linux-opensuse-zypper, e2e-linux-arch-pacman,
              e2e-linux-alpine-runit, e2e-linux-alpine-s6,
-             arm64-packages, e2e-linux-arm64,
+             arm64-packages, e2e-linux-arm64, e2e-linux-exotic,
              e2e-bsd-freebsd-amd64, e2e-bsd-netbsd-amd64, e2e-bsd-openbsd-amd64,
              e2e-bsd-freebsd-arm64, e2e-bsd-netbsd-arm64]
     if: always()
@@ -3614,6 +4025,11 @@ jobs:
             # the two broke.
             "arm64-packages=${{ needs.arm64-packages.result }}"
             "linux-arm64=${{ needs.e2e-linux-arm64.result }}"
+            # Twelve more matrix entries arriving as one result, same rule.
+            # These are the exotic Linux legs (386/armv7/armv6/riscv64/
+            # ppc64le/s390x in glibc and musl, plus loong64) -- every one of
+            # them a target agent shipped with nothing executing it before.
+            "linux-exotic=${{ needs.e2e-linux-exotic.result }}"
             "windows-amd64=${{ needs.e2e-windows-amd64.result }}"
             "windows-arm64=${{ needs.e2e-windows-arm64.result }}"
             "bsd-freebsd-amd64=${{ needs.e2e-bsd-freebsd-amd64.result }}"
@@ -3716,6 +4132,7 @@ jobs:
             echo "| Linux debian-sysvinit | \`${{ needs.e2e-linux-debian-sysvinit.result }}\` |"
             echo "| Linux arm64 (9 inits) | \`${{ needs.e2e-linux-arm64.result }}\` |"
             echo "| arm64 packages | \`${{ needs.arm64-packages.result }}\` |"
+            echo "| Linux exotic (12 emulated targets) | \`${{ needs.e2e-linux-exotic.result }}\` |"
             echo "| Windows amd64 | \`${{ needs.e2e-windows-amd64.result }}\` |"
             echo "| Windows arm64 | \`${{ needs.e2e-windows-arm64.result }}\` |"
             echo "| BSD freebsd amd64 | \`${{ needs.e2e-bsd-freebsd-amd64.result }}\` |"
