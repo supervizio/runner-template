@@ -3174,16 +3174,34 @@ jobs:
           release: ${{ matrix.release }}
           copyback: false
           # jq, for validate-probe.sh. cdn.openbsd.org carries packages for
-          # the CURRENT releases only -- 7.7 upward as of 2026-09-21, checked,
-          # and every older release 404s there while ftp.eu.openbsd.org keeps
-          # the archive. The default is tried first so the common case stays on
-          # the fast mirror and the fallback only pays for the old releases in
-          # this matrix.
+          # the CURRENT releases only -- 7.7 upward as of 2026-09-21, checked --
+          # and every older release answers "no such dir" there, while
+          # ftp.eu.openbsd.org keeps the archive. The default is tried first so
+          # the common case stays on the fast mirror and only the old releases
+          # in this matrix pay for the fallback.
+          #
+          # The fallback is chained on `command -v jq` and NOT on pkg_add's exit
+          # status, because pkg_add EXITS 0 after printing
+          #
+          #   https://cdn.openbsd.org/pub/OpenBSD/7.6/packages/amd64/: no such dir
+          #   Can't find jq
+          #
+          # A `pkg_add ... || fallback` therefore never fires, the guest runs
+          # without jq, and validate-probe.sh reports "[FAIL] Invalid JSON
+          # output" -- blaming the probe for a missing tool. Measured, run
+          # 35573521913. Test the outcome, never the exit code, and fail loudly
+          # when neither mirror served it.
           prepare: |
-            pkg_add -I jq || {
+            pkg_add -I jq || true
+            if ! command -v jq >/dev/null 2>&1; then
               echo https://ftp.eu.openbsd.org/pub/OpenBSD > /etc/installurl
-              pkg_add -I jq
-            }
+              pkg_add -I jq || true
+            fi
+            if ! command -v jq >/dev/null 2>&1; then
+              echo "::error::jq is not installed and no mirror served it - validate-probe.sh cannot run" >&2
+              exit 1
+            fi
+            jq --version
           run: |
             set -e
             WS="$(pwd)"
@@ -3780,16 +3798,34 @@ jobs:
           # qemu-vm self-test lost eight at once.
           envs: OPENBSD_PKG
           # jq, for validate-probe.sh. cdn.openbsd.org carries packages for
-          # the CURRENT releases only -- 7.7 upward as of 2026-09-21, checked,
-          # and every older release 404s there while ftp.eu.openbsd.org keeps
-          # the archive. The default is tried first so the common case stays on
-          # the fast mirror and the fallback only pays for the old releases in
-          # this matrix.
+          # the CURRENT releases only -- 7.7 upward as of 2026-09-21, checked --
+          # and every older release answers "no such dir" there, while
+          # ftp.eu.openbsd.org keeps the archive. The default is tried first so
+          # the common case stays on the fast mirror and only the old releases
+          # in this matrix pay for the fallback.
+          #
+          # The fallback is chained on `command -v jq` and NOT on pkg_add's exit
+          # status, because pkg_add EXITS 0 after printing
+          #
+          #   https://cdn.openbsd.org/pub/OpenBSD/7.6/packages/amd64/: no such dir
+          #   Can't find jq
+          #
+          # A `pkg_add ... || fallback` therefore never fires, the guest runs
+          # without jq, and validate-probe.sh reports "[FAIL] Invalid JSON
+          # output" -- blaming the probe for a missing tool. Measured, run
+          # 35573521913. Test the outcome, never the exit code, and fail loudly
+          # when neither mirror served it.
           prepare: |
-            pkg_add -I jq || {
+            pkg_add -I jq || true
+            if ! command -v jq >/dev/null 2>&1; then
               echo https://ftp.eu.openbsd.org/pub/OpenBSD > /etc/installurl
-              pkg_add -I jq
-            }
+              pkg_add -I jq || true
+            fi
+            if ! command -v jq >/dev/null 2>&1; then
+              echo "::error::jq is not installed and no mirror served it - validate-probe.sh cannot run" >&2
+              exit 1
+            fi
+            jq --version
           run: |
             set -e
             # TCG, not KVM: this guest has no physical CPU clock, so the probe
