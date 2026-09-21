@@ -2,6 +2,9 @@ name: zz exotic probe (temporary, delete before PR)
 
 on:
   workflow_dispatch:
+  push:
+    branches: [ci/exotic-linux-e2e]
+    paths: [".github/workflows/zz-exotic-probe.yml"]
 
 permissions:
   contents: read
