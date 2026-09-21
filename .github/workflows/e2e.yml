@@ -2982,11 +2982,43 @@ jobs:
             -d "{\"state\":\"$STATE\",\"context\":\"e2e/bsd/netbsd-amd64\",\"description\":\"$DESC\",\"target_url\":\"${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}\"}"
 
   e2e-bsd-openbsd-amd64:
-    name: E2E BSD openbsd amd64
+    name: E2E BSD openbsd amd64 (${{ matrix.release }})
     needs: [resolve]
     runs-on: ubuntu-24.04
     timeout-minutes: 30
     if: ${{ github.event.inputs.arm_only != 'true' }}
+    strategy:
+      fail-fast: false
+      matrix:
+        # THE OPENBSD SUPPORT WINDOW, AS A LIST. Not a version to tidy up.
+        #
+        # OpenBSD supports the two most recent releases and guarantees nothing
+        # across them -- not the shared-library majors, not the syscall ABI. A
+        # package therefore has to be tested on every release it claims, and
+        # this list IS that claim.
+        #
+        # Why both and not one, which is the change a future reader will want
+        # to make: a leg that tests the release it was BUILT on proves nothing.
+        # That is not a theory, it is this leg's own history. It ran 7.9 on 7.9
+        # and was green for months while the package it installed started on
+        # 7.9 and nowhere else -- the dynamic cgo link had recorded 7.9's
+        # majors and ld.so refused them on 7.8 (measured, run 35508681036).
+        #
+        # agent now builds on 7.8, the OLDEST supported release, because a
+        # binary carries its build release's expectations and forward is the
+        # forgiving direction (supervizio/agent#222). So 7.8 alone would
+        # re-create exactly the same blind spot one release lower, and the
+        # forward direction -- the one that is now the risk -- would be covered
+        # by nothing. Both cells are measured green for the 7.8-built static
+        # package: run 35510952628 (7.8) and run 35510974825 (7.9), each
+        # --probe plus S1-S8.
+        #
+        # WHEN 8.0 SHIPS: this becomes ['7.9', '8.0'] and agent's
+        # openbsd-native.yml build pin becomes '7.9' -- the oldest entry here.
+        # Those two move together, always. If the build guest leads this list
+        # nothing tests what ships; if this list leads the build guest the leg
+        # tests a system we never claimed.
+        release: ['7.8', '7.9']
     steps:
       - name: Report status (pending)
         if: needs.resolve.outputs.sha != ''
@@ -2997,7 +3029,7 @@ jobs:
           [ -z "$GH_TOKEN" ] && exit 0
           curl -sf -X POST -H "Authorization: Bearer $GH_TOKEN" -H "Accept: application/vnd.github+json" \
             "https://api.github.com/repos/${{ needs.resolve.outputs.source_repo }}/statuses/${{ needs.resolve.outputs.sha }}" \
-            -d '{"state":"pending","context":"e2e/bsd/openbsd-amd64","description":"Running...","target_url":"${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"}'
+            -d '{"state":"pending","context":"e2e/bsd/openbsd-amd64/${{ matrix.release }}","description":"Running...","target_url":"${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"}'
 
       - name: Checkout agent code
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -3018,8 +3050,14 @@ jobs:
       # This leg used to build the agent inside its own guest instead. That
       # validated a THIRD binary, one that ships nowhere: the cross build is
       # broken, the guest rebuild was untested, and the bench build is what
-      # users get. agent's native-platform.yml now bridges the native package,
-      # so this consumes exactly what a user consumes, through the same path.
+      # users get. agent's openbsd-native.yml now builds that package on a
+      # hosted OpenBSD guest and publishes it, so this consumes exactly what a
+      # user consumes, through the same path.
+      #
+      # That build guest is 7.8 -- the OLDEST release in the matrix above, not
+      # 7.9 as it was when this leg was written. See supervizio/agent#222: the
+      # package carries its build release's expectations, so it is built on the
+      # floor of the support window and run forward across the rest of it.
       - name: Download the native OpenBSD package from the agent run
         uses: actions/download-artifact@70fc10c6e5e1ce46ad2ea6f2b72d43f7d47b13c3 # v8.0.0
         with:
@@ -3085,11 +3123,12 @@ jobs:
           # PKG, and the same lesson the qemu-vm self-test recorded when eight
           # legs failed at once for want of an `envs:`.
           envs: OPENBSD_PKG
-          # Pinned, for the same reason the Windows leg pins its image: an
-          # unpinned guest floats with the action's default and moves coverage
-          # with no diff. matches the bench (packer pins install79.iso) and expected-matrix.json.
-          # The action's default here is 7.9.
-          release: '7.9'
+          # Driven by the matrix above, which is the support window. The full
+          # argument lives there; the short version is that pinning matters
+          # (an unpinned guest floats with the action's default and moves
+          # coverage with no diff) and that ONE pin is never enough, because a
+          # leg testing its own build release proves nothing.
+          release: ${{ matrix.release }}
           copyback: false
           prepare: pkg_add -I jq
           run: |
@@ -3106,10 +3145,13 @@ jobs:
             # path reached the command line. So the path is not the problem and
             # guessing at the next one is how the last two runs were spent.
             #
-            # One difference is known and unexamined: the bench guest is OpenBSD
-            # 7.8, this one is 7.9. `pkg_add -v` names its objection instead of
-            # collapsing every cause into "Can't find", so this step measures it
-            # once and the real install below still decides the leg.
+            # (Written when the bench guest was 7.8 and this one was 7.9, and
+            # that difference was the unexamined suspect. This guest is now
+            # whichever release the matrix selected, and agent builds on the
+            # oldest of them, so the difference is no longer a suspect but a
+            # measured variable. The block is kept only for the objection
+            # `pkg_add -v` names, which "Can't find" collapses. The real
+            # install below still decides the leg.)
             # Everything between here and "Install (package path)" is a
             # MEASUREMENT. It must not be able to fail the leg it measures --
             # which it did in run 35444338161, where a `$RUNNER_TEMP` (a HOST
@@ -3222,7 +3264,7 @@ jobs:
           if [ "${{ job.status }}" != "success" ]; then STATE="failure"; DESC="Failed"; fi
           curl -sf -X POST -H "Authorization: Bearer $GH_TOKEN" -H "Accept: application/vnd.github+json" \
             "https://api.github.com/repos/${{ needs.resolve.outputs.source_repo }}/statuses/${{ needs.resolve.outputs.sha }}" \
-            -d "{\"state\":\"$STATE\",\"context\":\"e2e/bsd/openbsd-amd64\",\"description\":\"$DESC\",\"target_url\":\"${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}\"}"
+            -d "{\"state\":\"$STATE\",\"context\":\"e2e/bsd/openbsd-amd64/${{ matrix.release }}\",\"description\":\"$DESC\",\"target_url\":\"${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}\"}"
 
   e2e-bsd-freebsd-arm64:
     name: E2E BSD freebsd arm64
