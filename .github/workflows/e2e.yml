@@ -3092,8 +3092,14 @@ jobs:
               docker exec svz apk info -e supervizio >/dev/null || {
                 echo "::error::apk has no record of supervizio — the package path was not taken"; exit 1; }
             else
-              docker exec svz dpkg -s supervizio >/dev/null || {
-                echo "::error::dpkg has no record of supervizio — the package path was not taken"; exit 1; }
+              # `dpkg -s` exits 0 for a package that was REMOVED and left its
+              # config files behind ("Status: deinstall ok config-files"), so
+              # the status line is asserted, not the exit code.
+              docker exec svz dpkg -s supervizio 2>/dev/null \
+                | grep -q '^Status: install ok installed' || {
+                echo "::error::dpkg has no installed record of supervizio — the package path was not taken"
+                docker exec svz dpkg -s supervizio 2>&1 | head -3 || true
+                exit 1; }
             fi
             echo "OK: installed from the ${FAMILY} this run produced, registered in the package database"
           fi
