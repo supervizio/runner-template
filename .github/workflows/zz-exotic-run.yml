@@ -1,0 +1,145 @@
+name: zz exotic run (temporary, delete before merge)
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [ci/exotic-linux-e2e]
+    paths: [".github/workflows/zz-exotic-run.yml"]
+
+permissions:
+  contents: read
+
+jobs:
+  run:
+    name: run ${{ matrix.name }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - {
+              name: 386-glibc,
+              plat: "linux/386",
+              img: "debian@sha256:9cc080028c43b27d2074d63a5f9caf7166d731494965616c1a6d2827a004585c",
+              asset: supervizio-linux-386,
+              prep: "apt-get update -qq >/dev/null && apt-get install -y -qq jq >/dev/null",
+            }
+          - {
+              name: 386-musl,
+              plat: "linux/386",
+              img: "alpine@sha256:85fe1e81d6758c208f3e1eed4338a1997e19d4be002d4dd32d3100c9a8c010a0",
+              asset: supervizio-linux-386-musl,
+              prep: "apk add --no-cache jq >/dev/null",
+            }
+          - {
+              name: armv7-glibc,
+              plat: "linux/arm/v7",
+              img: "debian@sha256:9cc080028c43b27d2074d63a5f9caf7166d731494965616c1a6d2827a004585c",
+              asset: supervizio-linux-arm,
+              prep: "apt-get update -qq >/dev/null && apt-get install -y -qq jq >/dev/null",
+            }
+          - {
+              name: armv7-musl,
+              plat: "linux/arm/v7",
+              img: "alpine@sha256:85fe1e81d6758c208f3e1eed4338a1997e19d4be002d4dd32d3100c9a8c010a0",
+              asset: supervizio-linux-arm-musl,
+              prep: "apk add --no-cache jq >/dev/null",
+            }
+          - {
+              name: armv6-musl,
+              plat: "linux/arm/v6",
+              img: "alpine@sha256:85fe1e81d6758c208f3e1eed4338a1997e19d4be002d4dd32d3100c9a8c010a0",
+              asset: supervizio-linux-armv6-musl,
+              prep: "apk add --no-cache jq >/dev/null",
+            }
+          - {
+              name: riscv64-glibc,
+              plat: "linux/riscv64",
+              img: "debian@sha256:9cc080028c43b27d2074d63a5f9caf7166d731494965616c1a6d2827a004585c",
+              asset: supervizio-linux-riscv64,
+              prep: "apt-get update -qq >/dev/null && apt-get install -y -qq jq >/dev/null",
+            }
+          - {
+              name: riscv64-musl,
+              plat: "linux/riscv64",
+              img: "alpine@sha256:85fe1e81d6758c208f3e1eed4338a1997e19d4be002d4dd32d3100c9a8c010a0",
+              asset: supervizio-linux-riscv64-musl,
+              prep: "apk add --no-cache jq >/dev/null",
+            }
+          - {
+              name: ppc64le-glibc,
+              plat: "linux/ppc64le",
+              img: "debian@sha256:9cc080028c43b27d2074d63a5f9caf7166d731494965616c1a6d2827a004585c",
+              asset: supervizio-linux-ppc64le,
+              prep: "apt-get update -qq >/dev/null && apt-get install -y -qq jq >/dev/null",
+            }
+          - {
+              name: ppc64le-musl,
+              plat: "linux/ppc64le",
+              img: "alpine@sha256:85fe1e81d6758c208f3e1eed4338a1997e19d4be002d4dd32d3100c9a8c010a0",
+              asset: supervizio-linux-ppc64le-musl,
+              prep: "apk add --no-cache jq >/dev/null",
+            }
+          - {
+              name: s390x-glibc,
+              plat: "linux/s390x",
+              img: "debian@sha256:9cc080028c43b27d2074d63a5f9caf7166d731494965616c1a6d2827a004585c",
+              asset: supervizio-linux-s390x,
+              prep: "apt-get update -qq >/dev/null && apt-get install -y -qq jq >/dev/null",
+            }
+          - {
+              name: s390x-musl,
+              plat: "linux/s390x",
+              img: "alpine@sha256:85fe1e81d6758c208f3e1eed4338a1997e19d4be002d4dd32d3100c9a8c010a0",
+              asset: supervizio-linux-s390x-musl,
+              prep: "apk add --no-cache jq >/dev/null",
+            }
+          - {
+              name: loong64,
+              plat: "linux/loong64",
+              img: "ghcr.io/loong64/debian@sha256:c57762803d93d8fd71d329e1a7e577bb8ab0b0e3f97a4145f22d8d5c7dabb4d7",
+              asset: supervizio-linux-loong64,
+              prep: "apt-get update -qq >/dev/null && apt-get install -y -qq jq >/dev/null",
+            }
+    steps:
+      - name: Register emulators
+        run: |
+          set -euo pipefail
+          docker run --rm --privileged \
+            tonistiigi/binfmt@sha256:400a4873b838d1b89194d982c45e5fb3cda4593fbfd7e08a02e76b03b21166f0 --install all >/dev/null
+
+      - name: Fetch the released binary for this target
+        env:
+          GH_TOKEN: ${{ secrets.AGENT_REPO_TOKEN }}
+          ASSET: ${{ matrix.asset }}
+        run: |
+          set -euo pipefail
+          mkdir -p b
+          gh release download v0.5.0 -R supervizio/agent -D b -p "$ASSET"
+          chmod +x "b/$ASSET"
+          ls -l b/
+
+      - name: Does it run under this runner's qemu
+        env:
+          PLAT: ${{ matrix.plat }}
+          IMG: ${{ matrix.img }}
+          ASSET: ${{ matrix.asset }}
+          PREP: ${{ matrix.prep }}
+        run: |
+          set -euo pipefail
+          docker pull -q --platform "$PLAT" "$IMG" >/dev/null
+          start=$SECONDS
+          docker run --rm --platform "$PLAT" -v "$PWD/b:/b:ro" "$IMG" sh -c "
+            set -e
+            $PREP
+            echo \"uname -m: \$(uname -m)\"
+            /b/$ASSET --version
+            /b/$ASSET --probe > /tmp/p.json
+            echo \"probe bytes: \$(wc -c < /tmp/p.json | tr -d ' ')\"
+            jq -e '.timestamp and .os.platform and (.cpu.cores > 0)' /tmp/p.json >/dev/null && echo 'probe JSON OK'
+            echo \"cpu.frequency_mhz = \$(jq -c '.cpu.frequency_mhz' /tmp/p.json)\"
+            echo \"cpu_mhz_lines=\$(grep -c '^cpu MHz' /proc/cpuinfo || true)\"
+            if test -r /sys/devices/system/cpu/cpu0/cpufreq/scaling_cur_freq; then echo 'cpufreq: readable'; else echo 'cpufreq: absent'; fi
+          "
+          echo "leg took $((SECONDS-start))s"
