@@ -2775,7 +2775,8 @@ jobs:
 
   # ===========================================================================
   # E2E LINUX EXOTIC — the eleven packaged Linux targets that had no leg, plus
-  # loong64, under QEMU user-mode emulation on a plain hosted runner.
+  # loong64: ten under QEMU user-mode emulation, the two 386 ones natively,
+  # all on a plain hosted runner.
   #
   # Why this exists: agent builds and packages 386/armv7/armv6/riscv64/
   # ppc64le/s390x in both a glibc and a musl flavour, and until this job none
@@ -2784,21 +2785,50 @@ jobs:
   # zero.
   #
   # Why emulation and not a runner: GitHub sells no riscv64, ppc64le, s390x or
-  # loongarch runner, and the bench has no such guest either. binfmt_misc +
-  # qemu-user is the only way to run these bytes at all, and it runs the REAL
-  # artifact -- the same .deb/.apk a user installs -- rather than a rebuild.
+  # loongarch runner, and the bench has no such guest either; for those,
+  # binfmt_misc + qemu-user is the only way to run these bytes at all. It runs
+  # the REAL artifact -- the same .deb/.apk a user installs -- not a rebuild.
+  # (armv7/armv6 might run natively on ubuntu-24.04-arm if its cores keep
+  # AArch32 at EL0. Not measured; here they run under qemu-arm.)
   #
-  # What it does NOT prove, stated plainly so nobody reads more into a green
-  # tick than is there:
+  # WHAT A GREEN LEG PROVES depends on `runtime`, and for ten of the twelve it
+  # is much less than the list of steps suggests.
+  #
+  #   qemu-user -- arm, armv6, riscv64, ppc64le, s390x, loong64 (ten legs):
+  #     the package installs, the binary starts, and it probes. Nothing more.
+  #     qemu-user translates instructions and hands EVERY syscall to the x86_64
+  #     host kernel; there is no riscv64 or s390x kernel anywhere here.
+  #     Measured against a native control: a child's /proc/<pid>/exe and
+  #     cmdline name /usr/bin/qemu-<arch>, clone(CLONE_NEWPID) returns EINVAL
+  #     even with --privileged, ptrace returns ENOSYS, uname -r is the host's.
+  #     A supervisor sees every child as the emulator. The scenario battery
+  #     still runs; its green says the supervisor's decision logic, compiled
+  #     for that ISA, drives the host kernel through qemu's syscall
+  #     translation -- NOT that supervision works on that architecture.
+  #     What these legs do exercise, and nothing else does: the instruction
+  #     set, the C calling convention and struct layout between Go, cgo and
+  #     the Rust archive, the byte order (s390x is big-endian, the only such
+  #     leg in this repo), the ELF loader / dynamic linker, and the nfpm arch
+  #     mapping against a real dpkg/apk database.
+  #
+  #   native -- 386 (two legs): --install all registers no i386 emulator on an
+  #     x86_64 runner (run 35571941548 lists the eight it does register), so
+  #     the i386 userland runs on the host kernel's 32-bit compat layer, and
+  #     uname -m reads x86_64 where qemu-i386 would read i686. Here the battery
+  #     IS supervision evidence -- for i386 on a 64-bit kernel, not a 32-bit
+  #     one.
+  #
+  #   `runtime` is not taken on trust: the "How this leg executes" step reads
+  #   a child's /proc/<pid>/exe and fails when it disagrees with the matrix. If
+  #   a future runner image or binfmt release starts registering qemu-i386, the
+  #   386 legs go red instead of silently losing what they prove.
+  #
+  # And for all twelve, emulated or not:
   #   - No init. These legs boot no service manager, so the graft that the
   #     amd64/arm64 legs prove is not proven here. install.sh takes its
   #     "no supported init system detected" branch and says so in the log.
-  #   - qemu-user translates instructions, not hardware. /proc and /sys are
-  #     the HOST's for most paths, so a probe field that reads sysfs reads
-  #     x86_64 sysfs through a riscv64 process. What is genuinely exercised is
-  #     the instruction set, the ABI, the endianness (s390x is big-endian and
-  #     is the only leg anywhere in this repo that is), the dynamic linker,
-  #     and the package arch mapping.
+  #   - /proc and /sys are the host's: a probe field that reads sysfs reads
+  #     x86_64 sysfs, whatever the architecture of the process reading it.
   #   - loong64 is not packaged by agent at all, so its leg installs the bare
   #     binary. It is the one target here with no package path to test.
   # ===========================================================================
@@ -2815,6 +2845,9 @@ jobs:
         # base    pinned by digest, as everywhere else in this file. All three
         #         digests are multi-arch INDEXES, which is what lets one digest
         #         serve six different platforms.
+        # runtime  native | qemu-user -- what a green leg is allowed to claim
+        #         (see the block above this job). Checked every run by the
+        #         "How this leg executes" step, not taken on trust.
         # distro_arch  what the base image's own package database calls itself
         #         (dpkg --print-architecture / /etc/apk/arch). Asserted before
         #         anything is installed, and it is the guard that makes this
@@ -2831,6 +2864,7 @@ jobs:
           - name: 386-glibc
             target: linux-386
             platform: linux/386
+            runtime: native
             base: debian@sha256:9cc080028c43b27d2074d63a5f9caf7166d731494965616c1a6d2827a004585c # debian:trixie
             distro_arch: i386
             family: deb
@@ -2839,6 +2873,7 @@ jobs:
           - name: 386-musl
             target: linux-386-musl
             platform: linux/386
+            runtime: native
             base: alpine@sha256:85fe1e81d6758c208f3e1eed4338a1997e19d4be002d4dd32d3100c9a8c010a0 # alpine:3.23
             distro_arch: x86
             family: apk
@@ -2847,6 +2882,7 @@ jobs:
           - name: armv7-glibc
             target: linux-arm
             platform: linux/arm/v7
+            runtime: qemu-user
             base: debian@sha256:9cc080028c43b27d2074d63a5f9caf7166d731494965616c1a6d2827a004585c # debian:trixie
             distro_arch: armhf
             family: deb
@@ -2855,6 +2891,7 @@ jobs:
           - name: armv7-musl
             target: linux-arm-musl
             platform: linux/arm/v7
+            runtime: qemu-user
             base: alpine@sha256:85fe1e81d6758c208f3e1eed4338a1997e19d4be002d4dd32d3100c9a8c010a0 # alpine:3.23
             distro_arch: armv7
             family: apk
@@ -2868,6 +2905,7 @@ jobs:
           - name: armv6-musl
             target: linux-armv6-musl
             platform: linux/arm/v6
+            runtime: qemu-user
             base: alpine@sha256:85fe1e81d6758c208f3e1eed4338a1997e19d4be002d4dd32d3100c9a8c010a0 # alpine:3.23
             distro_arch: armhf
             family: apk
@@ -2876,6 +2914,7 @@ jobs:
           - name: riscv64-glibc
             target: linux-riscv64
             platform: linux/riscv64
+            runtime: qemu-user
             base: debian@sha256:9cc080028c43b27d2074d63a5f9caf7166d731494965616c1a6d2827a004585c # debian:trixie
             distro_arch: riscv64
             family: deb
@@ -2884,6 +2923,7 @@ jobs:
           - name: riscv64-musl
             target: linux-riscv64-musl
             platform: linux/riscv64
+            runtime: qemu-user
             base: alpine@sha256:85fe1e81d6758c208f3e1eed4338a1997e19d4be002d4dd32d3100c9a8c010a0 # alpine:3.23
             distro_arch: riscv64
             family: apk
@@ -2892,6 +2932,7 @@ jobs:
           - name: ppc64le-glibc
             target: linux-ppc64le
             platform: linux/ppc64le
+            runtime: qemu-user
             base: debian@sha256:9cc080028c43b27d2074d63a5f9caf7166d731494965616c1a6d2827a004585c # debian:trixie
             # Debian calls it ppc64el, rpm and apk call it ppc64le. nfpm does
             # that translation from one PKG_ARCH=ppc64le input; this leg is
@@ -2903,6 +2944,7 @@ jobs:
           - name: ppc64le-musl
             target: linux-ppc64le-musl
             platform: linux/ppc64le
+            runtime: qemu-user
             base: alpine@sha256:85fe1e81d6758c208f3e1eed4338a1997e19d4be002d4dd32d3100c9a8c010a0 # alpine:3.23
             distro_arch: ppc64le
             family: apk
@@ -2915,6 +2957,7 @@ jobs:
           - name: s390x-glibc
             target: linux-s390x
             platform: linux/s390x
+            runtime: qemu-user
             base: debian@sha256:9cc080028c43b27d2074d63a5f9caf7166d731494965616c1a6d2827a004585c # debian:trixie
             distro_arch: s390x
             family: deb
@@ -2923,6 +2966,7 @@ jobs:
           - name: s390x-musl
             target: linux-s390x-musl
             platform: linux/s390x
+            runtime: qemu-user
             base: alpine@sha256:85fe1e81d6758c208f3e1eed4338a1997e19d4be002d4dd32d3100c9a8c010a0 # alpine:3.23
             distro_arch: s390x
             family: apk
@@ -2938,6 +2982,7 @@ jobs:
           - name: loong64
             target: linux-loong64
             platform: linux/loong64
+            runtime: qemu-user
             base: ghcr.io/loong64/debian@sha256:c57762803d93d8fd71d329e1a7e577bb8ab0b0e3f97a4145f22d8d5c7dabb4d7 # ghcr.io/loong64/debian:trixie
             distro_arch: loong64
             family: bin
@@ -3057,6 +3102,31 @@ jobs:
           echo "uname -m inside: $(docker exec svz uname -m)"
           docker exec svz sh -c "$PREP" >/dev/null
 
+      # `runtime` checked, not declared -- see the block above this job.
+      - name: How this leg executes (${{ matrix.runtime }})
+        env:
+          RUNTIME: ${{ matrix.runtime }}
+        run: |
+          set -euo pipefail
+          # A CHILD's link, not this shell's: qemu-user intercepts readlink on
+          # /proc/self/exe and answers with the guest binary, but it cannot
+          # rewrite another process's link, which the kernel resolves to what
+          # it really executed.
+          exe=$(docker exec svz sh -c 'sleep 30 & c=$!; sleep 1; readlink /proc/$c/exe; kill $c 2>/dev/null || true')
+          [ -n "$exe" ] || { echo "::error::could not read a child's /proc/<pid>/exe"; exit 1; }
+          case "$exe" in
+            */qemu-*) seen=qemu-user ;;
+            *)        seen=native ;;
+          esac
+          echo "a child of this container executes as: $exe  ->  $seen"
+          echo "uname -m / -r inside: $(docker exec svz uname -m) / $(docker exec svz uname -r)"
+          [ "$seen" = "$RUNTIME" ] || {
+            echo "::error::the matrix declares runtime=$RUNTIME, the process table says $seen ($exe) — what this leg proves has changed"
+            exit 1; }
+          if [ "$seen" = qemu-user ]; then
+            echo "::notice::qemu-user leg — every child shows as $exe and every syscall is answered by the x86_64 host kernel. Green here means the package installs, the binary starts and it probes; the scenario battery checks supervisor logic on this ISA, not supervision on this architecture."
+          fi
+
       - name: Install the artifact and prove the package path was taken
         env:
           FAMILY: ${{ matrix.family }}
@@ -3154,11 +3224,14 @@ jobs:
           fi
           docker exec -e SVZ_EMULATED_CPU="$EMU" svz sh /opt/svz/validate-probe.sh /usr/local/bin/supervizio
 
-      # The supervisor half. Fork, exec, signal delivery, waitpid, rlimits and
-      # cgroup attachment are precisely the parts of a cgo binary that a
-      # cross-compiler cannot check and that differ most between ABIs -- which
-      # is why these legs run it rather than stopping at --probe.
-      - name: Supervision scenarios
+      # The scenario battery. Read its result through `runtime` (the block
+      # above this job): native, it is supervision on an i386 userland over a
+      # 64-bit kernel; qemu-user, it is the supervisor's logic on this ISA with
+      # every syscall answered by the x86_64 host kernel and every child
+      # visible as the emulator -- not supervision on this architecture. It
+      # stays gating in both modes: a red is always worth reading, even when
+      # the cause turns out to be qemu rather than agent.
+      - name: Scenario battery (${{ matrix.runtime }})
         run: docker exec svz sh /opt/svz/scenario-battery.sh /usr/local/bin/supervizio
 
       - name: Uninstall

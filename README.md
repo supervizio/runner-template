@@ -81,10 +81,21 @@ Windows legs and the BSD legs are in `e2e.yml` and not listed here.
 The exotic Linux legs exist because GitHub sells no riscv64, ppc64le, s390x or
 loongarch runner and the bench has no such guest: emulation is the only way to
 execute those bytes at all. They install the real `.deb`/`.apk`, then run
-`--version`, `--probe`, `validate-probe.sh` and `scenario-battery.sh`. They boot
-no init, so the postinstall graft is NOT what they prove; see the comment block
-above `e2e-linux-exotic` for the full list of what a green tick there does and
-does not mean.
+`--version`, `--probe`, `validate-probe.sh` and `scenario-battery.sh` — and what a
+green leg proves is narrower than that list:
+
+- **Ten of the twelve run under qemu-user**, where every syscall is answered by the
+  x86_64 host kernel and a supervised child shows up as `/usr/bin/qemu-<arch>`
+  (`ptrace` is `ENOSYS`, `clone(CLONE_NEWPID)` is `EINVAL`). There, green means **the
+  package installs, the binary starts and it probes** — not that supervision works
+  on that architecture.
+- **The two 386 legs run natively**, on the host kernel's 32-bit compat layer; for
+  them the scenario battery is real supervision evidence, on a 64-bit kernel.
+- **None boots an init**, so the postinstall graft is not proven by any of them.
+
+Each leg checks its own `runtime` from a child's `/proc/<pid>/exe` and fails if it
+disagrees with the matrix. The comment block above `e2e-linux-exotic` has the
+measurements.
 
 ## Commit Statuses
 
