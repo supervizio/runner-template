@@ -1,12 +1,11 @@
 {
   "schema": "supervizio.release-policy/v1",
   "inventory": {
-    "taken_on": "2026-09-23",
-    "e2e_yml": "supervizio/runner-template@f0af997ca465f16efbb46c1a7375ce7d778ec1c6:.github/workflows/e2e.yml",
-    "external_e2e_yml": "supervizio/runner-template@f0af997ca465f16efbb46c1a7375ce7d778ec1c6:.github/workflows/external-e2e.yml",
+    "taken_on": "2026-09-24",
+    "e2e_yml": "supervizio/runner-template@66c96c0330e921e6fb53b05718fd2d5104494a21:.github/workflows/e2e.yml",
+    "external_e2e_yml": "supervizio/runner-template@66c96c0330e921e6fb53b05718fd2d5104494a21:.github/workflows/external-e2e.yml",
     "pending_prs": {
-      "supervizio/runner-template#101": "0429d92c7f868ef68f94abffdaf07b901cb6f40e",
-      "supervizio/runner-template#102": "5d34963ca4ec2666999f890763125e5e6da05f42"
+      "supervizio/runner-template#102": "c29592c18bf620e9ecd82ed68aded36dfd4b827c"
     }
   },
   "staging": {
@@ -245,6 +244,41 @@
           "runner": "ubuntu-24.04"
         },
         {
+          "id": "openbsd/amd64/7.3",
+          "state": "required",
+          "merge_ci": "gating",
+          "from": "e2e.yml e2e-bsd-openbsd-amd64[7.3]",
+          "runner": "ubuntu-24.04"
+        },
+        {
+          "id": "openbsd/amd64/7.4",
+          "state": "required",
+          "merge_ci": "gating",
+          "from": "e2e.yml e2e-bsd-openbsd-amd64[7.4]",
+          "runner": "ubuntu-24.04"
+        },
+        {
+          "id": "openbsd/amd64/7.5",
+          "state": "required",
+          "merge_ci": "gating",
+          "from": "e2e.yml e2e-bsd-openbsd-amd64[7.5]",
+          "runner": "ubuntu-24.04"
+        },
+        {
+          "id": "openbsd/amd64/7.6",
+          "state": "required",
+          "merge_ci": "gating",
+          "from": "e2e.yml e2e-bsd-openbsd-amd64[7.6]",
+          "runner": "ubuntu-24.04"
+        },
+        {
+          "id": "openbsd/amd64/7.7",
+          "state": "required",
+          "merge_ci": "gating",
+          "from": "e2e.yml e2e-bsd-openbsd-amd64[7.7]",
+          "runner": "ubuntu-24.04"
+        },
+        {
           "id": "openbsd/amd64/7.8",
           "state": "required",
           "merge_ci": "gating",
@@ -259,60 +293,18 @@
           "runner": "ubuntu-24.04"
         },
         {
-          "id": "openbsd/amd64/7.3",
-          "state": "pending-merge",
-          "merge_ci": "gating",
-          "from": "e2e.yml e2e-bsd-openbsd-amd64[7.3]",
-          "runner": "ubuntu-24.04",
-          "pr": "supervizio/runner-template#101"
-        },
-        {
-          "id": "openbsd/amd64/7.4",
-          "state": "pending-merge",
-          "merge_ci": "gating",
-          "from": "e2e.yml e2e-bsd-openbsd-amd64[7.4]",
-          "runner": "ubuntu-24.04",
-          "pr": "supervizio/runner-template#101"
-        },
-        {
-          "id": "openbsd/amd64/7.5",
-          "state": "pending-merge",
-          "merge_ci": "gating",
-          "from": "e2e.yml e2e-bsd-openbsd-amd64[7.5]",
-          "runner": "ubuntu-24.04",
-          "pr": "supervizio/runner-template#101"
-        },
-        {
-          "id": "openbsd/amd64/7.6",
-          "state": "pending-merge",
-          "merge_ci": "gating",
-          "from": "e2e.yml e2e-bsd-openbsd-amd64[7.6]",
-          "runner": "ubuntu-24.04",
-          "pr": "supervizio/runner-template#101"
-        },
-        {
-          "id": "openbsd/amd64/7.7",
-          "state": "pending-merge",
-          "merge_ci": "gating",
-          "from": "e2e.yml e2e-bsd-openbsd-amd64[7.7]",
-          "runner": "ubuntu-24.04",
-          "pr": "supervizio/runner-template#101"
-        },
-        {
           "id": "openbsd/arm64/7.8",
-          "state": "pending-merge",
+          "state": "required",
           "merge_ci": "gating",
           "from": "e2e.yml e2e-bsd-openbsd-arm64[7.8]",
-          "runner": "ubuntu-24.04",
-          "pr": "supervizio/runner-template#101"
+          "runner": "ubuntu-24.04"
         },
         {
           "id": "openbsd/arm64/7.9",
-          "state": "pending-merge",
+          "state": "required",
           "merge_ci": "gating",
           "from": "e2e.yml e2e-bsd-openbsd-arm64[7.9]",
-          "runner": "ubuntu-24.04",
-          "pr": "supervizio/runner-template#101"
+          "runner": "ubuntu-24.04"
         },
         {
           "id": "linux-exotic/386-glibc",

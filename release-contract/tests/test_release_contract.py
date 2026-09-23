@@ -300,8 +300,8 @@ class ReceiptValid(unittest.TestCase):
 
     def test_extra_legs_beyond_policy_are_allowed(self):
         r = final_receipt()
-        r["required_matrix"] = r["required_matrix"] + ["openbsd/amd64/7.3"]
-        r["results"]["openbsd/amd64/7.3"] = "success"
+        r["required_matrix"] = r["required_matrix"] + ["linux-exotic/loong64"]
+        r["results"]["linux-exotic/loong64"] = "success"
         rc.validate_receipt(r, POLICY)
 
 
@@ -842,7 +842,7 @@ class Cli(unittest.TestCase):
 class ShippedPolicy(unittest.TestCase):
     def test_policy_is_valid_and_sized_as_inventoried(self):
         rc.validate_policy(POLICY)
-        self.assertEqual(len(rc.required_legs(POLICY, AGENT)), 34)
+        self.assertEqual(len(rc.required_legs(POLICY, AGENT)), 41)
         self.assertEqual(len(POLICY["repositories"][AGENT]["legs"]), 53)
         self.assertEqual(len(rc.required_legs(POLICY, LIBPROBE)), 15)
 

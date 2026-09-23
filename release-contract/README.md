@@ -199,7 +199,7 @@ validation.
 `POST /repos/supervizio/runner-template/dispatches`. GitHub accepts at most 10
 top-level `client_payload` properties and a payload under 64 KB
 ([REST reference](https://docs.github.com/en/rest/repos/repos#create-a-repository-dispatch-event));
-this one has 6, and a 62-asset agent release with every inventoried leg stays
+this one has 6, and a 62-asset agent release with all 53 inventoried legs stays
 under 16 KiB (tested). The validator enforces both limits on the whole body.
 
 ```json
@@ -250,10 +250,11 @@ request and become `required` when it merges — a leg cannot be required before
 workflow that runs it is on `main`. Rule, per brief §4.7: everything that gates
 today keeps gating for a release, and BSD and container legs gate too.
 
-Inventory taken from `main` at `f0af997` and from the heads of the two open pull
-requests named below. **#101 and #102 are not merged.**
+Inventory taken from `main` at `66c96c0` (which includes #101, merged on
+2026-09-23) and from the head of #102 at `c29592c`. **#102 is not merged**: its
+legs are `pending-merge`.
 
-**supervizio/agent** — 34 required, 19 pending (source: `e2e.yml`, every leg gating in merge CI):
+**supervizio/agent** — 41 required, 12 pending (source: `e2e.yml`, every leg gating in merge CI):
 
 | Legs | Count | Runner |
 |---|---|---|
@@ -263,8 +264,7 @@ requests named below. **#101 and #102 are not merged.**
 | `linux/amd64/{artix-dinit,debian-sysvinit,alpine-openrc,debian-systemd,rocky-systemd,opensuse-zypper,arch-pacman,alpine-runit,alpine-s6}` | 9 | `ubuntu-24.04` |
 | `linux/arm64/{alpine-openrc,alpine-runit,alpine-s6,alpine-dinit,debian-systemd,debian-sysvinit,rocky-systemd,opensuse-zypper,arch-pacman}` | 9 | `ubuntu-24.04-arm` |
 | `freebsd/{amd64,arm64}` (15.0), `netbsd/{amd64,arm64}` (10.1) | 4 | `ubuntu-24.04` (QEMU) |
-| `openbsd/amd64/{7.8,7.9}` | 2 | `ubuntu-24.04` (QEMU) |
-| *pending #101:* `openbsd/amd64/{7.3,7.4,7.5,7.6,7.7}`, `openbsd/arm64/{7.8,7.9}` | 7 | `ubuntu-24.04` |
+| `openbsd/amd64/{7.3,7.4,7.5,7.6,7.7,7.8,7.9}`, `openbsd/arm64/{7.8,7.9}` | 9 | `ubuntu-24.04` (QEMU) |
 | *pending #102:* `linux-exotic/{386,armv7,riscv64,ppc64le,s390x}-{glibc,musl}`, `linux-exotic/armv6-musl`, `linux-exotic/loong64` | 12 | `ubuntu-24.04` (QEMU) |
 
 `arm64-packages` gates the merge lane but is not a leg: it *builds* arm64 packages
