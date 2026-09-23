@@ -615,7 +615,25 @@ class Promotion(unittest.TestCase):
 
     def test_already_published(self):
         self.assertRefused(state_for(self.receipt, draft=False), "not a draft")
-        self.assertEqual(self.verify(state_for(self.receipt, draft=False), allow_published=True), [])
+        self.assertEqual(self.verify(state_for(self.receipt, draft=False), audit=True), [])
+
+    def test_policy_tightening_never_invalidates_history(self):
+        # A release validated when the policy required fewer legs: a NEW candidate
+        # with that matrix is refused, the published release still audits clean.
+        old = final_receipt()
+        old["required_matrix"] = old["required_matrix"][:5]
+        old["results"] = {leg: "success" for leg in old["required_matrix"]}
+        state = state_for(old, draft=False)
+        self.assertRefused(state_for(old), "omits leg")
+        self.assertEqual(self.verify(state, audit=True), [])
+
+    def test_audit_still_refuses_tampering(self):
+        self.assertRefused(state_for(self.receipt, draft=False, tag_commit=OTHER_COMMIT), "re-pointed", audit=True)
+        assets = asset_list(self.receipt, {"supervizio-amd64.deb": "sha256:" + h("rebuilt")})
+        self.assertRefused(state_for(self.receipt, draft=False, assets=assets), "GitHub digest", audit=True)
+        forged = final_receipt()
+        forged["results"][FIRST_LEG] = "cancelled"
+        self.assertRefused(state_for(forged, draft=False), "stored receipt is invalid", audit=True)
 
     def test_supplied_receipt_must_be_the_stored_one(self):
         other = copy.deepcopy(self.receipt)

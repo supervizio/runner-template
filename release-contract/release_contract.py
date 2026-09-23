@@ -229,6 +229,12 @@ def required_legs(policy: Dict[str, Any], repository: str) -> List[str]:
     return [leg["id"] for leg in repo_policy(policy, repository)["legs"] if leg["state"] == "required"]
 
 
+def receipt_reserved_names(policy: Dict[str, Any], receipt: Dict[str, Any]) -> List[str]:
+    """The reserved names of the release a receipt describes: its own manifest file,
+    which in audit mode may predate a rename in policy.json."""
+    return [policy["receipt_asset"], receipt["manifest_file"]]
+
+
 def reserved_names(policy: Dict[str, Any], repository: str) -> List[str]:
     """Release assets that are NOT manifest entries: the receipt (it describes the
     manifest, so it cannot be inside it) and the manifest file (its bytes ARE the
@@ -361,9 +367,14 @@ def derive_verdict(required: List[str], results: Dict[str, str]) -> str:
     return "error"
 
 
-def validate_receipt(receipt: Any, policy: Dict[str, Any]) -> None:
+def validate_receipt(receipt: Any, policy: Dict[str, Any], audit: bool = False) -> None:
     """Well-formedness and internal consistency. Says nothing about the world: that
-    the tag still points where the receipt says is verify_promotion's job."""
+    the tag still points where the receipt says is verify_promotion's job.
+
+    audit=True judges an existing receipt by the rules it was written under: its own
+    required_matrix and manifest_file, not today's policy. Tightening policy.json
+    must never invalidate a release validated before -- the same rule as for
+    test_suite_revision. Only a NEW candidate has to meet the current policy."""
     _require_keys(receipt, RECEIPT_KEYS, "receipt")
     if receipt["schema"] != RECEIPT_SCHEMA:
         raise ContractError(f"receipt.schema must be {RECEIPT_SCHEMA!r}, got {receipt['schema']!r}")
@@ -373,12 +384,15 @@ def validate_receipt(receipt: Any, policy: Dict[str, Any]) -> None:
     _require_match(receipt["resolved_commit"], COMMIT_RE, "receipt.resolved_commit")
     _require_int(receipt["release_id"], "receipt.release_id", 1)
     _require_int(receipt["candidate_generation"], "receipt.candidate_generation", 1)
-    if receipt["manifest_file"] != spec["manifest_file"]:
+    _require_match(receipt["manifest_file"], NAME_RE, "receipt.manifest_file")
+    if receipt["manifest_file"] == policy["receipt_asset"]:
+        raise ContractError("receipt.manifest_file cannot be the receipt asset itself")
+    if not audit and receipt["manifest_file"] != spec["manifest_file"]:
         raise ContractError(
             f"receipt.manifest_file is {receipt['manifest_file']!r}; {receipt['repository']} publishes "
             f"its manifest as {spec['manifest_file']!r}"
         )
-    reserved = reserved_names(policy, receipt["repository"])
+    reserved = receipt_reserved_names(policy, receipt)
     check_manifest_entries(receipt["manifest"], "receipt.manifest", reserved)
     _require_match(receipt["asset_manifest_digest"], DIGEST_RE, "receipt.asset_manifest_digest")
     actual = manifest_digest(receipt["manifest"])
@@ -407,7 +421,7 @@ def validate_receipt(receipt: Any, policy: Dict[str, Any]) -> None:
         _require_match(leg, LEG_RE, "receipt.required_matrix[]")
     if len(set(matrix)) != len(matrix):
         raise ContractError("receipt.required_matrix lists a leg twice")
-    weaker = sorted(set(required_legs(policy, receipt["repository"])) - set(matrix))
+    weaker = [] if audit else sorted(set(required_legs(policy, receipt["repository"])) - set(matrix))
     if weaker:
         raise ContractError(
             f"receipt.required_matrix omits leg(s) the policy requires for {receipt['repository']}: {', '.join(weaker)}"
@@ -624,7 +638,7 @@ def build_final_receipt(pending: Dict[str, Any], run: Dict[str, Any], jobs: List
 # --------------------------------------------------------------------------------------
 
 
-def verify_promotion(state: Dict[str, Any], policy: Dict[str, Any], receipt: Optional[Dict[str, Any]] = None, expect_generation: Optional[int] = None, allow_published: bool = False) -> List[str]:
+def verify_promotion(state: Dict[str, Any], policy: Dict[str, Any], receipt: Optional[Dict[str, Any]] = None, expect_generation: Optional[int] = None, audit: bool = False) -> List[str]:
     """Return every reason the release must NOT be promoted; empty means promote.
 
     `state` is what GitHub says NOW (see observe_release). The receipt checked is
@@ -643,7 +657,7 @@ def verify_promotion(state: Dict[str, Any], policy: Dict[str, Any], receipt: Opt
     if receipt is not None and receipt != stored:
         failures.append("the receipt supplied differs from the receipt stored on the release")
     try:
-        validate_receipt(stored, policy)
+        validate_receipt(stored, policy, audit=audit)
     except ContractError as exc:
         return failures + [f"stored receipt is invalid: {exc}"]
     r = stored
@@ -670,8 +684,8 @@ def verify_promotion(state: Dict[str, Any], policy: Dict[str, Any], receipt: Opt
         failures.append(f"release is {release.get('id')}, the receipt was written for release {r['release_id']}")
     if release.get("tag_name") != r["tag"]:
         failures.append(f"release is attached to tag {release.get('tag_name')!r}, not {r['tag']!r}")
-    if release.get("draft") is not True and not allow_published:
-        failures.append("release is not a draft: nothing to promote (use --allow-published to audit a published release)")
+    if release.get("draft") is not True and not audit:
+        failures.append("release is not a draft: nothing to promote (use --audit to check a published release)")
 
     assets = release.get("assets")
     if not isinstance(assets, list):
@@ -685,7 +699,7 @@ def verify_promotion(state: Dict[str, Any], policy: Dict[str, Any], receipt: Opt
         if name in observed:
             failures.append(f"asset {name!r} is listed twice")
         observed[name] = asset
-    expected_names = set(r["manifest"]) | set(reserved_names(policy, r["repository"]))
+    expected_names = set(r["manifest"]) | set(receipt_reserved_names(policy, r))
     missing = sorted(expected_names - set(observed))
     extra = sorted(set(observed) - expected_names)
     if missing:
@@ -991,7 +1005,7 @@ def cmd_observe(args: argparse.Namespace, policy: Dict[str, Any]) -> int:
 def cmd_verify_promotion(args: argparse.Namespace, policy: Dict[str, Any]) -> int:
     state = _read_json(args.state)
     receipt = _read_json(args.receipt) if args.receipt else None
-    failures = verify_promotion(state, policy, receipt, args.expect_generation, args.allow_published)
+    failures = verify_promotion(state, policy, receipt, args.expect_generation, args.audit)
     if failures:
         print("FAIL do not promote:")
         for reason in failures:
@@ -1064,7 +1078,11 @@ def build_parser() -> argparse.ArgumentParser:
     vp.add_argument("--state", required=True)
     vp.add_argument("--receipt", help="must equal the receipt stored on the release")
     vp.add_argument("--expect-generation", type=int)
-    vp.add_argument("--allow-published", action="store_true")
+    vp.add_argument(
+        "--audit",
+        action="store_true",
+        help="check a release that may already be published, against the matrix its receipt was validated with",
+    )
     vp.set_defaults(func=cmd_verify_promotion)
     return p
 

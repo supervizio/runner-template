@@ -304,8 +304,13 @@ and refuses unless **all** of these hold (each has a test that breaks it):
 
 Promotion protocol: `evidence` → final receipt → Garage copy → upload to the
 release → `observe` → `verify-promotion --expect-generation N` → `--draft=false` →
-dispatch the deploy (agent). `verify-promotion --allow-published` audits a
-published release the same way.
+dispatch the deploy (agent).
+
+`verify-promotion --audit` checks a release that may already be published, with
+one difference: the receipt is judged against **its own** `required_matrix` and
+`manifest_file`, not today's `policy.json`. Tightening the policy never
+invalidates a release validated before it — the same rule the brief sets for
+`test_suite_revision`. Only a new candidate must meet the current policy.
 
 ## 7. Garage layout (`release-artifacts` bucket)
 
@@ -328,7 +333,7 @@ The contract gives reconcil-release a decidable state per `(tag, release)`:
 
 | Observed | Contract reading | Action |
 |---|---|---|
-| published, receipt `success`, `verify-promotion --allow-published` passes | validated | nothing |
+| published, receipt `success`, `verify-promotion --audit` passes | validated | nothing |
 | draft, receipt `success`, `verify-promotion` passes | crashed before publication | resume promotion, no rebuild |
 | draft, receipt `pending` | validation in flight or lost | if no run is going, re-dispatch the same bytes, no rebuild |
 | draft, receipt `error` | no evidence | re-dispatch only with `force_revalidate` |
@@ -336,7 +341,7 @@ The contract gives reconcil-release a decidable state per `(tag, release)`:
 | tag, no release | lost release | restore from Garage (section 7), else new candidate |
 | release, no tag | orphan | delete per policy, never rebuild |
 | published, no receipt | legacy | mark unverified, never rebuild |
-| receipt present, `verify-promotion` refuses on tag or assets | receipt invalidated | new candidate, explicitly |
+| receipt present, `verify-promotion --audit` refuses on tag or assets | receipt invalidated | new candidate, explicitly |
 
 ## 9. Measurements
 
