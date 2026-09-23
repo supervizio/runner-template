@@ -20,6 +20,12 @@
 #     back through the check_name filter. (A user OAuth token is refused outright
 #     -- 403 "You must authenticate via a GitHub App", README measurements.)
 #
+# WHEN IT RUNS: on main when this file changes, or on demand (workflow_dispatch,
+# which needs write access to the repository). Never on a branch push: three of
+# its jobs hold `contents: write`, and a branch's copy of this file must not be
+# handed that token automatically. Every other workflow here that holds a write
+# permission is scoped to main the same way.
+#
 # What it creates is deleted by the last job: one draft release and one tag named
 # v0.0.0-proof.<run id>. Check runs cannot be deleted; they are `neutral`, on this
 # workflow's own commit. Tags and refs are created with GITHUB_TOKEN, whose events
@@ -32,7 +38,7 @@ run-name: release-contract-proof ${{ github.sha }} ${{ github.sha }} ${{ github.
 
 on:
   push:
-    branches: [feat/release-contract]
+    branches: [main]
     paths:
       - ".github/workflows/release-contract-proof.yml"
   workflow_dispatch:

@@ -19,7 +19,7 @@ of it is what anyone works on.
 | `external-e2e.yml` | `repository_dispatch[run-external-e2e]`, `workflow_dispatch` | **libprobe's** lane. Rebuilds from source on the dispatched SHA; posts `e2e-public/<run>-<attempt>`, green iff the 6 native legs AND the 3 BSD **amd64** legs pass. BSD arm64 (no KVM, 1-2 h a leg) and the containers are advisory: shown in the table, never in the verdict. A BSD amd64 leg whose guest never became ready is retried once on a fresh runner; a leg that reached its tests never is. The BSD steps are written once (`&bsd-leg`) and aliased by all nine BSD jobs. |
 | `cleanup-external-e2e.yml` | `workflow_run` on both of the above | Deletes each dispatched run once it finishes, so no public trace of a private-source run remains. `repository_dispatch` runs only — a `workflow_dispatch` is someone debugging on purpose. |
 | `release-contract.yml` | PR and push on `release-contract/**` | Tests the release contract's validator on Linux, macOS, Windows and Python 3.9, and re-derives the manifest test vector with coreutils alone. See "The release contract" below. |
-| `release-contract-proof.yml` | push on its own path | Measures, on real GitHub objects, the behaviours the release contract relies on. Kept so they are not re-derived. |
+| `release-contract-proof.yml` | push to `main` on its own path, `workflow_dispatch` | Measures, on real GitHub objects, the behaviours the release contract relies on, and fails if one of them changes. Never runs on a branch push: its jobs hold `contents: write`. |
 | `qemu-vm-selftest.yml` | push on its own paths | Exercises `.github/actions/qemu-vm` against the upstream cloud images the Linux legs use, before those legs depend on it. |
 | `openbsd-abi-proof.yml` | push on its own path | Runs the OpenBSD link shape across releases and link modes, to answer which OpenBSD binary runs where by executing it. |
 | `dinit-container-proof.yml` | push on its own paths | Proves dinit coverage needs no VM: a Chimera rootfs makes a container where dinit is really PID 1, a service in `/etc/dinit.d` starts, and apk-tools 3 still installs nfpm's v2 `.apk`. |
@@ -82,11 +82,14 @@ the script; they do not re-implement a rule.
   verdict does not follow from its results — on every OS family that will run it,
   and that the manifest format is reproducible without it.
 - **`release-contract-proof.yml`** proves, on a live draft it creates and deletes,
-  what the contract's design stands on: a draft release is readable only with push
-  access; GitHub's asset `digest` is the sha256 of the uploaded bytes; the validator
-  passes a consistent draft and refuses it after an asset is replaced or the tag is
-  re-pointed; a check run holds 65535 characters of text; a 268-character run-name
-  is kept whole.
+  what the contract's design stands on, and fails if it stops being true: a draft
+  release is readable only with push access (the `contents: read`, no-permission
+  and anonymous probes assert a denial; the same probe with push access must see
+  the draft, or the denials prove nothing); GitHub's asset `digest` is the sha256
+  of the uploaded bytes; the validator passes a consistent draft and refuses it
+  after an asset is replaced or the tag is re-pointed; a check run holds 65535
+  characters of text; a 268-character run-name is kept whole. It runs on `main`
+  when its file changes, or by `workflow_dispatch`.
 - **`validate-release.yml` does not exist yet.** The contract fixes what it must be
   (README section 4): no secret referenced anywhere; an `admit` job with
   `contents: write` and nothing else, never executing candidate bytes; one
@@ -117,8 +120,16 @@ named in `envs:`, or it is empty there.
 - Run `actionlint` on anything edited here. `yq` proves the YAML parses; it does
   not prove GitHub will run it — an empty `${{ }}`, even inside a comment,
   starts a run with zero jobs and `yq` is perfectly happy with it.
-- The runner's default shell is `bash -e`: a step that expects a command to fail
-  must say `set +e`, or the first expected failure ends it.
+- Know which shell a step runs: it decides what an expected failure does. With no
+  `shell:`, Linux and macOS run `bash -e {0}` and Windows runs `pwsh`; `shell: bash`
+  runs `bash --noprofile --norc -eo pipefail {0}` on every OS
+  ([workflow syntax](https://docs.github.com/en/actions/reference/workflows-and-actions/workflow-syntax)).
+  In bash, a step that expects a command to fail must `set +e` or capture it
+  (`cmd || rc=$?`), or the first expected failure ends the step. In `pwsh`,
+  `$ErrorActionPreference = 'stop'` is prepended and the step exits with the last
+  `$LASTEXITCODE`: check `$LASTEXITCODE` right after the command, and end with
+  `exit 0` once the failure is the expected one. `release-contract.yml` sets
+  `shell: bash` on its Windows job, so one syntax covers all three OS families.
 - A `GITHUB_TOKEN` cannot move a ref across commits whose workflow files differ —
   it never holds the `workflows` permission.
 - This repository is public. Nothing private goes in it: no private branch names,

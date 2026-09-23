@@ -35,7 +35,9 @@ right before a draft is published.
   support) wherever it will run.
 - `.github/workflows/release-contract-proof.yml` measures on live objects what the
   design stands on (who can read a draft release, whether GitHub's asset digests are
-  the bytes' sha256, the validator against a real draft).
+  the bytes' sha256, the validator against a real draft), and fails if any of it
+  stops being true. It runs on `main` or by `workflow_dispatch`, never on a branch
+  push, because its jobs hold `contents: write`.
 - Test locally: `python3 -m unittest discover -s release-contract/tests`.
 
 ## Rules specific to this repository
