@@ -2950,10 +2950,11 @@ jobs:
             family: apk
             artifact: supervizio-ppc64le.apk
             prep: "apk add --no-cache jq"
-          # The only big-endian leg in this repo. Its binary is built by a
-          # bootlin musl GCC rather than zig (agent's build-cross), and byte
-          # order is exactly the kind of thing a probe that packs structs gets
-          # wrong silently.
+          # The only big-endian legs in this repo. The musl build comes from a
+          # bootlin GCC rather than zig (agent's build-cross), and byte order
+          # is exactly the kind of thing a probe that packs structs gets wrong
+          # silently. qemu-user runs the guest big-endian, so the probe's own
+          # packing IS exercised here -- against an x86_64 kernel, see above.
           - name: s390x-glibc
             target: linux-s390x
             platform: linux/s390x
@@ -3046,8 +3047,10 @@ jobs:
 
       # ubuntu-24.04 registers NO qemu emulator of its own -- measured on
       # run 35571941548, where /proc/sys/fs/binfmt_misc held only llvm and
-      # python entries before this step. Without it every leg below would try
-      # to exec a foreign ELF and get "exec format error".
+      # python entries before this step. Without it every emulated leg below
+      # would try to exec a foreign ELF and get "exec format error". (The 386
+      # legs do not need it: an x86_64 kernel runs i386 natively, and
+      # `--install all` registers no i386 emulator on such a host.)
       #
       # Pinned by digest like every other image here. `--install all` is what
       # registers loong64: the default install set does not include it.
