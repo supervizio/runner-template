@@ -3925,6 +3925,11 @@ jobs:
       # in sync, and the `skipped` bug lived in all three at once.
       - name: Compute verdict
         id: verdict
+        env:
+          # Every job this one waits on, with its result. Read only to check
+          # that the verdict below judges ALL of them -- see the guard after
+          # the loop.
+          NEEDS_JSON: ${{ toJSON(needs) }}
         run: |
           LEGS=(
             "docker-amd64=${{ needs.e2e-docker-amd64.result }}"
@@ -3983,6 +3988,37 @@ jobs:
               OFFENDERS="${OFFENDERS}${leg}:${res} "
             fi
           done
+
+          # needs <-> LEGS. A job in `needs:` that is absent from LEGS is waited
+          # for and never judged: it can go red under a green verdict, which is
+          # exactly how e2e-windows once did (the comment on `needs:` above).
+          # actionlint already rejects the opposite direction -- a LEGS entry
+          # naming a job not in `needs:` -- so equal counts here mean the two
+          # lists describe the same legs. `resolve` is the one need that is
+          # setup, not a leg. A mismatch is an OFFENDER, not an early exit, so
+          # the status, the callback and the table below all still say why.
+          NEEDED="$(printf '%s' "$NEEDS_JSON" | jq 'del(.resolve) | length')"
+          if [ "$NEEDED" != "${#LEGS[@]}" ]; then
+            echo "::error::report waits on $NEEDED legs but judges ${#LEGS[@]} - a leg was added to needs: without being added to LEGS"
+            BAD=$((BAD + 1))
+            OFFENDERS="${OFFENDERS}report-misconfigured(needs=${NEEDED},judged=${#LEGS[@]}) "
+          fi
+
+          # The results table, rendered HERE from the list the verdict just
+          # walked, and handed to the Summary step. The Summary step used to
+          # carry a hand-kept copy of that list, and it drifted: eight legs
+          # counted in the verdict had no row in the table (the seven non-arm64
+          # Linux inits, and e2e-bsd-openbsd-arm64), so a red verdict could name
+          # an offender the table never showed. One list, two renderings.
+          {
+            echo "rows<<ROWS_EOF"
+            for entry in "${LEGS[@]}"; do
+              # \x60 is a backtick: the markdown code span around the result,
+              # spelled so the shell does not read it as a command substitution.
+              printf '| %s | \x60%s\x60 |\n' "${entry%%=*}" "${entry#*=}"
+            done
+            echo "ROWS_EOF"
+          } >> "$GITHUB_OUTPUT"
 
           if [ "$BAD" -gt 0 ]; then
             echo "state=failure" >> "$GITHUB_OUTPUT"
@@ -4043,27 +4079,27 @@ jobs:
 
       - name: Summary
         if: always()
+        env:
+          # Rendered by the verdict step from the same LEGS list it judged. Do
+          # not add rows here by hand: a second list is how this table lost
+          # eight legs while the verdict still counted them.
+          ROWS: ${{ steps.verdict.outputs.rows }}
+          VERDICT_DESC: ${{ steps.verdict.outputs.description }}
         run: |
           {
             echo "## E2E Test Results (runner-template)"
             echo ""
-            echo "| Job | Result |"
+            echo "**Verdict:** ${VERDICT_DESC:-not computed}"
+            echo ""
+            echo "| Leg | Result |"
             echo "|-----|--------|"
-            echo "| Docker amd64 | \`${{ needs.e2e-docker-amd64.result }}\` |"
-            echo "| Docker arm64 | \`${{ needs.e2e-docker-arm64.result }}\` |"
-            echo "| macOS x86_64 | \`${{ needs.e2e-macos.result }}\` |"
-            echo "| macOS ARM64 | \`${{ needs.e2e-macos-arm64.result }}\` |"
-            echo "| Linux artix-dinit | \`${{ needs.e2e-linux-artix-dinit.result }}\` |"
-            echo "| Linux debian-sysvinit | \`${{ needs.e2e-linux-debian-sysvinit.result }}\` |"
-            echo "| Linux arm64 (9 inits) | \`${{ needs.e2e-linux-arm64.result }}\` |"
-            echo "| arm64 packages | \`${{ needs.arm64-packages.result }}\` |"
-            echo "| Windows amd64 | \`${{ needs.e2e-windows-amd64.result }}\` |"
-            echo "| Windows arm64 | \`${{ needs.e2e-windows-arm64.result }}\` |"
-            echo "| BSD freebsd amd64 | \`${{ needs.e2e-bsd-freebsd-amd64.result }}\` |"
-            echo "| BSD freebsd arm64 | \`${{ needs.e2e-bsd-freebsd-arm64.result }}\` |"
-            echo "| BSD netbsd amd64 | \`${{ needs.e2e-bsd-netbsd-amd64.result }}\` |"
-            echo "| BSD netbsd arm64 | \`${{ needs.e2e-bsd-netbsd-arm64.result }}\` |"
-            echo "| BSD openbsd amd64 | \`${{ needs.e2e-bsd-openbsd-amd64.result }}\` |"
+            if [ -n "$ROWS" ]; then
+              printf '%s\n' "$ROWS"
+            else
+              # The verdict step did not run to the point of rendering. Say so
+              # instead of printing an empty table that reads as "no legs".
+              echo "| (verdict step produced no rows) | \`unknown\` |"
+            fi
             echo ""
             echo "**Agent ref:** \`${{ needs.resolve.outputs.ref }}\`"
             echo "**Agent SHA:** \`${{ needs.resolve.outputs.sha }}\`"
