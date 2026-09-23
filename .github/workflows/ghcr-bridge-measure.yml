@@ -1,0 +1,106 @@
+# TEMPORARY measurement for release-contract/: can a job of this PUBLIC repository
+# read a PRIVATE organisation package that a private repository published, with
+# nothing but its own GITHUB_TOKEN? Deleted once measured.
+#
+# Three probes that differ only in the credential they hold -- `packages: read`,
+# no permission, no token -- each ASSERTING its expected outcome. The package
+# holds random bytes only. The publisher reading its own bytes back is the
+# positive control (supervizio/agent, branch ci/ghcr-bridge-measure).
+name: ghcr-bridge-measure
+
+on:
+  push:
+    branches: [measure/ghcr-bridge]
+
+permissions: {}
+
+env:
+  PACKAGE: supervizio/release-contract-bridge-probe
+  LAYER: sha256:688b7d6d464a9488e2876f33f77ecbe1d7aa61a577ad44fc270e278840eded92
+
+jobs:
+  packages-read:
+    name: pull (packages:read)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    permissions:
+      packages: read
+    steps:
+      - id: probe
+        env:
+          LABEL: "packages:read"
+          # Before the owner grants this repository Actions access to the package.
+          EXPECT: denied
+          TOKEN: ${{ github.token }}
+          ACTOR: ${{ github.actor }}
+        run: &probe |
+          set -uo pipefail
+          python3 - <<'EOF'
+          import base64, hashlib, json, os, sys, urllib.error, urllib.request
+
+          REG, PKG, LAYER = "https://ghcr.io", os.environ["PACKAGE"], os.environ["LAYER"]
+
+          class NoRedirect(urllib.request.HTTPRedirectHandler):
+              def redirect_request(self, *a, **k):
+                  return None
+
+          def call(url, headers=None, follow=False):
+              opener = urllib.request.build_opener() if follow else urllib.request.build_opener(NoRedirect)
+              try:
+                  with opener.open(urllib.request.Request(url, headers=headers or {}), timeout=60) as r:
+                      return r.status, {k.lower(): v for k, v in r.headers.items()}, r.read()
+              except urllib.error.HTTPError as e:
+                  return e.code, {k.lower(): v for k, v in (e.headers or {}).items()}, e.read() or b""
+
+          headers = {}
+          if os.environ["TOKEN"]:
+              cred = base64.b64encode(f"{os.environ['ACTOR']}:{os.environ['TOKEN']}".encode()).decode()
+              headers["Authorization"] = "Basic " + cred
+          tok_st, _, body = call(f"{REG}/token?scope=repository:{PKG}:pull&service=ghcr.io", headers)
+          tok = json.loads(body).get("token") if tok_st == 200 else None
+          bearer = {"Authorization": "Bearer " + tok} if tok else {}
+          man_st, _, _ = call(f"{REG}/v2/{PKG}/manifests/probe",
+                              dict(bearer, Accept="application/vnd.oci.image.manifest.v1+json"))
+          blob_st, h, data = call(f"{REG}/v2/{PKG}/blobs/{LAYER}", bearer)
+          if blob_st in (301, 302, 303, 307, 308):
+              blob_st, h, data = call(h["location"], follow=True)  # storage host: no Authorization
+          match = blob_st == 200 and "sha256:" + hashlib.sha256(data).hexdigest() == LAYER
+          result = {"token": tok_st, "manifest": man_st, "blob": blob_st, "bytes_match": match}
+          print(json.dumps(result))
+          with open(os.environ["GITHUB_OUTPUT"], "a") as fh:
+              fh.write("result=" + json.dumps(result) + "\n")
+          expect, label = os.environ["EXPECT"], os.environ["LABEL"]
+          ok = (man_st == 200 and match) if expect == "allowed" else (man_st != 200 and not match)
+          if not ok:
+              print(f"::error::{label}: expected the package to be {expect}, observed {result}")
+              sys.exit(1)
+          print(f"OK {label}: package {expect}")
+          EOF
+
+  no-permission:
+    name: pull (permissions:{})
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    permissions: {}
+    steps:
+      - id: probe
+        env:
+          LABEL: "permissions:{}"
+          EXPECT: denied
+          TOKEN: ${{ github.token }}
+          ACTOR: ${{ github.actor }}
+        run: *probe
+
+  anonymous:
+    name: pull (no token)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    permissions: {}
+    steps:
+      - id: probe
+        env:
+          LABEL: no token
+          EXPECT: denied
+          TOKEN: ""
+          ACTOR: ""
+        run: *probe
