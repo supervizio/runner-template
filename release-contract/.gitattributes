@@ -1,0 +1,3 @@
+# The test vector is hashed byte for byte. An end-of-line conversion on a Windows
+# checkout would change every digest in it.
+tests/vectors/** -text

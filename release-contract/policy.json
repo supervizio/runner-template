@@ -1,0 +1,526 @@
+{
+  "schema": "supervizio.release-policy/v1",
+  "inventory": {
+    "taken_on": "2026-09-23",
+    "e2e_yml": "supervizio/runner-template@f0af997ca465f16efbb46c1a7375ce7d778ec1c6:.github/workflows/e2e.yml",
+    "external_e2e_yml": "supervizio/runner-template@f0af997ca465f16efbb46c1a7375ce7d778ec1c6:.github/workflows/external-e2e.yml",
+    "pending_prs": {
+      "supervizio/runner-template#101": "0429d92c7f868ef68f94abffdaf07b901cb6f40e",
+      "supervizio/runner-template#102": "5d34963ca4ec2666999f890763125e5e6da05f42"
+    }
+  },
+  "staging": {
+    "repository": "supervizio/runner-template",
+    "default_branch": "main",
+    "workflow_path": ".github/workflows/validate-release.yml",
+    "event_type": "validate-release"
+  },
+  "receipt_asset": "release-receipt.json",
+  "repositories": {
+    "supervizio/agent": {
+      "manifest_file": "checksums.txt",
+      "legs": [
+        {
+          "id": "docker/amd64/debian-glibc",
+          "state": "required",
+          "merge_ci": "gating",
+          "from": "e2e.yml e2e-docker-amd64[debian-glibc]",
+          "runner": "ubuntu-24.04"
+        },
+        {
+          "id": "docker/amd64/alpine-musl",
+          "state": "required",
+          "merge_ci": "gating",
+          "from": "e2e.yml e2e-docker-amd64[alpine-musl]",
+          "runner": "ubuntu-24.04"
+        },
+        {
+          "id": "docker/amd64/scratch",
+          "state": "required",
+          "merge_ci": "gating",
+          "from": "e2e.yml e2e-docker-amd64[scratch]",
+          "runner": "ubuntu-24.04"
+        },
+        {
+          "id": "docker/arm64/debian-glibc",
+          "state": "required",
+          "merge_ci": "gating",
+          "from": "e2e.yml e2e-docker-arm64[debian-glibc]",
+          "runner": "ubuntu-24.04-arm"
+        },
+        {
+          "id": "docker/arm64/alpine-musl",
+          "state": "required",
+          "merge_ci": "gating",
+          "from": "e2e.yml e2e-docker-arm64[alpine-musl]",
+          "runner": "ubuntu-24.04-arm"
+        },
+        {
+          "id": "docker/arm64/scratch",
+          "state": "required",
+          "merge_ci": "gating",
+          "from": "e2e.yml e2e-docker-arm64[scratch]",
+          "runner": "ubuntu-24.04-arm"
+        },
+        {
+          "id": "macos/amd64",
+          "state": "required",
+          "merge_ci": "gating",
+          "from": "e2e.yml e2e-macos",
+          "runner": "macos-15-intel"
+        },
+        {
+          "id": "macos/arm64",
+          "state": "required",
+          "merge_ci": "gating",
+          "from": "e2e.yml e2e-macos-arm64",
+          "runner": "macos-15"
+        },
+        {
+          "id": "windows/amd64",
+          "state": "required",
+          "merge_ci": "gating",
+          "from": "e2e.yml e2e-windows-amd64[windows-server]",
+          "runner": "windows-2025"
+        },
+        {
+          "id": "windows/arm64",
+          "state": "required",
+          "merge_ci": "gating",
+          "from": "e2e.yml e2e-windows-arm64[windows-11]",
+          "runner": "windows-11-arm"
+        },
+        {
+          "id": "linux/amd64/artix-dinit",
+          "state": "required",
+          "merge_ci": "gating",
+          "from": "e2e.yml e2e-linux-artix-dinit",
+          "runner": "ubuntu-24.04"
+        },
+        {
+          "id": "linux/amd64/debian-sysvinit",
+          "state": "required",
+          "merge_ci": "gating",
+          "from": "e2e.yml e2e-linux-debian-sysvinit",
+          "runner": "ubuntu-24.04"
+        },
+        {
+          "id": "linux/amd64/alpine-openrc",
+          "state": "required",
+          "merge_ci": "gating",
+          "from": "e2e.yml e2e-linux-alpine-openrc",
+          "runner": "ubuntu-24.04"
+        },
+        {
+          "id": "linux/amd64/debian-systemd",
+          "state": "required",
+          "merge_ci": "gating",
+          "from": "e2e.yml e2e-linux-debian-systemd",
+          "runner": "ubuntu-24.04"
+        },
+        {
+          "id": "linux/amd64/rocky-systemd",
+          "state": "required",
+          "merge_ci": "gating",
+          "from": "e2e.yml e2e-linux-rocky-systemd",
+          "runner": "ubuntu-24.04"
+        },
+        {
+          "id": "linux/amd64/opensuse-zypper",
+          "state": "required",
+          "merge_ci": "gating",
+          "from": "e2e.yml e2e-linux-opensuse-zypper",
+          "runner": "ubuntu-24.04"
+        },
+        {
+          "id": "linux/amd64/arch-pacman",
+          "state": "required",
+          "merge_ci": "gating",
+          "from": "e2e.yml e2e-linux-arch-pacman",
+          "runner": "ubuntu-24.04"
+        },
+        {
+          "id": "linux/amd64/alpine-runit",
+          "state": "required",
+          "merge_ci": "gating",
+          "from": "e2e.yml e2e-linux-alpine-runit",
+          "runner": "ubuntu-24.04"
+        },
+        {
+          "id": "linux/amd64/alpine-s6",
+          "state": "required",
+          "merge_ci": "gating",
+          "from": "e2e.yml e2e-linux-alpine-s6",
+          "runner": "ubuntu-24.04"
+        },
+        {
+          "id": "linux/arm64/alpine-openrc",
+          "state": "required",
+          "merge_ci": "gating",
+          "from": "e2e.yml e2e-linux-arm64[alpine-openrc]",
+          "runner": "ubuntu-24.04-arm"
+        },
+        {
+          "id": "linux/arm64/alpine-runit",
+          "state": "required",
+          "merge_ci": "gating",
+          "from": "e2e.yml e2e-linux-arm64[alpine-runit]",
+          "runner": "ubuntu-24.04-arm"
+        },
+        {
+          "id": "linux/arm64/alpine-s6",
+          "state": "required",
+          "merge_ci": "gating",
+          "from": "e2e.yml e2e-linux-arm64[alpine-s6]",
+          "runner": "ubuntu-24.04-arm"
+        },
+        {
+          "id": "linux/arm64/alpine-dinit",
+          "state": "required",
+          "merge_ci": "gating",
+          "from": "e2e.yml e2e-linux-arm64[alpine-dinit]",
+          "runner": "ubuntu-24.04-arm"
+        },
+        {
+          "id": "linux/arm64/debian-systemd",
+          "state": "required",
+          "merge_ci": "gating",
+          "from": "e2e.yml e2e-linux-arm64[debian-systemd]",
+          "runner": "ubuntu-24.04-arm"
+        },
+        {
+          "id": "linux/arm64/debian-sysvinit",
+          "state": "required",
+          "merge_ci": "gating",
+          "from": "e2e.yml e2e-linux-arm64[debian-sysvinit]",
+          "runner": "ubuntu-24.04-arm"
+        },
+        {
+          "id": "linux/arm64/rocky-systemd",
+          "state": "required",
+          "merge_ci": "gating",
+          "from": "e2e.yml e2e-linux-arm64[rocky-systemd]",
+          "runner": "ubuntu-24.04-arm"
+        },
+        {
+          "id": "linux/arm64/opensuse-zypper",
+          "state": "required",
+          "merge_ci": "gating",
+          "from": "e2e.yml e2e-linux-arm64[opensuse-zypper]",
+          "runner": "ubuntu-24.04-arm"
+        },
+        {
+          "id": "linux/arm64/arch-pacman",
+          "state": "required",
+          "merge_ci": "gating",
+          "from": "e2e.yml e2e-linux-arm64[arch-pacman]",
+          "runner": "ubuntu-24.04-arm"
+        },
+        {
+          "id": "freebsd/amd64",
+          "state": "required",
+          "merge_ci": "gating",
+          "from": "e2e.yml e2e-bsd-freebsd-amd64 (FreeBSD 15.0)",
+          "runner": "ubuntu-24.04"
+        },
+        {
+          "id": "freebsd/arm64",
+          "state": "required",
+          "merge_ci": "gating",
+          "from": "e2e.yml e2e-bsd-freebsd-arm64 (FreeBSD 15.0)",
+          "runner": "ubuntu-24.04"
+        },
+        {
+          "id": "netbsd/amd64",
+          "state": "required",
+          "merge_ci": "gating",
+          "from": "e2e.yml e2e-bsd-netbsd-amd64 (NetBSD 10.1)",
+          "runner": "ubuntu-24.04"
+        },
+        {
+          "id": "netbsd/arm64",
+          "state": "required",
+          "merge_ci": "gating",
+          "from": "e2e.yml e2e-bsd-netbsd-arm64 (NetBSD 10.1)",
+          "runner": "ubuntu-24.04"
+        },
+        {
+          "id": "openbsd/amd64/7.8",
+          "state": "required",
+          "merge_ci": "gating",
+          "from": "e2e.yml e2e-bsd-openbsd-amd64[7.8]",
+          "runner": "ubuntu-24.04"
+        },
+        {
+          "id": "openbsd/amd64/7.9",
+          "state": "required",
+          "merge_ci": "gating",
+          "from": "e2e.yml e2e-bsd-openbsd-amd64[7.9]",
+          "runner": "ubuntu-24.04"
+        },
+        {
+          "id": "openbsd/amd64/7.3",
+          "state": "pending-merge",
+          "merge_ci": "gating",
+          "from": "e2e.yml e2e-bsd-openbsd-amd64[7.3]",
+          "runner": "ubuntu-24.04",
+          "pr": "supervizio/runner-template#101"
+        },
+        {
+          "id": "openbsd/amd64/7.4",
+          "state": "pending-merge",
+          "merge_ci": "gating",
+          "from": "e2e.yml e2e-bsd-openbsd-amd64[7.4]",
+          "runner": "ubuntu-24.04",
+          "pr": "supervizio/runner-template#101"
+        },
+        {
+          "id": "openbsd/amd64/7.5",
+          "state": "pending-merge",
+          "merge_ci": "gating",
+          "from": "e2e.yml e2e-bsd-openbsd-amd64[7.5]",
+          "runner": "ubuntu-24.04",
+          "pr": "supervizio/runner-template#101"
+        },
+        {
+          "id": "openbsd/amd64/7.6",
+          "state": "pending-merge",
+          "merge_ci": "gating",
+          "from": "e2e.yml e2e-bsd-openbsd-amd64[7.6]",
+          "runner": "ubuntu-24.04",
+          "pr": "supervizio/runner-template#101"
+        },
+        {
+          "id": "openbsd/amd64/7.7",
+          "state": "pending-merge",
+          "merge_ci": "gating",
+          "from": "e2e.yml e2e-bsd-openbsd-amd64[7.7]",
+          "runner": "ubuntu-24.04",
+          "pr": "supervizio/runner-template#101"
+        },
+        {
+          "id": "openbsd/arm64/7.8",
+          "state": "pending-merge",
+          "merge_ci": "gating",
+          "from": "e2e.yml e2e-bsd-openbsd-arm64[7.8]",
+          "runner": "ubuntu-24.04",
+          "pr": "supervizio/runner-template#101"
+        },
+        {
+          "id": "openbsd/arm64/7.9",
+          "state": "pending-merge",
+          "merge_ci": "gating",
+          "from": "e2e.yml e2e-bsd-openbsd-arm64[7.9]",
+          "runner": "ubuntu-24.04",
+          "pr": "supervizio/runner-template#101"
+        },
+        {
+          "id": "linux-exotic/386-glibc",
+          "state": "pending-merge",
+          "merge_ci": "gating",
+          "from": "e2e.yml e2e-linux-exotic[386-glibc]",
+          "runner": "ubuntu-24.04",
+          "pr": "supervizio/runner-template#102"
+        },
+        {
+          "id": "linux-exotic/386-musl",
+          "state": "pending-merge",
+          "merge_ci": "gating",
+          "from": "e2e.yml e2e-linux-exotic[386-musl]",
+          "runner": "ubuntu-24.04",
+          "pr": "supervizio/runner-template#102"
+        },
+        {
+          "id": "linux-exotic/armv7-glibc",
+          "state": "pending-merge",
+          "merge_ci": "gating",
+          "from": "e2e.yml e2e-linux-exotic[armv7-glibc]",
+          "runner": "ubuntu-24.04",
+          "pr": "supervizio/runner-template#102"
+        },
+        {
+          "id": "linux-exotic/armv7-musl",
+          "state": "pending-merge",
+          "merge_ci": "gating",
+          "from": "e2e.yml e2e-linux-exotic[armv7-musl]",
+          "runner": "ubuntu-24.04",
+          "pr": "supervizio/runner-template#102"
+        },
+        {
+          "id": "linux-exotic/armv6-musl",
+          "state": "pending-merge",
+          "merge_ci": "gating",
+          "from": "e2e.yml e2e-linux-exotic[armv6-musl]",
+          "runner": "ubuntu-24.04",
+          "pr": "supervizio/runner-template#102"
+        },
+        {
+          "id": "linux-exotic/riscv64-glibc",
+          "state": "pending-merge",
+          "merge_ci": "gating",
+          "from": "e2e.yml e2e-linux-exotic[riscv64-glibc]",
+          "runner": "ubuntu-24.04",
+          "pr": "supervizio/runner-template#102"
+        },
+        {
+          "id": "linux-exotic/riscv64-musl",
+          "state": "pending-merge",
+          "merge_ci": "gating",
+          "from": "e2e.yml e2e-linux-exotic[riscv64-musl]",
+          "runner": "ubuntu-24.04",
+          "pr": "supervizio/runner-template#102"
+        },
+        {
+          "id": "linux-exotic/ppc64le-glibc",
+          "state": "pending-merge",
+          "merge_ci": "gating",
+          "from": "e2e.yml e2e-linux-exotic[ppc64le-glibc]",
+          "runner": "ubuntu-24.04",
+          "pr": "supervizio/runner-template#102"
+        },
+        {
+          "id": "linux-exotic/ppc64le-musl",
+          "state": "pending-merge",
+          "merge_ci": "gating",
+          "from": "e2e.yml e2e-linux-exotic[ppc64le-musl]",
+          "runner": "ubuntu-24.04",
+          "pr": "supervizio/runner-template#102"
+        },
+        {
+          "id": "linux-exotic/s390x-glibc",
+          "state": "pending-merge",
+          "merge_ci": "gating",
+          "from": "e2e.yml e2e-linux-exotic[s390x-glibc]",
+          "runner": "ubuntu-24.04",
+          "pr": "supervizio/runner-template#102"
+        },
+        {
+          "id": "linux-exotic/s390x-musl",
+          "state": "pending-merge",
+          "merge_ci": "gating",
+          "from": "e2e.yml e2e-linux-exotic[s390x-musl]",
+          "runner": "ubuntu-24.04",
+          "pr": "supervizio/runner-template#102"
+        },
+        {
+          "id": "linux-exotic/loong64",
+          "state": "pending-merge",
+          "merge_ci": "gating",
+          "from": "e2e.yml e2e-linux-exotic[loong64]",
+          "runner": "ubuntu-24.04",
+          "pr": "supervizio/runner-template#102"
+        }
+      ]
+    },
+    "supervizio/libprobe": {
+      "manifest_file": "SHA256SUMS",
+      "legs": [
+        {
+          "id": "native/linux-amd64",
+          "state": "required",
+          "merge_ci": "gating",
+          "from": "external-e2e.yml native[linux-amd64]",
+          "runner": "ubuntu-24.04"
+        },
+        {
+          "id": "native/linux-arm64",
+          "state": "required",
+          "merge_ci": "gating",
+          "from": "external-e2e.yml native[linux-arm64]",
+          "runner": "ubuntu-24.04-arm"
+        },
+        {
+          "id": "native/windows-amd64",
+          "state": "required",
+          "merge_ci": "gating",
+          "from": "external-e2e.yml native[windows-amd64]",
+          "runner": "windows-latest"
+        },
+        {
+          "id": "native/windows-arm64",
+          "state": "required",
+          "merge_ci": "gating",
+          "from": "external-e2e.yml native[windows-arm64]",
+          "runner": "windows-11-arm"
+        },
+        {
+          "id": "native/macos-amd64",
+          "state": "required",
+          "merge_ci": "gating",
+          "from": "external-e2e.yml native[macos-amd64]",
+          "runner": "macos-26-intel"
+        },
+        {
+          "id": "native/macos-arm64",
+          "state": "required",
+          "merge_ci": "gating",
+          "from": "external-e2e.yml native[macos-arm64]",
+          "runner": "macos-26"
+        },
+        {
+          "id": "bsd/freebsd-amd64",
+          "state": "required",
+          "merge_ci": "advisory",
+          "from": "external-e2e.yml freebsd[amd64] (FreeBSD 15.0)",
+          "runner": "ubuntu-24.04"
+        },
+        {
+          "id": "bsd/freebsd-arm64",
+          "state": "required",
+          "merge_ci": "advisory",
+          "from": "external-e2e.yml freebsd[arm64] (FreeBSD 15.0)",
+          "runner": "ubuntu-24.04-arm"
+        },
+        {
+          "id": "bsd/openbsd-amd64",
+          "state": "required",
+          "merge_ci": "advisory",
+          "from": "external-e2e.yml openbsd[amd64] (OpenBSD 7.9)",
+          "runner": "ubuntu-24.04"
+        },
+        {
+          "id": "bsd/openbsd-arm64",
+          "state": "required",
+          "merge_ci": "advisory",
+          "from": "external-e2e.yml openbsd[arm64] (OpenBSD 7.9)",
+          "runner": "ubuntu-24.04-arm"
+        },
+        {
+          "id": "bsd/netbsd-amd64",
+          "state": "required",
+          "merge_ci": "advisory",
+          "from": "external-e2e.yml netbsd[amd64] (NetBSD 10.1)",
+          "runner": "ubuntu-24.04"
+        },
+        {
+          "id": "bsd/netbsd-arm64",
+          "state": "required",
+          "merge_ci": "advisory",
+          "from": "external-e2e.yml netbsd[arm64] (NetBSD 10.1)",
+          "runner": "ubuntu-24.04-arm"
+        },
+        {
+          "id": "container/ubuntu",
+          "state": "required",
+          "merge_ci": "advisory",
+          "from": "external-e2e.yml containers[ubuntu]",
+          "runner": "ubuntu-24.04"
+        },
+        {
+          "id": "container/alpine",
+          "state": "required",
+          "merge_ci": "advisory",
+          "from": "external-e2e.yml containers[alpine]",
+          "runner": "ubuntu-24.04"
+        },
+        {
+          "id": "container/scratch",
+          "state": "required",
+          "merge_ci": "advisory",
+          "from": "external-e2e.yml containers[scratch]",
+          "runner": "ubuntu-24.04"
+        }
+      ]
+    }
+  }
+}

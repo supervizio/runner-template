@@ -1,0 +1,333 @@
+# release-contract-proof — the GitHub behaviours release-contract/ stands on,
+# measured on real objects instead of assumed. Kept, like the other *-proof.yml
+# files here, so the answers are not re-derived.
+#
+#  1. DRAFT VISIBILITY. Can a job holding `contents: read`, a job holding no
+#     permission at all, and a request with no token, list a draft release, read
+#     it, and download its assets? The contract's staging bridge is built on the
+#     answer (README, "The bridge").
+#  2. DIGESTS. Is GitHub's per-asset `digest` the sha256 of the bytes uploaded,
+#     and is a canonical manifest file's digest the asset_manifest_digest? The
+#     pre-promotion check trusts those digests instead of downloading a release.
+#  3. THE VALIDATOR, LIVE. Run against a real draft through the real API,
+#     verify-promotion must pass on the consistent release, refuse it once an
+#     asset's bytes are replaced, pass again once they are restored, and refuse
+#     it once the tag is re-pointed.
+#  4. CHECK RUNS. With checks:write, GITHUB_TOKEN can create one; the 65535
+#     character output.text limit is probed on both sides and the text is read
+#     back through the check_name filter. (A user OAuth token is refused outright
+#     -- 403 "You must authenticate via a GitHub App", README measurements.)
+#
+# What it creates is deleted by the last job: one draft release and one tag named
+# v0.0.0-proof.<run id>. Check runs cannot be deleted; they are `neutral`, on this
+# workflow's own commit. Tags and refs are created with GITHUB_TOKEN, whose events
+# start no workflow, so nothing else in this repository runs because of them.
+name: release-contract-proof
+
+on:
+  push:
+    paths:
+      - ".github/workflows/release-contract-proof.yml"
+  workflow_dispatch:
+
+permissions: {}
+
+concurrency:
+  group: release-contract-proof
+  cancel-in-progress: false
+
+env:
+  PROOF_TAG: v0.0.0-proof.${{ github.run_id }}
+
+jobs:
+  stage:
+    name: stage a draft release
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    permissions:
+      contents: write
+    outputs:
+      release_id: ${{ steps.draft.outputs.release_id }}
+      asset_id: ${{ steps.draft.outputs.asset_id }}
+      asset_sha256: ${{ steps.draft.outputs.asset_sha256 }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Annotated tag, draft release, assets, receipt
+        id: draft
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          SHA: ${{ github.sha }}
+        run: |
+          set -euo pipefail
+          mkdir -p rel proof
+          printf 'alpha\n' > rel/proof-alpha.bin
+          printf 'beta\n' > rel/proof-beta.bin
+          # Random, and larger than one upload chunk: a digest GitHub could not
+          # have computed from anything but the bytes.
+          head -c 3000000 /dev/urandom > rel/proof-big.bin
+          python3 release-contract/release_contract.py manifest build --dir rel --output rel/SHA256SUMS
+
+          # An ANNOTATED tag, so the validator's tag peeling runs against the real API.
+          tag_object="$(gh api -X POST "repos/$REPO/git/tags" -f tag="$PROOF_TAG" \
+            -f message="release-contract proof, deleted at the end of run $GITHUB_RUN_ID" \
+            -f object="$SHA" -f type=commit --jq .sha)"
+          gh api -X POST "repos/$REPO/git/refs" -f ref="refs/tags/$PROOF_TAG" -f sha="$tag_object" >/dev/null
+          release_id="$(gh api -X POST "repos/$REPO/releases" -f tag_name="$PROOF_TAG" -f name="$PROOF_TAG" \
+            -F draft=true -f body="release-contract proof run $GITHUB_RUN_ID; deleted when the run ends." --jq .id)"
+          echo "release_id=$release_id" >> "$GITHUB_OUTPUT"
+          for f in rel/*; do
+            gh api -X POST "https://uploads.github.com/repos/$REPO/releases/$release_id/assets?name=$(basename "$f")" \
+              -H "Content-Type: application/octet-stream" --input "$f" >/dev/null
+          done
+
+          # The proof's own policy: the shipped one plus this repository, one leg.
+          python3 - "$REPO" "$SHA" "$release_id" <<'EOF'
+          import json, sys, datetime
+          sys.path.insert(0, "release-contract")
+          import release_contract as rc
+          repo, sha, release_id = sys.argv[1], sys.argv[2], int(sys.argv[3])
+          policy = rc.load_policy()
+          policy["repositories"][repo] = {"manifest_file": "SHA256SUMS", "legs": [{"id": "proof/leg", "state": "required", "from": "release-contract-proof.yml"}]}
+          rc.validate_policy(policy)
+          manifest = rc.parse_manifest(open("rel/SHA256SUMS", "rb").read())
+          import os
+          receipt = {
+              "schema": rc.RECEIPT_SCHEMA, "repository": repo, "tag": os.environ["PROOF_TAG"],
+              "resolved_commit": sha, "release_id": release_id, "candidate_generation": 1,
+              "manifest_file": "SHA256SUMS", "asset_manifest_digest": rc.manifest_digest(manifest),
+              "manifest": manifest, "support_manifest_digest": None, "support": {},
+              "required_matrix": ["proof/leg"], "test_suite_revision": sha,
+              "e2e_run_id": int(os.environ["GITHUB_RUN_ID"]), "e2e_attempt": int(os.environ["GITHUB_RUN_ATTEMPT"]),
+              "results": {"proof/leg": "success"}, "verdict": "success",
+              "recorded_at": datetime.datetime.now(datetime.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
+              "restored_from": None,
+          }
+          rc.validate_receipt(receipt, policy)
+          json.dump(policy, open("proof/policy.json", "w"), indent=2)
+          json.dump(receipt, open("proof/release-receipt.json", "w"), indent=2, sort_keys=True)
+          EOF
+          gh api -X POST "https://uploads.github.com/repos/$REPO/releases/$release_id/assets?name=release-receipt.json" \
+            -H "Content-Type: application/json" --input proof/release-receipt.json >/dev/null
+
+          asset_id="$(gh api "repos/$REPO/releases/$release_id/assets" --jq '.[] | select(.name=="proof-alpha.bin") | .id')"
+          echo "asset_id=$asset_id" >> "$GITHUB_OUTPUT"
+          echo "asset_sha256=$(sha256sum rel/proof-alpha.bin | cut -d' ' -f1)" >> "$GITHUB_OUTPUT"
+          echo "manifest digest: sha256:$(sha256sum rel/SHA256SUMS | cut -d' ' -f1)"
+          gh api "repos/$REPO/releases/$release_id/assets" --jq '.[] | "\(.name)\t\(.digest)"'
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: proof-inputs
+          path: |
+            proof/
+            rel/
+          retention-days: 1
+
+  # Three identical probes that differ only in the credential they hold. A job's
+  # `permissions:` cannot come from a matrix, hence three jobs.
+  probe-contents-read:
+    name: draft visibility (contents:read)
+    needs: stage
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    permissions:
+      contents: read
+    outputs:
+      result: ${{ steps.probe.outputs.result }}
+    steps:
+      - id: probe
+        env:
+          TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          RELEASE_ID: ${{ needs.stage.outputs.release_id }}
+          ASSET_ID: ${{ needs.stage.outputs.asset_id }}
+          ASSET_SHA256: ${{ needs.stage.outputs.asset_sha256 }}
+        run: &probe |
+          set -uo pipefail
+          api=https://api.github.com
+          auth=()
+          [ -n "$TOKEN" ] && auth=(-H "Authorization: Bearer $TOKEN")
+          code() { curl -sS -o body.json -w '%{http_code}' "${auth[@]}" -H "Accept: $1" "$2"; }
+          list="$(code application/vnd.github+json "$api/repos/$REPO/releases?per_page=100")"
+          listed="$(jq --argjson id "$RELEASE_ID" 'any(.[]?; .id == $id)' body.json 2>/dev/null || echo false)"
+          get="$(code application/vnd.github+json "$api/repos/$REPO/releases/$RELEASE_ID")"
+          assets="$(code application/vnd.github+json "$api/repos/$REPO/releases/$RELEASE_ID/assets")"
+          # -L follows the redirect to the storage host; curl drops the
+          # Authorization header when the host changes.
+          download="$(curl -sS -L -o asset.bin -w '%{http_code}' "${auth[@]}" -H "Accept: application/octet-stream" \
+            "$api/repos/$REPO/releases/assets/$ASSET_ID")"
+          bytes_ok=false
+          [ "$download" = 200 ] && [ "$(sha256sum asset.bin | cut -d' ' -f1)" = "$ASSET_SHA256" ] && bytes_ok=true
+          result="$(jq -cn --arg list "$list" --argjson listed "$listed" --arg get "$get" --arg assets "$assets" \
+            --arg download "$download" --argjson bytes_ok "$bytes_ok" \
+            '{list_releases: $list, draft_in_list: $listed, get_release: $get, list_assets: $assets, download_asset: $download, bytes_match: $bytes_ok}')"
+          echo "$result"
+          echo "result=$result" >> "$GITHUB_OUTPUT"
+
+  probe-no-permission:
+    name: draft visibility (permissions:{})
+    needs: stage
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    permissions: {}
+    outputs:
+      result: ${{ steps.probe.outputs.result }}
+    steps:
+      - id: probe
+        env:
+          TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          RELEASE_ID: ${{ needs.stage.outputs.release_id }}
+          ASSET_ID: ${{ needs.stage.outputs.asset_id }}
+          ASSET_SHA256: ${{ needs.stage.outputs.asset_sha256 }}
+        run: *probe
+
+  probe-anonymous:
+    name: draft visibility (no token)
+    needs: stage
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    permissions: {}
+    outputs:
+      result: ${{ steps.probe.outputs.result }}
+    steps:
+      - id: probe
+        env:
+          TOKEN: ""
+          REPO: ${{ github.repository }}
+          RELEASE_ID: ${{ needs.stage.outputs.release_id }}
+          ASSET_ID: ${{ needs.stage.outputs.asset_id }}
+          ASSET_SHA256: ${{ needs.stage.outputs.asset_sha256 }}
+        run: *probe
+
+  verify-live:
+    name: validator against the live draft
+    # After the probes, so they observed the draft untouched.
+    needs: [stage, probe-contents-read, probe-no-permission, probe-anonymous]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 2
+          persist-credentials: false
+      - uses: actions/download-artifact@70fc10c6e5e1ce46ad2ea6f2b72d43f7d47b13c3 # v8.0.0
+        with:
+          name: proof-inputs
+      - name: pass, tamper, restore, re-point
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          RELEASE_ID: ${{ needs.stage.outputs.release_id }}
+        run: |
+          set -uo pipefail
+          rc() { python3 release-contract/release_contract.py --policy proof/policy.json "$@"; }
+          check() {  # check <label> <expected exit> [grep fragment]
+            rc observe --repository "$REPO" --tag "$PROOF_TAG" --release-id "$RELEASE_ID" --hash-assets --output state.json || exit 2
+            out="$(rc verify-promotion --state state.json --receipt proof/release-receipt.json --expect-generation 1)"
+            got=$?
+            printf '%s\n' "$out"
+            if [ "$got" != "$2" ] || { [ -n "${3:-}" ] && ! printf '%s' "$out" | grep -qF "$3"; }; then
+              echo "::error::$1: expected exit $2 and output containing [${3:-anything}], got exit $got"
+              exit 1
+            fi
+            echo "OK $1 (exit $got)"
+          }
+          upload() {
+            id="$(gh api "repos/$REPO/releases/$RELEASE_ID/assets" --jq ".[] | select(.name==\"$1\") | .id")"
+            gh api -X DELETE "repos/$REPO/releases/assets/$id"
+            gh api -X POST "https://uploads.github.com/repos/$REPO/releases/$RELEASE_ID/assets?name=$1" \
+              -H "Content-Type: application/octet-stream" --input "$2" >/dev/null
+          }
+          # Digests: every asset is hashed locally AND compared with GitHub's digest.
+          check "consistent draft" 0
+          printf 'gamma\n' > /tmp/proof-beta.bin
+          upload proof-beta.bin /tmp/proof-beta.bin
+          check "asset bytes replaced" 1 "proof-beta.bin: GitHub digest"
+          upload proof-beta.bin rel/proof-beta.bin
+          check "asset bytes restored" 0
+          parent="$(git rev-parse HEAD^)"
+          gh api -X PATCH "repos/$REPO/git/refs/tags/$PROOF_TAG" -f sha="$parent" -F force=true >/dev/null
+          check "tag re-pointed" 1 "re-pointed"
+
+  checks:
+    name: check-run output limit
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    permissions:
+      checks: write
+    outputs:
+      result: ${{ steps.limit.outputs.result }}
+    steps:
+      - id: limit
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          SHA: ${{ github.sha }}
+        run: |
+          set -uo pipefail
+          create() {  # create <text length> -> HTTP status; body in resp.json
+            python3 - "$1" > req.json <<'EOF'
+          import json, os, sys
+          n = int(sys.argv[1])
+          print(json.dumps({"name": f"release-contract-proof/text-{n}", "head_sha": os.environ["SHA"],
+                            "status": "completed", "conclusion": "neutral",
+                            "output": {"title": "proof", "summary": "output.text length probe", "text": "x" * n}}))
+          EOF
+            gh api -X POST "repos/$REPO/check-runs" --input req.json -i 2>/dev/null > resp.txt
+            head -1 resp.txt | awk '{print $2}'
+          }
+          at_limit="$(create 65535)"
+          over_limit="$(create 65536)"
+          back="$(gh api --paginate "repos/$REPO/commits/$SHA/check-runs?check_name=release-contract-proof/text-65535&filter=all&per_page=100" \
+                  --jq '.check_runs[0].output.text | length')"
+          result="$(jq -cn --arg a "$at_limit" --arg o "$over_limit" --arg b "$back" \
+            '{create_65535: $a, create_65536: $o, text_length_read_back: $b}')"
+          echo "$result"
+          echo "result=$result" >> "$GITHUB_OUTPUT"
+
+  cleanup:
+    name: delete what the proof created
+    if: always()
+    needs:
+      [
+        stage,
+        probe-contents-read,
+        probe-no-permission,
+        probe-anonymous,
+        verify-live,
+        checks,
+      ]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    permissions:
+      contents: write
+    steps:
+      - env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          RELEASE_ID: ${{ needs.stage.outputs.release_id }}
+          READ: ${{ needs.probe-contents-read.outputs.result }}
+          NONE: ${{ needs.probe-no-permission.outputs.result }}
+          ANON: ${{ needs.probe-anonymous.outputs.result }}
+          CHECKS: ${{ needs.checks.outputs.result }}
+        run: |
+          set -uo pipefail
+          [ -n "$RELEASE_ID" ] && gh api -X DELETE "repos/$REPO/releases/$RELEASE_ID" && echo "draft $RELEASE_ID deleted"
+          gh api -X DELETE "repos/$REPO/git/refs/tags/$PROOF_TAG" && echo "tag $PROOF_TAG deleted"
+          {
+            echo "## release-contract proof"
+            echo
+            echo "| credential | list releases | draft listed | get draft | list assets | download asset | bytes match |"
+            echo "|---|---|---|---|---|---|---|"
+            for row in "contents:read|$READ" "permissions:{}|$NONE" "no token|$ANON"; do
+              label="${row%%|*}"; json="${row#*|}"
+              printf '| %s | %s |\n' "$label" "$(printf '%s' "$json" | jq -r '[.list_releases, .draft_in_list, .get_release, .list_assets, .download_asset, .bytes_match] | map(tostring) | join(" | ")' 2>/dev/null || echo 'no result')"
+            done
+            echo
+            echo "check runs: \`$CHECKS\`"
+          } >> "$GITHUB_STEP_SUMMARY"
