@@ -2784,8 +2784,11 @@ jobs:
   #
   # Why emulation and not a runner: GitHub sells no riscv64, ppc64le, s390x or
   # loongarch runner, and the bench has no such guest either; for those,
-  # binfmt_misc + qemu-user is the only way to run these bytes at all. It runs
-  # the REAL artifact -- the same .deb/.apk a user installs -- not a rebuild.
+  # emulation is the only way to run these bytes at all. qemu-user through
+  # binfmt_misc is its cheap form: it brings no kernel of that architecture
+  # (qemu-system would, and that is what agent's G3 still asks for, once, for
+  # s390x). It runs the REAL artifact -- the same .deb/.apk a user installs,
+  # or for loong64 the bridged binary -- not a rebuild.
   # (armv7/armv6 might run natively on ubuntu-24.04-arm if its cores keep
   # AArch32 at EL0. Not measured; here they run under qemu-arm.)
   #
@@ -2800,21 +2803,31 @@ jobs:
   #     cmdline name /usr/bin/qemu-<arch>, clone(CLONE_NEWPID) returns EINVAL
   #     even with --privileged, ptrace returns ENOSYS, uname -r is the host's.
   #     A supervisor sees every child as the emulator. The scenario battery
-  #     still runs; its green says the supervisor's decision logic, compiled
-  #     for that ISA, drives the host kernel through qemu's syscall
-  #     translation -- NOT that supervision works on that architecture.
-  #     What these legs do exercise, and nothing else does: the instruction
-  #     set, the C calling convention and struct layout between Go, cgo and
-  #     the Rust archive, the byte order (s390x is big-endian, the only such
-  #     leg in this repo), the ELF loader / dynamic linker, and the nfpm arch
-  #     mapping against a real dpkg/apk database.
+  #     still runs and a failing scenario still turns the leg red, but a
+  #     passing one is NOT part of the claim: the children are qemu
+  #     processes, and what supervision rests on (a child's identity in /proc,
+  #     namespaces, ptrace, the kernel) is refused by qemu or answered by the
+  #     host. A green qemu-user leg says nothing about supervision on that
+  #     architecture.
+  #     What "starts and probes" does exercise, and nothing else does: the
+  #     instruction set as qemu implements it, the C calling convention and
+  #     struct layout between Go, cgo and the Rust archive, the byte order
+  #     (s390x is big-endian, the only such leg in this repo), the target's
+  #     dynamic linker for the glibc builds (the musl ones are static, and
+  #     either way qemu's own loader maps the ELF, not a kernel of that
+  #     architecture), and the nfpm arch mapping against a real dpkg/apk
+  #     database.
   #
   #   native -- 386 (two legs): --install all registers no i386 emulator on an
   #     x86_64 runner (run 35571941548 lists the eight it does register), so
   #     the i386 userland runs on the host kernel's 32-bit compat layer, and
-  #     uname -m reads x86_64 where qemu-i386 would read i686. Here the battery
-  #     IS supervision evidence -- for i386 on a 64-bit kernel, not a 32-bit
-  #     one.
+  #     uname -m reads x86_64 where qemu-i386 would read i686. Here a green
+  #     battery does count as supervision evidence, bounded three ways: only
+  #     as far as the battery goes (restart policies, retry cap, SIGKILL
+  #     fallback, rlimit, backoff; its cgroup scenario took the "v2 not
+  #     delegated" no-op branch in run 35579127831, so no cgroup
+  #     confinement), for a supervisor that is not PID 1, and for i386 on a
+  #     64-bit kernel, not a 32-bit one.
   #
   #   `runtime` is not taken on trust: the "How this leg executes" step reads
   #   a child's /proc/<pid>/exe and fails when it disagrees with the matrix. If
@@ -2825,6 +2838,10 @@ jobs:
   #   - No init. These legs boot no service manager, so the graft that the
   #     amd64/arm64 legs prove is not proven here. install.sh takes its
   #     "no supported init system detected" branch and says so in the log.
+  #   - No PID 1. The container's PID 1 is `sleep`, and the battery starts
+  #     the supervisor as an ordinary process, so whatever changes when a
+  #     supervisor IS PID 1 (orphans re-parented to it, the kernel's signal
+  #     rules for an init) is untouched here, on the native legs too.
   #   - /proc and /sys are the host's: a probe field that reads sysfs reads
   #     x86_64 sysfs, whatever the architecture of the process reading it.
   #   - loong64 is not packaged by agent at all, so its leg installs the bare
@@ -3125,7 +3142,7 @@ jobs:
             echo "::error::the matrix declares runtime=$RUNTIME, the process table says $seen ($exe) — what this leg proves has changed"
             exit 1; }
           if [ "$seen" = qemu-user ]; then
-            echo "::notice::qemu-user leg — every child shows as $exe and every syscall is answered by the x86_64 host kernel. Green here means the package installs, the binary starts and it probes; the scenario battery checks supervisor logic on this ISA, not supervision on this architecture."
+            echo "::notice::qemu-user leg — every child shows as $exe and every syscall is answered by the x86_64 host kernel. Green here means the package installs, the binary starts and it probes. Nothing more: the scenario battery still gates, but its green is not supervision evidence on this architecture."
           fi
 
       - name: Install the artifact and prove the package path was taken
@@ -3226,12 +3243,13 @@ jobs:
           docker exec -e SVZ_EMULATED_CPU="$EMU" svz sh /opt/svz/validate-probe.sh /usr/local/bin/supervizio
 
       # The scenario battery. Read its result through `runtime` (the block
-      # above this job): native, it is supervision on an i386 userland over a
-      # 64-bit kernel; qemu-user, it is the supervisor's logic on this ISA with
-      # every syscall answered by the x86_64 host kernel and every child
-      # visible as the emulator -- not supervision on this architecture. It
-      # stays gating in both modes: a red is always worth reading, even when
-      # the cause turns out to be qemu rather than agent.
+      # above this job): native, a green is supervision evidence within the
+      # battery's scope, for a supervisor that is not PID 1, on an i386
+      # userland over a 64-bit kernel; qemu-user, a green is not evidence of
+      # supervision at all -- every child is visible as the emulator and every
+      # syscall is answered by the x86_64 host kernel. It stays gating in both
+      # modes: a red is always worth reading, even when the cause turns out to
+      # be qemu rather than agent.
       - name: Scenario battery (${{ matrix.runtime }})
         run: docker exec svz sh /opt/svz/scenario-battery.sh /usr/local/bin/supervizio
 
