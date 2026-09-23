@@ -136,7 +136,9 @@ def _require_int(value: Any, field: str, minimum: int) -> None:
 
 
 def _require_match(value: Any, regex: "re.Pattern[str]", field: str) -> None:
-    if not isinstance(value, str) or not regex.match(value):
+    # fullmatch, not match: `$` also matches just before a trailing newline, so
+    # match() let 'v1.4.2\n' through as a tag.
+    if not isinstance(value, str) or not regex.fullmatch(value):
         raise ContractError(f"{field} {value!r} does not match {regex.pattern}")
 
 
@@ -302,7 +304,7 @@ def parse_manifest(data: bytes) -> Dict[str, str]:
     entries: Dict[str, str] = {}
     previous: Optional[str] = None
     for number, line in enumerate(text[:-1].split("\n"), start=1):
-        match = MANIFEST_LINE_RE.match(line)
+        match = MANIFEST_LINE_RE.fullmatch(line)
         if not match:
             raise ContractError(f"manifest line {number} is not '<64 lowercase hex>  <name>': {line!r}")
         digest, name = match.groups()
@@ -567,7 +569,7 @@ def results_from_jobs(jobs: List[Dict[str, Any]], required: List[str]) -> Dict[s
         if not isinstance(name, str) or not name.startswith(LEG_JOB_PREFIX):
             continue
         leg = name[len(LEG_JOB_PREFIX):]
-        if not LEG_RE.match(leg):
+        if not LEG_RE.fullmatch(leg):
             continue
         seen.setdefault(leg, []).append(job)
     results: Dict[str, str] = {}
@@ -603,7 +605,7 @@ def check_run_binding(run: Dict[str, Any], pending: Dict[str, Any], policy: Dict
     expected = expected_run_name(pending)
     if run.get("display_title") != expected:
         problems.append(f"run is titled {run.get('display_title')!r}; this candidate's run must be titled {expected!r}")
-    if not isinstance(run.get("head_sha"), str) or not COMMIT_RE.match(run["head_sha"]):
+    if not isinstance(run.get("head_sha"), str) or not COMMIT_RE.fullmatch(run["head_sha"]):
         problems.append("run has no usable head_sha")
     if not _is_int(run.get("id")) or not _is_int(run.get("run_attempt")):
         problems.append("run has no usable id / run_attempt")
@@ -771,7 +773,12 @@ class Api:
             m = re.match(r'\s*<([^>]+)>\s*;\s*rel="next"', part)
             if m:
                 nxt = m.group(1)
-        data = json.loads(body.decode("utf-8")) if body else None
+        try:
+            data = json.loads(body.decode("utf-8")) if body else None
+        except ValueError as exc:  # JSONDecodeError and UnicodeDecodeError are both ValueErrors
+            # A proxy error page or a truncated body says nothing about the release:
+            # it is "could not evaluate" (exit 2), never a verdict.
+            raise UsageError(f"GET {url} -> HTTP {status}: response is not JSON ({type(exc).__name__})") from exc
         return status, data, nxt
 
     def get_ok(self, path: str) -> Any:
@@ -1097,6 +1104,11 @@ def main(argv: Optional[List[str]] = None) -> int:
         return 1
     except (UsageError, OSError) as exc:
         print(f"ERROR {exc}", file=sys.stderr)
+        return 2
+    except Exception as exc:  # noqa: BLE001
+        # Exit 1 is reserved for a PROVEN violation, raised as ContractError. An input
+        # this tool could not make sense of proves nothing either way.
+        print(f"ERROR could not evaluate: {type(exc).__name__}: {exc}", file=sys.stderr)
         return 2
 
 

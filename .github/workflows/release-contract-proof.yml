@@ -147,7 +147,7 @@ jobs:
       - id: probe
         env:
           LABEL: contents:read
-          EXPECT: visible
+          EXPECT: denied
           TOKEN: ${{ github.token }}
           REPO: ${{ github.repository }}
           RELEASE_ID: ${{ needs.stage.outputs.release_id }}
