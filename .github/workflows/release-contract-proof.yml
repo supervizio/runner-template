@@ -23,6 +23,10 @@
 # workflow's own commit. Tags and refs are created with GITHUB_TOKEN, whose events
 # start no workflow, so nothing else in this repository runs because of them.
 name: release-contract-proof
+# 5. RUN TITLE LENGTH. The contract binds a public run to one candidate through
+#    its run-name (README, "Evidence"). This one is 268 characters; the summary
+#    records how many GitHub keeps in display_title.
+run-name: release-contract-proof ${{ github.sha }} ${{ github.sha }} ${{ github.sha }} ${{ github.sha }} ${{ github.sha }} ${{ github.sha }}
 
 on:
   push:
@@ -224,7 +228,9 @@ jobs:
           REPO: ${{ github.repository }}
           RELEASE_ID: ${{ needs.stage.outputs.release_id }}
         run: |
-          set -uo pipefail
+          # Not -e: two of the four checks EXPECT verify-promotion to exit 1, and the
+          # runner's default `bash -e` would end the script on the first of them.
+          set +e -uo pipefail
           rc() { python3 release-contract/release_contract.py --policy proof/policy.json "$@"; }
           check() {  # check <label> <expected exit> [grep fragment]
             rc observe --repository "$REPO" --tag "$PROOF_TAG" --release-id "$RELEASE_ID" --hash-assets --output state.json || exit 2
@@ -330,4 +336,7 @@ jobs:
             done
             echo
             echo "check runs: \`$CHECKS\`"
+            title="$(gh api "repos/$REPO/actions/runs/$GITHUB_RUN_ID" --jq .display_title)"
+            echo
+            echo "run-name rendered at 268 characters; display_title keeps ${#title}"
           } >> "$GITHUB_STEP_SUMMARY"
