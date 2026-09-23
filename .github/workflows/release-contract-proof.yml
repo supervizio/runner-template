@@ -217,7 +217,6 @@ jobs:
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
-          fetch-depth: 2
           persist-credentials: false
       - uses: actions/download-artifact@70fc10c6e5e1ce46ad2ea6f2b72d43f7d47b13c3 # v8.0.0
         with:
@@ -256,8 +255,15 @@ jobs:
           check "asset bytes replaced" 1 "proof-beta.bin: GitHub digest"
           upload proof-beta.bin rel/proof-beta.bin
           check "asset bytes restored" 0
-          parent="$(git rev-parse HEAD^)"
-          gh api -X PATCH "repos/$REPO/git/refs/tags/$PROOF_TAG" -f sha="$parent" -F force=true >/dev/null
+          # Re-point to a NEW commit with the SAME tree. Moving a ref across commits
+          # whose workflow files differ needs the `workflows` permission, which a
+          # GITHUB_TOKEN never has (measured: 403 when re-pointing to HEAD^). An
+          # identical tree changes no file, only the commit the tag names.
+          other="$(gh api -X POST "repos/$REPO/git/commits" -f message="release-contract proof: re-point target" \
+            -f tree="$(git rev-parse 'HEAD^{tree}')" -f "parents[]=$GITHUB_SHA" --jq .sha)" \
+            || { echo "::error::setup: could not create the re-point target"; exit 2; }
+          gh api -X PATCH "repos/$REPO/git/refs/tags/$PROOF_TAG" -f sha="$other" -F force=true >/dev/null \
+            || { echo "::error::setup: could not re-point the tag"; exit 2; }
           check "tag re-pointed" 1 "re-pointed"
 
   checks:

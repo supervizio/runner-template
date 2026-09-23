@@ -1,5 +1,54 @@
-<!-- updated: 2026-02-27T13:00:00Z -->
-# devcontainer-template
+<!-- updated: 2026-09-24T00:00:00Z -->
+# runner-template
+
+## What this repository is
+
+The **public** end-to-end runner of `supervizio/agent` and `supervizio/libprobe`
+(both private), and the home of their **release contract**. It exists because a
+public repository's GitHub-hosted minutes are free: the private repositories
+dispatch their E2E matrices here and read the verdict back. Every job runs on a
+GitHub-hosted runner; none targets the self-hosted fleet.
+
+| Where | What |
+|---|---|
+| `.github/workflows/` | the E2E lanes, the contract's CI and proofs — `.github/workflows/CLAUDE.md` says what each workflow is for |
+| `release-contract/` | the release contract (below) |
+| `.github/actions/`, `.github/scripts/` | the QEMU guest action used by Linux legs, and helpers no default-branch workflow calls |
+| everything else (`.devcontainer/`, `AGENTS.md`, the sections after this one) | the devcontainer template this repository was created from; it describes the template, not the E2E work |
+
+## The release contract — `release-contract/`
+
+The single source of truth for what a release of agent or libprobe must prove
+before it leaves draft: the canonical asset manifest and its digest, the receipt
+every release carries (`release-receipt.json`), the `validate-release` dispatch
+payload, the required matrix per repository (`policy.json`), and the checks run
+right before a draft is published.
+
+- `release-contract/README.md` is normative; `release_contract.py` (stdlib Python
+  ≥ 3.9) is its only implementation. agent's and libprobe's release workflows pin
+  the directory by commit SHA and call the script — no rule is re-implemented
+  elsewhere, in shell or otherwise.
+- `.github/workflows/release-contract.yml` runs the validator's tests on Linux,
+  macOS, Windows and Python 3.9, and re-derives the manifest test vector with
+  coreutils alone. It proves the validator refuses what it must (altered manifest,
+  re-pointed tag, missing, cancelled or timed-out leg, a verdict its results do not
+  support) wherever it will run.
+- `.github/workflows/release-contract-proof.yml` measures on live objects what the
+  design stands on (who can read a draft release, whether GitHub's asset digests are
+  the bytes' sha256, the validator against a real draft).
+- Test locally: `python3 -m unittest discover -s release-contract/tests`.
+
+## Rules specific to this repository
+
+- It is **public**. Nothing private goes in it: no private branch names, no internal
+  lab addresses or paths, no secrets, no content of the private repositories'
+  releases.
+- `validate-release.yml`, when it is written, references no secret; the contract's
+  README section 4 says why and what it must do instead.
+
+---
+
+# Inherited: devcontainer-template
 
 ## Purpose
 

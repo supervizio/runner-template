@@ -6,7 +6,7 @@ deliberately the ONLY implementation: the private release workflows, the public
 validation workflow and reconcil-release all call it rather than re-deriving the
 rules in shell. Where the README and this file disagree, this file is the bug.
 
-Standard library only, Python >= 3.8: it has to run unchanged on the self-hosted
+Standard library only, Python >= 3.9: it has to run unchanged on the self-hosted
 runner, on every GitHub-hosted image, and on a maintainer's laptop, with nothing
 to install.
 
@@ -464,12 +464,15 @@ def validate_receipt(receipt: Any, policy: Dict[str, Any]) -> None:
 def expected_run_name(candidate: Dict[str, Any]) -> str:
     """The run-name validate-release.yml must render. It is what binds a public run
     to one candidate: the runs API returns it as display_title, the dispatch payload
-    itself is not retrievable afterwards."""
-    return "{} {} {} g{} {}".format(
+    itself is not retrievable afterwards. It carries the commit too, so a doorbell
+    reading only the run can address the private commit (about 170 characters; a
+    268-character run-name was measured to be kept whole)."""
+    return "{} {} {} g{} {} {}".format(
         RUN_NAME_PREFIX,
         candidate["repository"],
         candidate["tag"],
         candidate["candidate_generation"],
+        candidate["resolved_commit"],
         candidate["asset_manifest_digest"],
     )
 

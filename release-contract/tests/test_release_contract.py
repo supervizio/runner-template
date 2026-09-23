@@ -502,6 +502,7 @@ class Evidence(unittest.TestCase):
         bad_runs = {
             "validated other bytes": run_for(self.pending, display_title=rc.expected_run_name(other)),
             "other generation": run_for(self.pending, display_title=rc.expected_run_name(dict(self.pending, candidate_generation=2))),
+            "other commit": run_for(self.pending, display_title=rc.expected_run_name(dict(self.pending, resolved_commit=OTHER_COMMIT))),
             "other repository": run_for(self.pending, repository={"full_name": "someone/fork"}),
             "other workflow": run_for(self.pending, path=".github/workflows/e2e.yml"),
             "manual dispatch": run_for(self.pending, event="workflow_dispatch"),
