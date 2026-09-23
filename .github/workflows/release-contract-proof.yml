@@ -2,10 +2,12 @@
 # measured on real objects instead of assumed. Kept, like the other *-proof.yml
 # files here, so the answers are not re-derived.
 #
-#  1. DRAFT VISIBILITY. Can a job holding `contents: read`, a job holding no
-#     permission at all, and a request with no token, list a draft release, read
-#     it, and download its assets? The contract's staging bridge is built on the
-#     answer (README, "The bridge").
+#  1. DRAFT VISIBILITY. A job holding `contents: read`, a job holding no
+#     permission at all, and a request with no token must NOT be able to list,
+#     read or download a draft release -- each probe fails if one can. The same
+#     probe run with a push-access token must see all of it: a denial proves
+#     nothing if the probe cannot detect visibility. The contract's staging
+#     bridge is built on this (README, "The bridge").
 #  2. DIGESTS. Is GitHub's per-asset `digest` the sha256 of the bytes uploaded,
 #     and is a canonical manifest file's digest the asset_manifest_digest? The
 #     pre-promotion check trusts those digests instead of downloading a release.
@@ -30,6 +32,7 @@ run-name: release-contract-proof ${{ github.sha }} ${{ github.sha }} ${{ github.
 
 on:
   push:
+    branches: [feat/release-contract]
     paths:
       - ".github/workflows/release-contract-proof.yml"
   workflow_dispatch:
@@ -143,6 +146,8 @@ jobs:
     steps:
       - id: probe
         env:
+          LABEL: contents:read
+          EXPECT: visible
           TOKEN: ${{ github.token }}
           REPO: ${{ github.repository }}
           RELEASE_ID: ${{ needs.stage.outputs.release_id }}
@@ -169,6 +174,15 @@ jobs:
             '{list_releases: $list, draft_in_list: $listed, get_release: $get, list_assets: $assets, download_asset: $download, bytes_match: $bytes_ok}')"
           echo "$result"
           echo "result=$result" >> "$GITHUB_OUTPUT"
+          # The assertion. The result is recorded above either way, so the summary
+          # shows what was observed even when this fails.
+          denied() { [ "$1" = 403 ] || [ "$1" = 404 ]; }
+          case "$EXPECT" in
+            denied)  denied "$get" && denied "$assets" && denied "$download" && [ "$listed" = false ] && [ "$bytes_ok" = false ] ;;
+            visible) [ "$get" = 200 ] && [ "$assets" = 200 ] && [ "$download" = 200 ] && [ "$listed" = true ] && [ "$bytes_ok" = true ] ;;
+            *) false ;;
+          esac || { echo "::error::$LABEL: expected the draft to be $EXPECT, observed $result"; exit 1; }
+          echo "OK $LABEL: draft $EXPECT"
 
   probe-no-permission:
     name: draft visibility (permissions:{})
@@ -181,6 +195,8 @@ jobs:
     steps:
       - id: probe
         env:
+          LABEL: "permissions:{}"
+          EXPECT: denied
           TOKEN: ${{ github.token }}
           REPO: ${{ github.repository }}
           RELEASE_ID: ${{ needs.stage.outputs.release_id }}
@@ -199,6 +215,8 @@ jobs:
     steps:
       - id: probe
         env:
+          LABEL: no token
+          EXPECT: denied
           TOKEN: ""
           REPO: ${{ github.repository }}
           RELEASE_ID: ${{ needs.stage.outputs.release_id }}
@@ -214,6 +232,8 @@ jobs:
     timeout-minutes: 10
     permissions:
       contents: write
+    outputs:
+      control: ${{ steps.control.outputs.result }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -221,6 +241,19 @@ jobs:
       - uses: actions/download-artifact@70fc10c6e5e1ce46ad2ea6f2b72d43f7d47b13c3 # v8.0.0
         with:
           name: proof-inputs
+      # The control for the three denials above: the same probe, with a token
+      # that has push access, must see the draft whole.
+      - name: control -- a push-access token sees the draft
+        id: control
+        env:
+          LABEL: "contents:write (control)"
+          EXPECT: visible
+          TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          RELEASE_ID: ${{ needs.stage.outputs.release_id }}
+          ASSET_ID: ${{ needs.stage.outputs.asset_id }}
+          ASSET_SHA256: ${{ needs.stage.outputs.asset_sha256 }}
+        run: *probe
       - name: pass, tamper, restore, re-point
         env:
           GH_TOKEN: ${{ github.token }}
@@ -323,6 +356,7 @@ jobs:
           GH_TOKEN: ${{ github.token }}
           REPO: ${{ github.repository }}
           RELEASE_ID: ${{ needs.stage.outputs.release_id }}
+          CONTROL: ${{ needs.verify-live.outputs.control }}
           READ: ${{ needs.probe-contents-read.outputs.result }}
           NONE: ${{ needs.probe-no-permission.outputs.result }}
           ANON: ${{ needs.probe-anonymous.outputs.result }}
@@ -336,7 +370,7 @@ jobs:
             echo
             echo "| credential | list releases | draft listed | get draft | list assets | download asset | bytes match |"
             echo "|---|---|---|---|---|---|---|"
-            for row in "contents:read|$READ" "permissions:{}|$NONE" "no token|$ANON"; do
+            for row in "contents:write (control)|$CONTROL" "contents:read|$READ" "permissions:{}|$NONE" "no token|$ANON"; do
               label="${row%%|*}"; json="${row#*|}"
               printf '| %s | %s |\n' "$label" "$(printf '%s' "$json" | jq -r '[.list_releases, .draft_in_list, .get_release, .list_assets, .download_asset, .bytes_match] | map(tostring) | join(" | ")' 2>/dev/null || echo 'no result')"
             done

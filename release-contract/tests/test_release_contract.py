@@ -270,6 +270,42 @@ class ManifestCanonicalForm(unittest.TestCase):
                 rc.build_manifest_from_dir(d)
 
 
+class TrailingGarbage(unittest.TestCase):
+    """A valid value followed by anything must be refused. `$` in a Python pattern
+    also matches just before a trailing newline, so `re.match` alone let
+    'v1.4.2\\n' through as a tag -- and 'a.deb\\n' into a manifest, where it
+    serialised a blank line into the bytes being hashed."""
+
+    CASES = [
+        (rc.NAME_RE, "a.deb"),
+        (rc.HEX64_RE, h("x")),
+        (rc.DIGEST_RE, "sha256:" + h("x")),
+        (rc.COMMIT_RE, COMMIT),
+        (rc.TAG_RE, "v1.4.2"),
+        (rc.LEG_RE, "docker/amd64/scratch"),
+        (rc.REPO_RE, "supervizio/agent"),
+        (rc.TIMESTAMP_RE, "2026-09-24T00:00:00Z"),
+    ]
+
+    def test_every_format_refuses_trailing_garbage(self):
+        for regex, valid in self.CASES:
+            rc._require_match(valid, regex, "field")  # the valid value itself passes
+            # Characters no format allows. A letter would not do: 'a.debx' is a name.
+            for garbage in ("\n", "\n\n", "\r\n", " ", "\t", "\x00"):
+                with self.subTest(pattern=regex.pattern, garbage=garbage), self.assertRaises(rc.ContractError):
+                    rc._require_match(valid + garbage, regex, "field")
+
+    def test_receipt_tag_with_trailing_newline(self):
+        r = final_receipt()
+        r["tag"] = "v1.4.2\n"
+        with self.assertRaises(rc.ContractError):
+            rc.validate_receipt(r, POLICY)
+
+    def test_manifest_name_with_trailing_newline(self):
+        with self.assertRaises(rc.ContractError):
+            rc.serialize_manifest({"a.deb\n": h("x")})
+
+
 class Verdict(unittest.TestCase):
     def test_rules(self):
         legs = ["a", "b"]
@@ -753,6 +789,76 @@ class AssetDownload(unittest.TestCase):
             server.server_close()
         self.assertEqual(_Handler.seen[0], ("/repos/o/r/releases/assets/7", "Bearer secret-token"))
         self.assertEqual(_Handler.seen[1], ("/blob?sig=abc", None))
+
+
+class _ErrorPage(http.server.BaseHTTPRequestHandler):
+    """A proxy or load balancer answering with something that is not JSON."""
+
+    body = b"<html><body>502 Bad Gateway</body></html>"
+    status = 502
+
+    def do_GET(self):  # noqa: N802
+        self.send_response(self.status)
+        self.send_header("Content-Type", "text/html")
+        self.send_header("Content-Length", str(len(self.body)))
+        self.end_headers()
+        self.wfile.write(self.body)
+
+    def log_message(self, *args):
+        pass
+
+
+class _InvalidUtf8(_ErrorPage):
+    body = b"\xff\xfe\x00 not utf-8"
+    status = 200
+
+
+class ApiErrors(unittest.TestCase):
+    def serve(self, handler):
+        server = http.server.HTTPServer(("127.0.0.1", 0), handler)
+        threading.Thread(target=server.serve_forever, daemon=True).start()
+        self.addCleanup(server.server_close)
+        self.addCleanup(server.shutdown)
+        return f"http://127.0.0.1:{server.server_port}"
+
+    def test_html_error_page_is_a_usage_error(self):
+        api = rc.Api(token="t", base=self.serve(_ErrorPage))
+        with self.assertRaises(rc.UsageError):
+            api.get("/repos/o/r/releases/1")
+
+    def test_invalid_utf8_is_a_usage_error(self):
+        api = rc.Api(token="t", base=self.serve(_InvalidUtf8))
+        with self.assertRaises(rc.UsageError):
+            api.get("/repos/o/r/releases/1")
+
+    def test_cli_says_could_not_evaluate_not_contract_violated(self):
+        # Exit 1 means "the contract is violated". A proxy error page is not evidence
+        # about the release, so it must exit 2, and without a traceback.
+        env = dict(os.environ, GITHUB_API_URL=self.serve(_ErrorPage), GH_TOKEN="t")
+        proc = subprocess.run(
+            [sys.executable, SCRIPT, "observe", "--repository", "o/r", "--tag", "v1.0.0", "--release-id", "1"],
+            capture_output=True,
+            text=True,
+            env=env,
+        )
+        self.assertEqual(proc.returncode, 2, proc.stderr)
+        self.assertNotIn("Traceback", proc.stderr)
+
+    def test_malformed_evidence_input_exits_2(self):
+        with tempfile.TemporaryDirectory() as d:
+            pending = os.path.join(d, "pending.json")
+            run = os.path.join(d, "run.json")
+            jobs = os.path.join(d, "jobs.json")
+            for path, obj in ((pending, pending_receipt()), (run, []), (jobs, {"jobs": []})):
+                with open(path, "w") as fh:
+                    json.dump(obj, fh)
+            proc = subprocess.run(
+                [sys.executable, SCRIPT, "evidence", "--pending", pending, "--run", run, "--jobs", jobs],
+                capture_output=True,
+                text=True,
+            )
+        self.assertEqual(proc.returncode, 2, proc.stdout + proc.stderr)
+        self.assertNotIn("Traceback", proc.stderr)
 
 
 # --------------------------------------------------------------------------------------
