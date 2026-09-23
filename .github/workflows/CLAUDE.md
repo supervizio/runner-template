@@ -52,6 +52,9 @@ code there.
   included. Honest delta: a container covers install, start and supervision,
   not boot ordering or clean shutdown.
 
+- **BSD legs** run under QEMU through `vmactions/*-vm`, pinned to a release; arm64
+  guests are emulated (TCG) and slow.
+
 ## Upstream images: pinned hash or signature
 
 A VM leg boots an upstream cloud image and gives it a root shell, so the image
@@ -108,7 +111,7 @@ request is `pending-merge`, never `required`.
 so a matrix over two different actions needs two steps. Put the shared script
 in a file rather than duplicating it inline — it is also the only way
 shellcheck can read it. `supervizio/agent`'s `.github/scripts/bsd-package-in-guest.sh`
-is the worked example; this repo has no such script yet, only the VM helpers.
+is the worked example; this repo has no such script yet.
 
 **ssh forwards no environment.** A `run:` block passed to `vmactions/*-vm` or
 `./.github/actions/qemu-vm` executes in the GUEST. Anything it reads must be

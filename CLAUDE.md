@@ -13,7 +13,7 @@ GitHub-hosted runner; none targets the self-hosted fleet.
 |---|---|
 | `.github/workflows/` | the E2E lanes, the contract's CI and proofs — `.github/workflows/CLAUDE.md` says what each workflow is for |
 | `release-contract/` | the release contract (below) |
-| `.github/actions/`, `.github/scripts/` | the QEMU guest action used by Linux legs, and helpers no default-branch workflow calls |
+| `.github/actions/qemu-vm/` | the QEMU guest action used by `e2e.yml`'s Linux legs and by the proof workflows |
 | everything else (`.devcontainer/`, `AGENTS.md`, the sections after this one) | the devcontainer template this repository was created from; it describes the template, not the E2E work |
 
 ## The release contract — `release-contract/`
