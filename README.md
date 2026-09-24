@@ -73,6 +73,33 @@ Create a **fine-grained PAT** scoped to `supervizio/agent` with the above permis
 | Docker arm64 (debian, alpine, scratch) | `ubuntu-24.04-arm` | `supervizio-linux-arm64`, `supervizio-linux-arm64-musl` |
 | macOS x86_64 | `macos-15-intel` | `supervizio-darwin-amd64` |
 | macOS ARM64 | `macos-15` | `supervizio-darwin-arm64` |
+| Linux exotic — 386, armv7, armv6, riscv64, ppc64le, s390x (glibc + musl) and loong64 | `ubuntu-24.04`, under `qemu-user`/`binfmt_misc` except 386 (native) | `supervizio-{386,arm7,arm6,riscv64,ppc64le,s390x}.{deb,apk}`, `supervizio-linux-loong64` |
+
+The table above is not the whole matrix — the nine Linux init legs per arch, the
+Windows legs and the BSD legs are in `e2e.yml` and not listed here.
+
+The exotic Linux legs exist because GitHub sells no riscv64, ppc64le, s390x or
+loongarch runner and the bench has no such guest: emulation is the only way to
+execute those bytes at all. They install the real `.deb`/`.apk` (loong64, which agent
+does not package, the bridged binary), then run `--version`, `--probe`,
+`validate-probe.sh` and `scenario-battery.sh` — and what a green leg proves is narrower
+than that list:
+
+- **Ten of the twelve run under qemu-user**, where every syscall is answered by the
+  x86_64 host kernel and a supervised child shows up as `/usr/bin/qemu-<arch>`
+  (`ptrace` is `ENOSYS`, `clone(CLONE_NEWPID)` is `EINVAL`). There, green means **the
+  package installs, the binary starts and it probes**. Nothing more: the scenario
+  battery still gates, but its green is not supervision evidence on that
+  architecture.
+- **The two 386 legs run natively**, on the host kernel's 32-bit compat layer; for
+  them a green battery counts as supervision evidence, but only within the battery's
+  scope, for a supervisor that is not PID 1, and on a 64-bit kernel.
+- **None boots an init, and none runs the supervisor as PID 1**, so neither the
+  postinstall graft nor PID 1 behaviour is proven by any of them.
+
+Each leg checks its own `runtime` from a child's `/proc/<pid>/exe` and fails if it
+disagrees with the matrix. The comment block above `e2e-linux-exotic` has the
+measurements.
 
 ## Commit Statuses
 
@@ -82,6 +109,7 @@ Each E2E job posts individual commit statuses to the agent repo:
 - `e2e/docker-arm64/{name}` — per-container ARM64 Docker results
 - `e2e/macos-x86_64` — macOS Intel result
 - `e2e/macos-arm64` — macOS Apple Silicon result
+- `e2e/linux-exotic/{name}` — per-target exotic Linux results (emulated, except the two 386 legs)
 - `e2e/runner-template` — aggregate final status
 
 ## Agent-Side Setup
