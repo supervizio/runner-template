@@ -1,14 +1,12 @@
 {
   "schema": "supervizio.release-policy/v1",
   "inventory": {
-    "taken_on": "2026-09-24",
-    "e2e_yml": "supervizio/runner-template@66c96c0330e921e6fb53b05718fd2d5104494a21:.github/workflows/e2e.yml",
-    "external_e2e_yml": "supervizio/runner-template@66c96c0330e921e6fb53b05718fd2d5104494a21:.github/workflows/external-e2e.yml",
-    "pending_prs": {
-      "supervizio/runner-template#102": "c29592c18bf620e9ecd82ed68aded36dfd4b827c"
-    }
+    "taken_on": "2026-09-25",
+    "e2e_yml": "supervizio/runner-template@3b0f5b79f154ef32e1c9db6e82b488847f2b8dd0:.github/workflows/e2e.yml",
+    "external_e2e_yml": "supervizio/runner-template@3b0f5b79f154ef32e1c9db6e82b488847f2b8dd0:.github/workflows/external-e2e.yml",
+    "pending_prs": {}
   },
-  "staging": {
+  "validation": {
     "repository": "supervizio/runner-template",
     "default_branch": "main",
     "workflow_path": ".github/workflows/validate-release.yml",
@@ -18,499 +16,557 @@
   "repositories": {
     "supervizio/agent": {
       "manifest_file": "checksums.txt",
+      "bridge_package": "supervizio/agent-release-candidates",
       "legs": [
         {
           "id": "docker/amd64/debian-glibc",
           "state": "required",
           "merge_ci": "gating",
           "from": "e2e.yml e2e-docker-amd64[debian-glibc]",
-          "runner": "ubuntu-24.04"
+          "runner": "ubuntu-24.04",
+          "scenario": null
         },
         {
           "id": "docker/amd64/alpine-musl",
           "state": "required",
           "merge_ci": "gating",
           "from": "e2e.yml e2e-docker-amd64[alpine-musl]",
-          "runner": "ubuntu-24.04"
+          "runner": "ubuntu-24.04",
+          "scenario": null
         },
         {
           "id": "docker/amd64/scratch",
           "state": "required",
           "merge_ci": "gating",
           "from": "e2e.yml e2e-docker-amd64[scratch]",
-          "runner": "ubuntu-24.04"
+          "runner": "ubuntu-24.04",
+          "scenario": null
         },
         {
           "id": "docker/arm64/debian-glibc",
           "state": "required",
           "merge_ci": "gating",
           "from": "e2e.yml e2e-docker-arm64[debian-glibc]",
-          "runner": "ubuntu-24.04-arm"
+          "runner": "ubuntu-24.04-arm",
+          "scenario": null
         },
         {
           "id": "docker/arm64/alpine-musl",
           "state": "required",
           "merge_ci": "gating",
           "from": "e2e.yml e2e-docker-arm64[alpine-musl]",
-          "runner": "ubuntu-24.04-arm"
+          "runner": "ubuntu-24.04-arm",
+          "scenario": null
         },
         {
           "id": "docker/arm64/scratch",
           "state": "required",
           "merge_ci": "gating",
           "from": "e2e.yml e2e-docker-arm64[scratch]",
-          "runner": "ubuntu-24.04-arm"
+          "runner": "ubuntu-24.04-arm",
+          "scenario": null
         },
         {
           "id": "macos/amd64",
           "state": "required",
           "merge_ci": "gating",
           "from": "e2e.yml e2e-macos",
-          "runner": "macos-15-intel"
+          "runner": "macos-15-intel",
+          "scenario": null
         },
         {
           "id": "macos/arm64",
           "state": "required",
           "merge_ci": "gating",
           "from": "e2e.yml e2e-macos-arm64",
-          "runner": "macos-15"
+          "runner": "macos-15",
+          "scenario": null
         },
         {
           "id": "windows/amd64",
           "state": "required",
           "merge_ci": "gating",
           "from": "e2e.yml e2e-windows-amd64[windows-server]",
-          "runner": "windows-2025"
+          "runner": "windows-2025",
+          "scenario": null
         },
         {
           "id": "windows/arm64",
           "state": "required",
           "merge_ci": "gating",
           "from": "e2e.yml e2e-windows-arm64[windows-11]",
-          "runner": "windows-11-arm"
+          "runner": "windows-11-arm",
+          "scenario": null
         },
         {
           "id": "linux/amd64/artix-dinit",
           "state": "required",
           "merge_ci": "gating",
           "from": "e2e.yml e2e-linux-artix-dinit",
-          "runner": "ubuntu-24.04"
+          "runner": "ubuntu-24.04",
+          "scenario": null
         },
         {
           "id": "linux/amd64/debian-sysvinit",
           "state": "required",
           "merge_ci": "gating",
           "from": "e2e.yml e2e-linux-debian-sysvinit",
-          "runner": "ubuntu-24.04"
+          "runner": "ubuntu-24.04",
+          "scenario": null
         },
         {
           "id": "linux/amd64/alpine-openrc",
           "state": "required",
           "merge_ci": "gating",
           "from": "e2e.yml e2e-linux-alpine-openrc",
-          "runner": "ubuntu-24.04"
+          "runner": "ubuntu-24.04",
+          "scenario": null
         },
         {
           "id": "linux/amd64/debian-systemd",
           "state": "required",
           "merge_ci": "gating",
           "from": "e2e.yml e2e-linux-debian-systemd",
-          "runner": "ubuntu-24.04"
+          "runner": "ubuntu-24.04",
+          "scenario": null
         },
         {
           "id": "linux/amd64/rocky-systemd",
           "state": "required",
           "merge_ci": "gating",
           "from": "e2e.yml e2e-linux-rocky-systemd",
-          "runner": "ubuntu-24.04"
+          "runner": "ubuntu-24.04",
+          "scenario": null
         },
         {
           "id": "linux/amd64/opensuse-zypper",
           "state": "required",
           "merge_ci": "gating",
           "from": "e2e.yml e2e-linux-opensuse-zypper",
-          "runner": "ubuntu-24.04"
+          "runner": "ubuntu-24.04",
+          "scenario": null
         },
         {
           "id": "linux/amd64/arch-pacman",
           "state": "required",
           "merge_ci": "gating",
           "from": "e2e.yml e2e-linux-arch-pacman",
-          "runner": "ubuntu-24.04"
+          "runner": "ubuntu-24.04",
+          "scenario": null
         },
         {
           "id": "linux/amd64/alpine-runit",
           "state": "required",
           "merge_ci": "gating",
           "from": "e2e.yml e2e-linux-alpine-runit",
-          "runner": "ubuntu-24.04"
+          "runner": "ubuntu-24.04",
+          "scenario": null
         },
         {
           "id": "linux/amd64/alpine-s6",
           "state": "required",
           "merge_ci": "gating",
           "from": "e2e.yml e2e-linux-alpine-s6",
-          "runner": "ubuntu-24.04"
+          "runner": "ubuntu-24.04",
+          "scenario": null
         },
         {
           "id": "linux/arm64/alpine-openrc",
           "state": "required",
           "merge_ci": "gating",
           "from": "e2e.yml e2e-linux-arm64[alpine-openrc]",
-          "runner": "ubuntu-24.04-arm"
+          "runner": "ubuntu-24.04-arm",
+          "scenario": null
         },
         {
           "id": "linux/arm64/alpine-runit",
           "state": "required",
           "merge_ci": "gating",
           "from": "e2e.yml e2e-linux-arm64[alpine-runit]",
-          "runner": "ubuntu-24.04-arm"
+          "runner": "ubuntu-24.04-arm",
+          "scenario": null
         },
         {
           "id": "linux/arm64/alpine-s6",
           "state": "required",
           "merge_ci": "gating",
           "from": "e2e.yml e2e-linux-arm64[alpine-s6]",
-          "runner": "ubuntu-24.04-arm"
+          "runner": "ubuntu-24.04-arm",
+          "scenario": null
         },
         {
           "id": "linux/arm64/alpine-dinit",
           "state": "required",
           "merge_ci": "gating",
           "from": "e2e.yml e2e-linux-arm64[alpine-dinit]",
-          "runner": "ubuntu-24.04-arm"
+          "runner": "ubuntu-24.04-arm",
+          "scenario": null
         },
         {
           "id": "linux/arm64/debian-systemd",
           "state": "required",
           "merge_ci": "gating",
           "from": "e2e.yml e2e-linux-arm64[debian-systemd]",
-          "runner": "ubuntu-24.04-arm"
+          "runner": "ubuntu-24.04-arm",
+          "scenario": null
         },
         {
           "id": "linux/arm64/debian-sysvinit",
           "state": "required",
           "merge_ci": "gating",
           "from": "e2e.yml e2e-linux-arm64[debian-sysvinit]",
-          "runner": "ubuntu-24.04-arm"
+          "runner": "ubuntu-24.04-arm",
+          "scenario": null
         },
         {
           "id": "linux/arm64/rocky-systemd",
           "state": "required",
           "merge_ci": "gating",
           "from": "e2e.yml e2e-linux-arm64[rocky-systemd]",
-          "runner": "ubuntu-24.04-arm"
+          "runner": "ubuntu-24.04-arm",
+          "scenario": null
         },
         {
           "id": "linux/arm64/opensuse-zypper",
           "state": "required",
           "merge_ci": "gating",
           "from": "e2e.yml e2e-linux-arm64[opensuse-zypper]",
-          "runner": "ubuntu-24.04-arm"
+          "runner": "ubuntu-24.04-arm",
+          "scenario": null
         },
         {
           "id": "linux/arm64/arch-pacman",
           "state": "required",
           "merge_ci": "gating",
           "from": "e2e.yml e2e-linux-arm64[arch-pacman]",
-          "runner": "ubuntu-24.04-arm"
+          "runner": "ubuntu-24.04-arm",
+          "scenario": null
         },
         {
           "id": "freebsd/amd64",
           "state": "required",
           "merge_ci": "gating",
           "from": "e2e.yml e2e-bsd-freebsd-amd64 (FreeBSD 15.0)",
-          "runner": "ubuntu-24.04"
+          "runner": "ubuntu-24.04",
+          "scenario": null
         },
         {
           "id": "freebsd/arm64",
           "state": "required",
           "merge_ci": "gating",
           "from": "e2e.yml e2e-bsd-freebsd-arm64 (FreeBSD 15.0)",
-          "runner": "ubuntu-24.04"
+          "runner": "ubuntu-24.04",
+          "scenario": null
         },
         {
           "id": "netbsd/amd64",
           "state": "required",
           "merge_ci": "gating",
           "from": "e2e.yml e2e-bsd-netbsd-amd64 (NetBSD 10.1)",
-          "runner": "ubuntu-24.04"
+          "runner": "ubuntu-24.04",
+          "scenario": null
         },
         {
           "id": "netbsd/arm64",
           "state": "required",
           "merge_ci": "gating",
           "from": "e2e.yml e2e-bsd-netbsd-arm64 (NetBSD 10.1)",
-          "runner": "ubuntu-24.04"
+          "runner": "ubuntu-24.04",
+          "scenario": null
         },
         {
           "id": "openbsd/amd64/7.3",
           "state": "required",
           "merge_ci": "gating",
           "from": "e2e.yml e2e-bsd-openbsd-amd64[7.3]",
-          "runner": "ubuntu-24.04"
+          "runner": "ubuntu-24.04",
+          "scenario": null
         },
         {
           "id": "openbsd/amd64/7.4",
           "state": "required",
           "merge_ci": "gating",
           "from": "e2e.yml e2e-bsd-openbsd-amd64[7.4]",
-          "runner": "ubuntu-24.04"
+          "runner": "ubuntu-24.04",
+          "scenario": null
         },
         {
           "id": "openbsd/amd64/7.5",
           "state": "required",
           "merge_ci": "gating",
           "from": "e2e.yml e2e-bsd-openbsd-amd64[7.5]",
-          "runner": "ubuntu-24.04"
+          "runner": "ubuntu-24.04",
+          "scenario": null
         },
         {
           "id": "openbsd/amd64/7.6",
           "state": "required",
           "merge_ci": "gating",
           "from": "e2e.yml e2e-bsd-openbsd-amd64[7.6]",
-          "runner": "ubuntu-24.04"
+          "runner": "ubuntu-24.04",
+          "scenario": null
         },
         {
           "id": "openbsd/amd64/7.7",
           "state": "required",
           "merge_ci": "gating",
           "from": "e2e.yml e2e-bsd-openbsd-amd64[7.7]",
-          "runner": "ubuntu-24.04"
+          "runner": "ubuntu-24.04",
+          "scenario": null
         },
         {
           "id": "openbsd/amd64/7.8",
           "state": "required",
           "merge_ci": "gating",
           "from": "e2e.yml e2e-bsd-openbsd-amd64[7.8]",
-          "runner": "ubuntu-24.04"
+          "runner": "ubuntu-24.04",
+          "scenario": null
         },
         {
           "id": "openbsd/amd64/7.9",
           "state": "required",
           "merge_ci": "gating",
           "from": "e2e.yml e2e-bsd-openbsd-amd64[7.9]",
-          "runner": "ubuntu-24.04"
+          "runner": "ubuntu-24.04",
+          "scenario": null
         },
         {
           "id": "openbsd/arm64/7.8",
           "state": "required",
           "merge_ci": "gating",
           "from": "e2e.yml e2e-bsd-openbsd-arm64[7.8]",
-          "runner": "ubuntu-24.04"
+          "runner": "ubuntu-24.04",
+          "scenario": null
         },
         {
           "id": "openbsd/arm64/7.9",
           "state": "required",
           "merge_ci": "gating",
           "from": "e2e.yml e2e-bsd-openbsd-arm64[7.9]",
-          "runner": "ubuntu-24.04"
+          "runner": "ubuntu-24.04",
+          "scenario": null
         },
         {
           "id": "linux-exotic/386-glibc",
-          "state": "pending-merge",
+          "state": "required",
           "merge_ci": "gating",
           "from": "e2e.yml e2e-linux-exotic[386-glibc]",
           "runner": "ubuntu-24.04",
-          "pr": "supervizio/runner-template#102"
+          "scenario": null
         },
         {
           "id": "linux-exotic/386-musl",
-          "state": "pending-merge",
+          "state": "required",
           "merge_ci": "gating",
           "from": "e2e.yml e2e-linux-exotic[386-musl]",
           "runner": "ubuntu-24.04",
-          "pr": "supervizio/runner-template#102"
+          "scenario": null
         },
         {
           "id": "linux-exotic/armv7-glibc",
-          "state": "pending-merge",
+          "state": "required",
           "merge_ci": "gating",
           "from": "e2e.yml e2e-linux-exotic[armv7-glibc]",
           "runner": "ubuntu-24.04",
-          "pr": "supervizio/runner-template#102"
+          "scenario": null
         },
         {
           "id": "linux-exotic/armv7-musl",
-          "state": "pending-merge",
+          "state": "required",
           "merge_ci": "gating",
           "from": "e2e.yml e2e-linux-exotic[armv7-musl]",
           "runner": "ubuntu-24.04",
-          "pr": "supervizio/runner-template#102"
+          "scenario": null
         },
         {
           "id": "linux-exotic/armv6-musl",
-          "state": "pending-merge",
+          "state": "required",
           "merge_ci": "gating",
           "from": "e2e.yml e2e-linux-exotic[armv6-musl]",
           "runner": "ubuntu-24.04",
-          "pr": "supervizio/runner-template#102"
+          "scenario": null
         },
         {
           "id": "linux-exotic/riscv64-glibc",
-          "state": "pending-merge",
+          "state": "required",
           "merge_ci": "gating",
           "from": "e2e.yml e2e-linux-exotic[riscv64-glibc]",
           "runner": "ubuntu-24.04",
-          "pr": "supervizio/runner-template#102"
+          "scenario": null
         },
         {
           "id": "linux-exotic/riscv64-musl",
-          "state": "pending-merge",
+          "state": "required",
           "merge_ci": "gating",
           "from": "e2e.yml e2e-linux-exotic[riscv64-musl]",
           "runner": "ubuntu-24.04",
-          "pr": "supervizio/runner-template#102"
+          "scenario": null
         },
         {
           "id": "linux-exotic/ppc64le-glibc",
-          "state": "pending-merge",
+          "state": "required",
           "merge_ci": "gating",
           "from": "e2e.yml e2e-linux-exotic[ppc64le-glibc]",
           "runner": "ubuntu-24.04",
-          "pr": "supervizio/runner-template#102"
+          "scenario": null
         },
         {
           "id": "linux-exotic/ppc64le-musl",
-          "state": "pending-merge",
+          "state": "required",
           "merge_ci": "gating",
           "from": "e2e.yml e2e-linux-exotic[ppc64le-musl]",
           "runner": "ubuntu-24.04",
-          "pr": "supervizio/runner-template#102"
+          "scenario": null
         },
         {
           "id": "linux-exotic/s390x-glibc",
-          "state": "pending-merge",
+          "state": "required",
           "merge_ci": "gating",
           "from": "e2e.yml e2e-linux-exotic[s390x-glibc]",
           "runner": "ubuntu-24.04",
-          "pr": "supervizio/runner-template#102"
+          "scenario": null
         },
         {
           "id": "linux-exotic/s390x-musl",
-          "state": "pending-merge",
+          "state": "required",
           "merge_ci": "gating",
           "from": "e2e.yml e2e-linux-exotic[s390x-musl]",
           "runner": "ubuntu-24.04",
-          "pr": "supervizio/runner-template#102"
+          "scenario": null
         },
         {
           "id": "linux-exotic/loong64",
-          "state": "pending-merge",
+          "state": "required",
           "merge_ci": "gating",
           "from": "e2e.yml e2e-linux-exotic[loong64]",
           "runner": "ubuntu-24.04",
-          "pr": "supervizio/runner-template#102"
+          "scenario": null
         }
       ]
     },
     "supervizio/libprobe": {
       "manifest_file": "SHA256SUMS",
+      "bridge_package": "supervizio/libprobe-release-candidates",
       "legs": [
         {
           "id": "native/linux-amd64",
           "state": "required",
           "merge_ci": "gating",
           "from": "external-e2e.yml native[linux-amd64]",
-          "runner": "ubuntu-24.04"
+          "runner": "ubuntu-24.04",
+          "scenario": null
         },
         {
           "id": "native/linux-arm64",
           "state": "required",
           "merge_ci": "gating",
           "from": "external-e2e.yml native[linux-arm64]",
-          "runner": "ubuntu-24.04-arm"
+          "runner": "ubuntu-24.04-arm",
+          "scenario": null
         },
         {
           "id": "native/windows-amd64",
           "state": "required",
           "merge_ci": "gating",
           "from": "external-e2e.yml native[windows-amd64]",
-          "runner": "windows-latest"
+          "runner": "windows-latest",
+          "scenario": null
         },
         {
           "id": "native/windows-arm64",
           "state": "required",
           "merge_ci": "gating",
           "from": "external-e2e.yml native[windows-arm64]",
-          "runner": "windows-11-arm"
+          "runner": "windows-11-arm",
+          "scenario": null
         },
         {
           "id": "native/macos-amd64",
           "state": "required",
           "merge_ci": "gating",
           "from": "external-e2e.yml native[macos-amd64]",
-          "runner": "macos-26-intel"
+          "runner": "macos-26-intel",
+          "scenario": null
         },
         {
           "id": "native/macos-arm64",
           "state": "required",
           "merge_ci": "gating",
           "from": "external-e2e.yml native[macos-arm64]",
-          "runner": "macos-26"
+          "runner": "macos-26",
+          "scenario": null
         },
         {
           "id": "bsd/freebsd-amd64",
           "state": "required",
-          "merge_ci": "advisory",
+          "merge_ci": "gating",
           "from": "external-e2e.yml freebsd[amd64] (FreeBSD 15.0)",
-          "runner": "ubuntu-24.04"
+          "runner": "ubuntu-24.04",
+          "scenario": null
         },
         {
           "id": "bsd/freebsd-arm64",
-          "state": "required",
+          "state": "advisory",
           "merge_ci": "advisory",
           "from": "external-e2e.yml freebsd[arm64] (FreeBSD 15.0)",
-          "runner": "ubuntu-24.04-arm"
+          "runner": "ubuntu-24.04-arm",
+          "scenario": null
         },
         {
           "id": "bsd/openbsd-amd64",
           "state": "required",
-          "merge_ci": "advisory",
+          "merge_ci": "gating",
           "from": "external-e2e.yml openbsd[amd64] (OpenBSD 7.9)",
-          "runner": "ubuntu-24.04"
+          "runner": "ubuntu-24.04",
+          "scenario": null
         },
         {
           "id": "bsd/openbsd-arm64",
-          "state": "required",
+          "state": "advisory",
           "merge_ci": "advisory",
           "from": "external-e2e.yml openbsd[arm64] (OpenBSD 7.9)",
-          "runner": "ubuntu-24.04-arm"
+          "runner": "ubuntu-24.04-arm",
+          "scenario": null
         },
         {
           "id": "bsd/netbsd-amd64",
           "state": "required",
-          "merge_ci": "advisory",
+          "merge_ci": "gating",
           "from": "external-e2e.yml netbsd[amd64] (NetBSD 10.1)",
-          "runner": "ubuntu-24.04"
+          "runner": "ubuntu-24.04",
+          "scenario": null
         },
         {
           "id": "bsd/netbsd-arm64",
-          "state": "required",
+          "state": "advisory",
           "merge_ci": "advisory",
           "from": "external-e2e.yml netbsd[arm64] (NetBSD 10.1)",
-          "runner": "ubuntu-24.04-arm"
+          "runner": "ubuntu-24.04-arm",
+          "scenario": null
         },
         {
           "id": "container/ubuntu",
           "state": "required",
           "merge_ci": "advisory",
           "from": "external-e2e.yml containers[ubuntu]",
-          "runner": "ubuntu-24.04"
+          "runner": "ubuntu-24.04",
+          "scenario": null
         },
         {
           "id": "container/alpine",
           "state": "required",
           "merge_ci": "advisory",
           "from": "external-e2e.yml containers[alpine]",
-          "runner": "ubuntu-24.04"
+          "runner": "ubuntu-24.04",
+          "scenario": null
         },
         {
           "id": "container/scratch",
           "state": "required",
           "merge_ci": "advisory",
           "from": "external-e2e.yml containers[scratch]",
-          "runner": "ubuntu-24.04"
+          "runner": "ubuntu-24.04",
+          "scenario": null
         }
       ]
     }

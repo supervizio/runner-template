@@ -10,6 +10,7 @@ Run: python3 -m unittest discover -s release-contract/tests -v
 
 from __future__ import annotations
 
+import base64
 import copy
 import hashlib
 import http.server
@@ -20,6 +21,7 @@ import sys
 import tempfile
 import threading
 import unittest
+import urllib.parse
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 ROOT = os.path.dirname(HERE)
@@ -30,6 +32,7 @@ import release_contract as rc  # noqa: E402
 SCRIPT = os.path.join(ROOT, "release_contract.py")
 VECTOR = os.path.join(HERE, "vectors", "manifest-v1")
 POLICY = rc.load_policy()
+PROOF_POLICY = os.path.join(HERE, "proof-policy.json")
 
 AGENT = "supervizio/agent"
 LIBPROBE = "supervizio/libprobe"
@@ -139,7 +142,7 @@ def dispatch_body(repository=AGENT, **payload_overrides):
             "candidate": {k: r[k] for k in rc.CANDIDATE_KEYS},
             "manifest": r["manifest"],
             "support": r["support"],
-            "staging": {"repository": "supervizio/runner-template", "release_id": 987654, "tag_name": "stage/agent/v1.4.2/g1"},
+            "bridge": {"package": rc.repo_policy(POLICY, repository)["bridge_package"], "digest": "sha256:" + h("oci manifest")},
             "required_matrix": r["required_matrix"],
         },
     }
@@ -336,8 +339,8 @@ class ReceiptValid(unittest.TestCase):
 
     def test_extra_legs_beyond_policy_are_allowed(self):
         r = final_receipt()
-        r["required_matrix"] = r["required_matrix"] + ["linux-exotic/loong64"]
-        r["results"]["linux-exotic/loong64"] = "success"
+        r["required_matrix"] = r["required_matrix"] + ["future/leg"]
+        r["results"]["future/leg"] = "success"
         rc.validate_receipt(r, POLICY)
 
 
@@ -478,8 +481,10 @@ class Dispatch(unittest.TestCase):
         cases = {
             "event type": lambda b: b.update(event_type="run-e2e"),
             "schema": lambda b: b["client_payload"].update(schema="v0"),
-            "staging repo": lambda b: b["client_payload"]["staging"].update(repository="supervizio/agent"),
-            "staging id": lambda b: b["client_payload"]["staging"].update(release_id=0),
+            "other package": lambda b: b["client_payload"]["bridge"].update(package="supervizio/libprobe-release-candidates"),
+            "bridge by tag": lambda b: b["client_payload"]["bridge"].update(digest="v1.4.2-g1"),
+            "bridge extra key": lambda b: b["client_payload"]["bridge"].update(url="https://example.invalid"),
+            "old staging": lambda b: b["client_payload"].update(staging=b["client_payload"].pop("bridge")),
             "weaker matrix": lambda b: b["client_payload"].update(required_matrix=b["client_payload"]["required_matrix"][:3]),
             "manifest/digest mismatch": lambda b: b["client_payload"]["manifest"].update({"supervizio-amd64.deb": h("x")}),
             "unknown candidate key": lambda b: b["client_payload"]["candidate"].update(extra=1),
@@ -862,6 +867,325 @@ class ApiErrors(unittest.TestCase):
 
 
 # --------------------------------------------------------------------------------------
+# the bridge: OCI admission, the leg matrix, and a fake registry over a real socket
+# --------------------------------------------------------------------------------------
+
+
+def bridge_body(files, repository=AGENT, support=None, required_matrix=None):
+    """A dispatch body whose manifest is `files` ({name: bytes}); the manifest file's
+    bytes are the canonical serialisation, so the whole candidate is real."""
+    manifest = {name: hashlib.sha256(data).hexdigest() for name, data in files.items()}
+    support = support or {}
+    body = dispatch_body(repository)
+    r = pending_receipt(repository, manifest=manifest, support={n: hashlib.sha256(d).hexdigest() for n, d in support.items()})
+    payload = body["client_payload"]
+    payload["candidate"] = {k: r[k] for k in rc.CANDIDATE_KEYS}
+    payload["manifest"] = r["manifest"]
+    payload["support"] = r["support"]
+    if required_matrix is not None:
+        payload["required_matrix"] = required_matrix
+    return body
+
+
+def oci_for(payload, drop=None, tamper=None, extra=None, candidate=None):
+    files = rc.candidate_files(payload)
+    layers = [(n, d, 10) for n, d in files.items() if n != drop]
+    if tamper:
+        layers = [(n, h("tampered") if n == tamper else d, s) for n, d, s in layers]
+    if extra:
+        layers.append((extra, h(extra), 1))
+    return rc.build_candidate_manifest(candidate or payload["candidate"], layers)
+
+
+def with_digest(body, raw):
+    body["client_payload"]["bridge"]["digest"] = "sha256:" + hashlib.sha256(raw).hexdigest()
+    return body["client_payload"]
+
+
+class BridgeAdmission(unittest.TestCase):
+    def setUp(self):
+        self.body = bridge_body({"a.bin": b"a", "b.bin": b"b"}, support={"e2e-kit.tar.gz": b"kit"})
+        self.payload = self.body["client_payload"]
+
+    def test_consistent_artifact_is_admitted_without_downloading(self):
+        raw = oci_for(self.payload)
+        layers = rc.check_candidate_manifest(raw, with_digest(self.body, raw))
+        self.assertEqual(sorted(layers), ["a.bin", "b.bin", "checksums.txt", "e2e-kit.tar.gz"])
+        self.assertEqual(layers["checksums.txt"]["digest"], self.payload["candidate"]["asset_manifest_digest"])
+
+    def test_manifest_is_deterministic(self):
+        files = rc.candidate_files(self.payload)
+        forward = rc.build_candidate_manifest(self.payload["candidate"], [(n, d, 1) for n, d in files.items()])
+        backward = rc.build_candidate_manifest(self.payload["candidate"], [(n, d, 1) for n, d in reversed(list(files.items()))])
+        self.assertEqual(forward, backward)
+
+    def test_refusals(self):
+        other = dict(self.payload["candidate"], candidate_generation=2)
+        cases = {
+            "one file's bytes differ": oci_for(self.payload, tamper="a.bin"),
+            "manifest file differs": oci_for(self.payload, tamper="checksums.txt"),
+            "support file differs": oci_for(self.payload, tamper="e2e-kit.tar.gz"),
+            "file missing": oci_for(self.payload, drop="b.bin"),
+            "manifest file missing": oci_for(self.payload, drop="checksums.txt"),
+            "file added": oci_for(self.payload, extra="payload.sh"),
+            "pushed for another generation": oci_for(self.payload, candidate=other),
+        }
+        for name, raw in cases.items():
+            with self.subTest(name), self.assertRaises(rc.ContractError):
+                rc.check_candidate_manifest(raw, with_digest(copy.deepcopy(self.body), raw))
+
+    def test_served_bytes_must_hash_to_the_dispatched_digest(self):
+        raw = oci_for(self.payload)
+        payload = with_digest(self.body, raw)
+        with self.assertRaisesRegex(rc.ContractError, "not the dispatched"):
+            rc.check_candidate_manifest(raw + b" ", payload)
+
+    def test_structural_refusals(self):
+        good = json.loads(oci_for(self.payload))
+        mutations = {
+            "an archive layer": lambda m: m["layers"][0].update(mediaType="application/vnd.oci.image.layer.v1.tar+gzip"),
+            "an image config": lambda m: m.update(config=dict(rc.EMPTY_CONFIG, mediaType="application/vnd.oci.image.config.v1+json")),
+            "another artifact type": lambda m: m.update(artifactType="application/vnd.example"),
+            "a layer twice": lambda m: m["layers"].append(copy.deepcopy(m["layers"][0])),
+            "a path as title": lambda m: m["layers"][0]["annotations"].update({rc.TITLE_ANNOTATION: "../a.bin"}),
+            "no layers": lambda m: m.update(layers=[]),
+            "no annotation": lambda m: m.pop("annotations"),
+        }
+        for name, mutate in mutations.items():
+            m = copy.deepcopy(good)
+            mutate(m)
+            raw = json.dumps(m).encode()
+            with self.subTest(name), self.assertRaises(rc.ContractError):
+                rc.check_candidate_manifest(raw, with_digest(copy.deepcopy(self.body), raw))
+
+
+class LegMatrix(unittest.TestCase):
+    def test_required_legs_are_scheduled_with_their_runner(self):
+        legs, unknown = rc.leg_matrix(dispatch_body()["client_payload"], POLICY)
+        self.assertEqual(unknown, [])
+        self.assertEqual(len(legs), 53)
+        self.assertTrue(all(leg["required"] for leg in legs))
+        self.assertIn({"id": "windows/arm64", "runner": "windows-11-arm", "required": True}, legs)
+
+    def test_advisory_legs_run_without_being_required(self):
+        legs, _ = rc.leg_matrix(dispatch_body(LIBPROBE)["client_payload"], POLICY)
+        advisory = [leg["id"] for leg in legs if not leg["required"]]
+        self.assertEqual(advisory, rc.advisory_legs(POLICY, LIBPROBE))
+        self.assertEqual(len(legs), 15)
+
+    def test_a_leg_nobody_can_run_is_not_scheduled_and_reads_missing(self):
+        payload = dispatch_body()["client_payload"]
+        payload["required_matrix"] = payload["required_matrix"] + ["future/leg"]
+        legs, unknown = rc.leg_matrix(payload, POLICY)
+        self.assertEqual(unknown, ["future/leg"])
+        self.assertNotIn("future/leg", [leg["id"] for leg in legs])
+        results, verdict = rc.judge_jobs(payload, jobs_for([leg["id"] for leg in legs]))
+        self.assertEqual((results["future/leg"], verdict), ("missing", "error"))
+
+
+class Judge(unittest.TestCase):
+    def setUp(self):
+        self.payload = dispatch_body(LIBPROBE)["client_payload"]
+        self.required = self.payload["required_matrix"]
+
+    def test_advisory_failure_does_not_decide(self):
+        jobs = jobs_for(self.required) + jobs_for(["bsd/netbsd-arm64"], "failure")[1:]
+        results, verdict = rc.judge_jobs(self.payload, jobs)
+        self.assertEqual((results["bsd/netbsd-arm64"], verdict), ("failure", "success"))
+
+    def test_required_failure_decides(self):
+        self.assertEqual(rc.judge_jobs(self.payload, jobs_for(self.required, **{self.required[0]: "failure"}))[1], "failure")
+
+    def test_skipped_legs_after_a_refused_admission_are_errors(self):
+        self.assertEqual(rc.judge_jobs(self.payload, jobs_for(self.required, "skipped"))[1], "error")
+
+
+class _Registry(http.server.BaseHTTPRequestHandler):
+    """Just enough of the OCI distribution API, GHCR-shaped: token exchange, blob
+    uploads, manifests, and blob GETs that redirect to a storage host."""
+
+    blobs = {}
+    manifests = {}
+    seen = []
+    corrupt = set()
+
+    def _send(self, status, body=b"", headers=None):
+        self.send_response(status)
+        for k, v in (headers or {}).items():
+            self.send_header(k, v)
+        self.send_header("Content-Length", str(len(body)))
+        self.end_headers()
+        if self.command != "HEAD":
+            self.wfile.write(body)
+
+    def _authorised(self):
+        return self.headers.get("Authorization") == "Bearer registry-token"
+
+    def do_GET(self):  # noqa: N802
+        _Registry.seen.append((self.command, self.path, self.headers.get("Authorization")))
+        if self.path.startswith("/token"):
+            ok = self.headers.get("Authorization") == "Basic " + base64.b64encode(b"actor:gh-token").decode()
+            return self._send(200, json.dumps({"token": "registry-token"}).encode()) if ok else self._send(401)
+        if self.path.startswith("/storage/"):
+            digest = self.path[len("/storage/"):]
+            data = _Registry.blobs[digest]
+            return self._send(200, data + b"!" if digest in _Registry.corrupt else data)
+        if not self._authorised():
+            return self._send(401)
+        parts = self.path.split("/")
+        if "manifests" in parts:
+            ref = parts[-1]
+            data = _Registry.manifests.get(ref)
+            return self._send(200, data, {"Content-Type": rc.OCI_MANIFEST_MEDIA_TYPE}) if data else self._send(404)
+        digest = parts[-1]
+        if digest not in _Registry.blobs:
+            return self._send(404)
+        if self.command == "HEAD":
+            return self._send(200)
+        return self._send(307, headers={"Location": f"http://127.0.0.1:{self.server.server_port}/storage/{digest}"})
+
+    do_HEAD = do_GET
+
+    def do_POST(self):  # noqa: N802
+        if not self._authorised():
+            return self._send(401)
+        return self._send(202, headers={"Location": "/v2/upload/session-1?state=x"})
+
+    def do_PUT(self):  # noqa: N802
+        if not self._authorised():
+            return self._send(401)
+        data = self.rfile.read(int(self.headers.get("Content-Length", "0")))
+        path, _, query = self.path.partition("?")
+        if "/manifests/" in path:
+            digest = "sha256:" + hashlib.sha256(data).hexdigest()
+            _Registry.manifests[path.split("/")[-1]] = data
+            _Registry.manifests[digest] = data
+            return self._send(201)
+        digest = urllib.parse.parse_qs(query)["digest"][0]
+        if "sha256:" + hashlib.sha256(data).hexdigest() != digest:
+            return self._send(400)
+        _Registry.blobs[digest] = data
+        return self._send(201)
+
+    def log_message(self, *args):
+        pass
+
+
+class RegistryRoundTrip(unittest.TestCase):
+    def setUp(self):
+        _Registry.blobs, _Registry.manifests, _Registry.seen, _Registry.corrupt = {}, {}, [], set()
+        server = http.server.HTTPServer(("127.0.0.1", 0), _Registry)
+        threading.Thread(target=server.serve_forever, daemon=True).start()
+        self.addCleanup(server.server_close)
+        self.addCleanup(server.shutdown)
+        self.base = f"http://127.0.0.1:{server.server_port}"
+        self.files = {"a.bin": os.urandom(3000), "b.bin": os.urandom(10)}
+        self.body = bridge_body(self.files)
+        self.payload = self.body["client_payload"]
+        self.tmp = tempfile.mkdtemp()
+        self.addCleanup(lambda: __import__("shutil").rmtree(self.tmp))
+        src = os.path.join(self.tmp, "src")
+        os.makedirs(src)
+        for name, data in self.files.items():
+            with open(os.path.join(src, name), "wb") as fh:
+                fh.write(data)
+        with open(os.path.join(src, "checksums.txt"), "wb") as fh:
+            fh.write(rc.serialize_manifest(self.payload["manifest"]))
+        self.src = src
+
+    def registry(self, actions):
+        return rc.Registry(self.payload["bridge"]["package"], actions, user="actor", token="gh-token", base=self.base)
+
+    def test_push_then_pull_by_digest(self):
+        digest = rc.push_candidate(self.registry("pull,push"), self.body, self.src, "v1.4.2-g1")
+        self.payload["bridge"]["digest"] = digest
+        rc.validate_dispatch(self.body, POLICY)
+        out = os.path.join(self.tmp, "out")
+        names = rc.pull_candidate(self.registry("pull"), self.payload, out)
+        self.assertEqual(sorted(names), ["a.bin", "b.bin", "checksums.txt"])
+        for name, data in self.files.items():
+            with open(os.path.join(out, name), "rb") as fh:
+                self.assertEqual(fh.read(), data)
+        storage = [s for s in _Registry.seen if s[1].startswith("/storage/")]
+        self.assertTrue(storage)
+        self.assertTrue(all(auth is None for _, _, auth in storage), "token forwarded to the storage host")
+
+    def test_push_refuses_a_file_that_is_not_the_manifested_one(self):
+        with open(os.path.join(self.src, "a.bin"), "ab") as fh:
+            fh.write(b"x")
+        with self.assertRaisesRegex(rc.ContractError, "a.bin: sha256"):
+            rc.push_candidate(self.registry("pull,push"), self.body, self.src, "v1.4.2-g1")
+        self.assertEqual(_Registry.manifests, {})
+
+    def test_pull_refuses_bytes_that_do_not_hash_to_their_layer(self):
+        digest = rc.push_candidate(self.registry("pull,push"), self.body, self.src, "v1.4.2-g1")
+        self.payload["bridge"]["digest"] = digest
+        _Registry.corrupt.add("sha256:" + self.payload["manifest"]["a.bin"])
+        out = os.path.join(self.tmp, "out")
+        with self.assertRaisesRegex(rc.ContractError, "arrived as"):
+            rc.pull_candidate(self.registry("pull"), self.payload, out, ["a.bin"])
+        self.assertEqual(os.listdir(out), [])
+
+    def test_pull_re_admits_instead_of_trusting_admit(self):
+        # A leg is handed the dispatch, not admit's word: pointed at an artifact that
+        # lacks a manifested file, it refuses before downloading anything.
+        del self.files["b.bin"]
+        os.remove(os.path.join(self.src, "b.bin"))
+        partial = bridge_body(self.files)
+        with open(os.path.join(self.src, "checksums.txt"), "wb") as fh:
+            fh.write(rc.serialize_manifest(partial["client_payload"]["manifest"]))
+        self.payload["bridge"]["digest"] = rc.push_candidate(self.registry("pull,push"), partial, self.src, "v1.4.2-g1")
+        out = os.path.join(self.tmp, "out")
+        with self.assertRaisesRegex(rc.ContractError, "candidate artifact"):
+            rc.pull_candidate(self.registry("pull"), self.payload, out)
+        self.assertFalse(os.path.exists(out))
+
+    def test_pull_by_a_digest_the_registry_does_not_hold(self):
+        self.payload["bridge"]["digest"] = "sha256:" + h("nothing")
+        with self.assertRaises(rc.UsageError):
+            rc.pull_candidate(self.registry("pull"), self.payload, os.path.join(self.tmp, "out"))
+
+    def test_token_exchange_refused(self):
+        with self.assertRaises(rc.UsageError):
+            rc.Registry(self.payload["bridge"]["package"], "pull", user="actor", token="wrong", base=self.base)
+
+
+class Scenario(unittest.TestCase):
+    def run_cli(self, *args):
+        proc = subprocess.run([sys.executable, SCRIPT, *args], capture_output=True, text=True)
+        return proc.returncode, proc.stdout + proc.stderr
+
+    def test_production_legs_fail_closed_until_wired(self):
+        with tempfile.TemporaryDirectory() as d:
+            body = os.path.join(d, "body.json")
+            with open(body, "w") as fh:
+                json.dump(dispatch_body(), fh)
+            code, out = self.run_cli("scenario", "--dispatch", body, "--leg", "docker/amd64/scratch", "--dir", d)
+        self.assertEqual(code, 1, out)
+        self.assertIn("no release scenario is wired", out)
+
+    def test_integrity_scenario_under_the_proof_policy(self):
+        files = {"a.bin": b"a"}
+        body = bridge_body(files, required_matrix=["proof/linux-amd64", "proof/macos-arm64", "proof/windows-amd64"])
+        body["client_payload"]["bridge"]["package"] = "supervizio/release-contract-bridge-probe"
+        with tempfile.TemporaryDirectory() as d:
+            path = os.path.join(d, "body.json")
+            with open(path, "w") as fh:
+                json.dump(body, fh)
+            with open(os.path.join(d, "a.bin"), "wb") as fh:
+                fh.write(b"a")
+            with open(os.path.join(d, "checksums.txt"), "wb") as fh:
+                fh.write(rc.serialize_manifest(body["client_payload"]["manifest"]))
+            args = ("--policy", PROOF_POLICY, "scenario", "--dispatch", path, "--leg", "proof/linux-amd64", "--dir", d)
+            self.assertEqual(self.run_cli(*args)[0], 0)
+            with open(os.path.join(d, "a.bin"), "wb") as fh:
+                fh.write(b"b")
+            self.assertEqual(self.run_cli(*args)[0], 1)
+            # The same body is refused by the production policy: wrong package.
+            self.assertEqual(self.run_cli("scenario", "--dispatch", path, "--leg", "proof/linux-amd64", "--dir", d)[0], 1)
+
+
+# --------------------------------------------------------------------------------------
 # the CLI: exit codes are the interface workflows rely on
 # --------------------------------------------------------------------------------------
 
@@ -948,9 +1272,15 @@ class Cli(unittest.TestCase):
 class ShippedPolicy(unittest.TestCase):
     def test_policy_is_valid_and_sized_as_inventoried(self):
         rc.validate_policy(POLICY)
-        self.assertEqual(len(rc.required_legs(POLICY, AGENT)), 41)
+        self.assertEqual(len(rc.required_legs(POLICY, AGENT)), 53)
         self.assertEqual(len(POLICY["repositories"][AGENT]["legs"]), 53)
-        self.assertEqual(len(rc.required_legs(POLICY, LIBPROBE)), 15)
+        self.assertEqual(len(rc.required_legs(POLICY, LIBPROBE)), 12)
+        self.assertEqual(rc.advisory_legs(POLICY, LIBPROBE), ["bsd/freebsd-arm64", "bsd/openbsd-arm64", "bsd/netbsd-arm64"])
+        # Nothing may be promoted before a leg's release scenario exists: every
+        # production leg is scheduled, and fails closed, until it is wired.
+        for repo in (AGENT, LIBPROBE):
+            for leg in POLICY["repositories"][repo]["legs"]:
+                self.assertIsNone(leg["scenario"], leg["id"])
 
     def test_policy_refusals(self):
         bad = copy.deepcopy(POLICY)
@@ -962,9 +1292,30 @@ class ShippedPolicy(unittest.TestCase):
         with self.assertRaises(rc.ContractError):
             rc.validate_policy(bad)
         bad = copy.deepcopy(POLICY)
-        del bad["repositories"][AGENT]["legs"][-1]["pr"]
-        with self.assertRaises(rc.ContractError):
+        bad["repositories"][AGENT]["legs"][-1]["state"] = "pending-merge"
+        with self.assertRaises(rc.ContractError):  # a pending leg must name its PR
             rc.validate_policy(bad)
+        for key, value in (("runner", None), ("runner", "ubuntu 24.04"), ("scenario", "run-anything"), ("state", "optional")):
+            bad = copy.deepcopy(POLICY)
+            bad["repositories"][AGENT]["legs"][0][key] = value
+            with self.subTest(key=key, value=value), self.assertRaises(rc.ContractError):
+                rc.validate_policy(bad)
+        for package in (None, "Supervizio/Agent", "agent", "supervizio/agent candidates"):
+            bad = copy.deepcopy(POLICY)
+            bad["repositories"][AGENT]["bridge_package"] = package
+            with self.subTest(package=package), self.assertRaises(rc.ContractError):
+                rc.validate_policy(bad)
+
+    def test_proof_policy_is_valid_and_isolated(self):
+        proof = rc.load_policy(PROOF_POLICY)
+        self.assertEqual(proof["validation"], POLICY["validation"])
+        self.assertEqual(proof["repositories"][AGENT]["bridge_package"], "supervizio/release-contract-bridge-probe")
+        # The proof policy may never share a package with production: its legs
+        # execute nothing, so a production candidate admitted under it would be
+        # "validated" by an integrity check alone.
+        production = {spec["bridge_package"] for spec in POLICY["repositories"].values()}
+        for spec in proof["repositories"].values():
+            self.assertNotIn(spec["bridge_package"], production)
 
 
 if __name__ == "__main__":

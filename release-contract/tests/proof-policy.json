@@ -1,0 +1,25 @@
+{
+  "schema": "supervizio.release-policy/v1",
+  "inventory": {
+    "purpose": "validate-release.yml, run by hand (workflow_dispatch) on a branch, against a candidate of RANDOM bytes. Three integrity-only legs on three OS families: they prove the bridge -- admission, pull by digest, re-hash -- and execute nothing. Never selected by repository_dispatch.",
+    "pending_prs": {}
+  },
+  "validation": {
+    "repository": "supervizio/runner-template",
+    "default_branch": "main",
+    "workflow_path": ".github/workflows/validate-release.yml",
+    "event_type": "validate-release"
+  },
+  "receipt_asset": "release-receipt.json",
+  "repositories": {
+    "supervizio/agent": {
+      "manifest_file": "checksums.txt",
+      "bridge_package": "supervizio/release-contract-bridge-probe",
+      "legs": [
+        {"id": "proof/linux-amd64", "state": "required", "runner": "ubuntu-24.04", "scenario": "integrity"},
+        {"id": "proof/macos-arm64", "state": "required", "runner": "macos-15", "scenario": "integrity"},
+        {"id": "proof/windows-amd64", "state": "required", "runner": "windows-2025", "scenario": "integrity"}
+      ]
+    }
+  }
+}

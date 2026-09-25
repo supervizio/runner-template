@@ -18,11 +18,13 @@ network). A caller that must fail closed treats anything but 0 as "no".
 from __future__ import annotations
 
 import argparse
+import base64
 import hashlib
 import json
 import os
 import re
 import sys
+import tempfile
 import urllib.error
 import urllib.parse
 import urllib.request
@@ -108,8 +110,28 @@ CANDIDATE_KEYS = {
     "manifest_file",
     "asset_manifest_digest",
 }
-CLIENT_PAYLOAD_KEYS = {"schema", "candidate", "manifest", "support", "staging", "required_matrix"}
-STAGING_KEYS = {"repository", "release_id", "tag_name"}
+CLIENT_PAYLOAD_KEYS = {"schema", "candidate", "manifest", "support", "bridge", "required_matrix"}
+BRIDGE_KEYS = {"package", "digest"}
+LEG_STATES = ("required", "advisory", "pending-merge")
+# GHCR package names are lowercase; `owner/name`, where name may itself carry a path.
+PACKAGE_RE = re.compile(r"^[a-z0-9]+(?:[._-][a-z0-9]+)*(?:/[a-z0-9]+(?:[._-][a-z0-9]+)*)+$")
+RUNNER_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$")
+SCENARIOS = ("integrity",)
+
+# The candidate as an OCI artifact (README section 4). One layer per file, its blob
+# the file's raw bytes, so a layer digest IS the file's sha256 and the artifact can
+# be checked against the release manifest without downloading a byte of it.
+OCI_MANIFEST_MEDIA_TYPE = "application/vnd.oci.image.manifest.v1+json"
+CANDIDATE_ARTIFACT_TYPE = "application/vnd.supervizio.release-candidate.v1"
+LAYER_MEDIA_TYPE = "application/octet-stream"
+EMPTY_CONFIG = {
+    "mediaType": "application/vnd.oci.empty.v1+json",
+    "digest": "sha256:44136fa355b3678a1146ad16f7e8649e94fb4fc21fe77e8310c060f61caaff8a",
+    "size": 2,
+}
+TITLE_ANNOTATION = "org.opencontainers.image.title"
+CANDIDATE_ANNOTATION = "org.supervizio.release.candidate"
+OCI_TAG_RE = re.compile(r"^[A-Za-z0-9_][A-Za-z0-9._-]{0,127}$")
 
 
 class ContractError(Exception):
@@ -174,15 +196,15 @@ def load_policy(path: Optional[str] = None) -> Dict[str, Any]:
 def validate_policy(policy: Dict[str, Any]) -> None:
     if not isinstance(policy, dict) or policy.get("schema") != POLICY_SCHEMA:
         raise ContractError(f"policy schema must be {POLICY_SCHEMA!r}")
-    staging = policy.get("staging")
-    if not isinstance(staging, dict):
-        raise ContractError("policy.staging must be an object")
-    _require_match(staging.get("repository"), REPO_RE, "policy.staging.repository")
+    validation = policy.get("validation")
+    if not isinstance(validation, dict):
+        raise ContractError("policy.validation must be an object")
+    _require_match(validation.get("repository"), REPO_RE, "policy.validation.repository")
     for key in ("default_branch", "workflow_path", "event_type"):
-        if not isinstance(staging.get(key), str) or not staging[key]:
-            raise ContractError(f"policy.staging.{key} must be a non-empty string")
-    if len(staging["event_type"]) > MAX_EVENT_TYPE_LEN:
-        raise ContractError("policy.staging.event_type is longer than GitHub accepts")
+        if not isinstance(validation.get(key), str) or not validation[key]:
+            raise ContractError(f"policy.validation.{key} must be a non-empty string")
+    if len(validation["event_type"]) > MAX_EVENT_TYPE_LEN:
+        raise ContractError("policy.validation.event_type is longer than GitHub accepts")
     _require_match(policy.get("receipt_asset"), NAME_RE, "policy.receipt_asset")
     reserved = [policy["receipt_asset"]]
     repos = policy.get("repositories")
@@ -195,6 +217,7 @@ def validate_policy(policy: Dict[str, Any]) -> None:
         _require_match(spec.get("manifest_file"), NAME_RE, f"{repo}.manifest_file")
         if spec["manifest_file"] in reserved:
             raise ContractError(f"{repo}.manifest_file collides with a reserved asset")
+        _require_match(spec.get("bridge_package"), PACKAGE_RE, f"{repo}.bridge_package")
         legs = spec.get("legs")
         if not isinstance(legs, list) or not legs:
             raise ContractError(f"{repo}.legs must be a non-empty list")
@@ -206,10 +229,15 @@ def validate_policy(policy: Dict[str, Any]) -> None:
             if leg["id"] in seen:
                 raise ContractError(f"{repo} lists leg {leg['id']!r} twice")
             seen.add(leg["id"])
-            if leg.get("state") not in ("required", "pending-merge"):
-                raise ContractError(f"{repo} leg {leg['id']}: state must be required|pending-merge")
+            if leg.get("state") not in LEG_STATES:
+                raise ContractError(f"{repo} leg {leg['id']}: state must be one of {'|'.join(LEG_STATES)}")
             if leg["state"] == "pending-merge" and not leg.get("pr"):
                 raise ContractError(f"{repo} leg {leg['id']}: a pending leg must name its PR")
+            # The validation workflow schedules a leg on this runner label, so a
+            # label is part of the leg, not documentation.
+            _require_match(leg.get("runner"), RUNNER_RE, f"{repo} leg {leg['id']} runner")
+            if leg.get("scenario") is not None and leg["scenario"] not in SCENARIOS:
+                raise ContractError(f"{repo} leg {leg['id']}: scenario must be null or one of {', '.join(SCENARIOS)}")
         if not any(leg["state"] == "required" for leg in legs):
             raise ContractError(f"{repo} requires no leg at all")
 
@@ -229,6 +257,12 @@ def required_legs(policy: Dict[str, Any], repository: str) -> List[str]:
     `required`. `pending-merge` legs are listed so they are not forgotten, but they
     cannot be required before the workflow that runs them exists on main."""
     return [leg["id"] for leg in repo_policy(policy, repository)["legs"] if leg["state"] == "required"]
+
+
+def advisory_legs(policy: Dict[str, Any], repository: str) -> List[str]:
+    """Legs that run and are recorded in the receipt's results, but that the verdict
+    never waits for (libprobe's BSD arm64 guests: emulated, one to two hours each)."""
+    return [leg["id"] for leg in repo_policy(policy, repository)["legs"] if leg["state"] == "advisory"]
 
 
 def receipt_reserved_names(policy: Dict[str, Any], receipt: Dict[str, Any]) -> List[str]:
@@ -494,11 +528,11 @@ def expected_run_name(candidate: Dict[str, Any]) -> str:
 
 
 def validate_dispatch(body: Any, policy: Dict[str, Any]) -> None:
-    """The full body POSTed to /repos/{staging}/dispatches."""
+    """The full body POSTed to /repos/{validation}/dispatches."""
     if not isinstance(body, dict) or set(body) != {"event_type", "client_payload"}:
         raise ContractError("dispatch body must be exactly {event_type, client_payload}")
-    if body["event_type"] != policy["staging"]["event_type"]:
-        raise ContractError(f"event_type must be {policy['staging']['event_type']!r}")
+    if body["event_type"] != policy["validation"]["event_type"]:
+        raise ContractError(f"event_type must be {policy['validation']['event_type']!r}")
     payload = body["client_payload"]
     if not isinstance(payload, dict):
         raise ContractError("client_payload must be an object")
@@ -516,12 +550,15 @@ def validate_dispatch(body: Any, policy: Dict[str, Any]) -> None:
     # receipt this payload implies: one definition of "well-formed", not two.
     pending = pending_receipt_from_dispatch(body, recorded_at="1970-01-01T00:00:00Z")
     validate_receipt(pending, policy)
-    staging = payload["staging"]
-    _require_keys(staging, STAGING_KEYS, "client_payload.staging")
-    if staging["repository"] != policy["staging"]["repository"]:
-        raise ContractError(f"staging.repository must be {policy['staging']['repository']!r}")
-    _require_int(staging["release_id"], "client_payload.staging.release_id", 1)
-    _require_match(staging["tag_name"], re.compile(r"^[A-Za-z0-9][A-Za-z0-9._/-]{0,127}$"), "client_payload.staging.tag_name")
+    bridge = payload["bridge"]
+    _require_keys(bridge, BRIDGE_KEYS, "client_payload.bridge")
+    expected_package = repo_policy(policy, candidate["repository"])["bridge_package"]
+    if bridge["package"] != expected_package:
+        # Fixed per repository, and granted to this repository's Actions one package
+        # at a time in the GitHub UI: a candidate anywhere else is unreadable here,
+        # or worse, readable from somewhere nobody reviewed.
+        raise ContractError(f"bridge.package must be {expected_package!r} for {candidate['repository']}")
+    _require_match(bridge["digest"], DIGEST_RE, "client_payload.bridge.digest")
     if len(expected_run_name(candidate)) > 255:
         raise ContractError("the run-name this candidate implies would be longer than 255 characters")
 
@@ -551,6 +588,133 @@ def pending_receipt_from_dispatch(body: Dict[str, Any], recorded_at: str) -> Dic
         "recorded_at": recorded_at,
         "restored_from": None,
     }
+
+
+# --------------------------------------------------------------------------------------
+# the bridge: a candidate as an OCI artifact in a private GHCR package
+# --------------------------------------------------------------------------------------
+
+
+def candidate_files(payload: Dict[str, Any]) -> Dict[str, str]:
+    """{filename: sha256} of every file the candidate artifact must carry: the
+    published assets, the support files, and the manifest file itself, whose sha256
+    is asset_manifest_digest."""
+    candidate = payload["candidate"]
+    files = dict(payload["manifest"])
+    files.update(payload["support"])
+    files[candidate["manifest_file"]] = candidate["asset_manifest_digest"][len("sha256:"):]
+    return files
+
+
+def build_candidate_manifest(candidate: Dict[str, Any], layers: List[Tuple[str, str, int]]) -> bytes:
+    """The OCI image manifest of a candidate. `layers` is [(filename, sha256, size)].
+    Layers are in byte order of filename, and the JSON is compact with sorted keys,
+    so the same files always give the same manifest digest."""
+    ordered = sorted(layers, key=lambda layer: layer[0].encode("ascii"))
+    manifest = {
+        "schemaVersion": 2,
+        "mediaType": OCI_MANIFEST_MEDIA_TYPE,
+        "artifactType": CANDIDATE_ARTIFACT_TYPE,
+        "config": EMPTY_CONFIG,
+        "layers": [
+            {"mediaType": LAYER_MEDIA_TYPE, "digest": "sha256:" + digest, "size": size, "annotations": {TITLE_ANNOTATION: name}}
+            for name, digest, size in ordered
+        ],
+        "annotations": {CANDIDATE_ANNOTATION: expected_run_name(candidate)},
+    }
+    return json.dumps(manifest, sort_keys=True, separators=(",", ":")).encode("utf-8")
+
+
+def check_candidate_manifest(raw: bytes, payload: Dict[str, Any]) -> Dict[str, Dict[str, Any]]:
+    """Admission of the bytes the dispatch points at, before anything is downloaded.
+
+    `raw` is the OCI manifest as served for the dispatched digest. It must hash to
+    that digest, name this candidate, and carry exactly one layer per expected file
+    whose digest is that file's manifest sha256 -- nothing missing, nothing extra.
+    Returns {filename: layer} for the pull."""
+    digest = payload["bridge"]["digest"]
+    actual = "sha256:" + hashlib.sha256(raw).hexdigest()
+    if actual != digest:
+        raise ContractError(f"the registry served a manifest hashing to {actual}, not the dispatched {digest}")
+    try:
+        manifest = json.loads(raw.decode("utf-8"))
+    except ValueError as exc:
+        raise ContractError(f"candidate manifest is not JSON: {exc}") from exc
+    if not isinstance(manifest, dict):
+        raise ContractError("candidate manifest must be a JSON object")
+    if manifest.get("schemaVersion") != 2 or manifest.get("mediaType") != OCI_MANIFEST_MEDIA_TYPE:
+        raise ContractError("candidate manifest is not an OCI image manifest v1 (schemaVersion 2)")
+    if manifest.get("artifactType") != CANDIDATE_ARTIFACT_TYPE:
+        raise ContractError(f"candidate artifactType must be {CANDIDATE_ARTIFACT_TYPE!r}, got {manifest.get('artifactType')!r}")
+    if manifest.get("config") != EMPTY_CONFIG:
+        raise ContractError("candidate config must be the empty OCI descriptor: a candidate carries files, not an image")
+    want_name = expected_run_name(payload["candidate"])
+    got_name = (manifest.get("annotations") or {}).get(CANDIDATE_ANNOTATION)
+    if got_name != want_name:
+        # The layers alone would admit the same bytes pushed for another tag or
+        # generation; the annotation makes the artifact name the candidate it is for.
+        raise ContractError(f"candidate artifact is annotated {got_name!r}, the dispatch is for {want_name!r}")
+    layers = manifest.get("layers")
+    if not isinstance(layers, list) or not layers:
+        raise ContractError("candidate manifest has no layers")
+    expected = candidate_files(payload)
+    by_name: Dict[str, Dict[str, Any]] = {}
+    problems: List[str] = []
+    for layer in layers:
+        if not isinstance(layer, dict):
+            raise ContractError("a candidate layer is not an object")
+        name = (layer.get("annotations") or {}).get(TITLE_ANNOTATION)
+        if not isinstance(name, str) or not NAME_RE.fullmatch(name):
+            problems.append(f"a layer has no usable {TITLE_ANNOTATION}: {name!r}")
+            continue
+        if name in by_name:
+            problems.append(f"{name} is carried twice")
+            continue
+        by_name[name] = layer
+        if layer.get("mediaType") != LAYER_MEDIA_TYPE:
+            problems.append(f"{name}: layer mediaType {layer.get('mediaType')!r}, expected {LAYER_MEDIA_TYPE!r} (raw bytes, never an archive)")
+        if not _is_int(layer.get("size")) or layer["size"] < 0:
+            problems.append(f"{name}: layer has no usable size")
+        if name not in expected:
+            problems.append(f"{name} is not in the manifest or the support set")
+        elif layer.get("digest") != "sha256:" + expected[name]:
+            problems.append(f"{name}: layer digest {layer.get('digest')} != manifest sha256:{expected[name]}")
+    missing = sorted(set(expected) - set(by_name))
+    if missing:
+        problems.append("candidate lacks file(s): " + ", ".join(missing))
+    if problems:
+        raise ContractError("candidate artifact does not match the manifest: " + "; ".join(problems))
+    return by_name
+
+
+def leg_matrix(payload: Dict[str, Any], policy: Dict[str, Any]) -> Tuple[List[Dict[str, Any]], List[str]]:
+    """What the validation workflow schedules: every leg of required_matrix the policy
+    knows how to run, plus the repository's advisory legs. Returns (legs, unknown):
+    an unknown required leg is NOT scheduled, so no job reports it and the verdict
+    reads it as `missing` -- a dispatcher cannot make a leg pass by naming it."""
+    repository = payload["candidate"]["repository"]
+    known = {leg["id"]: leg for leg in repo_policy(policy, repository)["legs"]}
+    legs: List[Dict[str, Any]] = []
+    unknown: List[str] = []
+    for leg_id in payload["required_matrix"]:
+        leg = known.get(leg_id)
+        if leg is None or leg["state"] == "pending-merge":
+            unknown.append(leg_id)
+            continue
+        legs.append({"id": leg_id, "runner": leg["runner"], "required": True})
+    for leg_id in advisory_legs(policy, repository):
+        if leg_id not in payload["required_matrix"]:
+            legs.append({"id": leg_id, "runner": known[leg_id]["runner"], "required": False})
+    return legs, unknown
+
+
+def judge_jobs(payload: Dict[str, Any], jobs: List[Dict[str, Any]]) -> Tuple[Dict[str, str], str]:
+    """The verdict the leg jobs of a run imply, read while the run is still going.
+    It is NOT a receipt: a receipt is only ever built by `evidence` from a completed
+    repository_dispatch run on the default branch."""
+    required = payload["required_matrix"]
+    results = results_from_jobs(jobs, required)
+    return dict(sorted(results.items())), derive_verdict(required, results)
 
 
 # --------------------------------------------------------------------------------------
@@ -589,7 +753,7 @@ def results_from_jobs(jobs: List[Dict[str, Any]], required: List[str]) -> Dict[s
 
 
 def check_run_binding(run: Dict[str, Any], pending: Dict[str, Any], policy: Dict[str, Any]) -> List[str]:
-    staging = policy["staging"]
+    staging = policy["validation"]
     problems = []
     repo = (run.get("repository") or {}).get("full_name")
     if repo != staging["repository"]:
@@ -815,6 +979,154 @@ class Api:
         raise UsageError(f"asset {asset_id}: HTTP {status}")
 
 
+class Registry:
+    """Minimal OCI distribution client for one GHCR package, stdlib only.
+
+    Authenticates with the job's GITHUB_TOKEN exchanged for a registry bearer token
+    (`/token?scope=repository:<package>:<actions>`), exactly as measured on the
+    bridge (README section 9). Blob downloads follow the redirect to the storage
+    host WITHOUT the Authorization header, and every byte is hashed on its way to
+    disk: a file lands under its final name only once its digest is proven."""
+
+    def __init__(self, package: str, actions: str, user: Optional[str] = None, token: Optional[str] = None, base: Optional[str] = None) -> None:
+        self.package = package
+        self.base = (base or os.environ.get("RELEASE_CONTRACT_REGISTRY") or "https://ghcr.io").rstrip("/")
+        user = user if user is not None else (os.environ.get("GITHUB_ACTOR") or "release-contract")
+        token = token if token is not None else (os.environ.get("GH_TOKEN") or os.environ.get("GITHUB_TOKEN") or "")
+        service = urllib.parse.urlparse(self.base).netloc
+        url = f"{self.base}/token?scope=repository:{package}:{actions}&service={service}"
+        headers = {"User-Agent": "supervizio-release-contract"}
+        if token:
+            headers["Authorization"] = "Basic " + base64.b64encode(f"{user}:{token}".encode()).decode()
+        status, _, body = self._call("GET", url, headers)
+        bearer = None
+        if status == 200:
+            try:
+                bearer = json.loads(body.decode("utf-8")).get("token")
+            except ValueError:
+                bearer = None
+        if not bearer:
+            raise UsageError(f"registry refused a {actions} token for {package}: HTTP {status}")
+        self.auth = {"Authorization": "Bearer " + bearer, "User-Agent": "supervizio-release-contract"}
+
+    @staticmethod
+    def _call(method: str, url: str, headers: Dict[str, str], data: Any = None, timeout: int = 120) -> Tuple[int, Dict[str, str], bytes]:
+        opener = urllib.request.build_opener(_NoRedirect)
+        try:
+            with opener.open(urllib.request.Request(url, data=data, method=method, headers=headers), timeout=timeout) as resp:
+                return resp.status, {k.lower(): v for k, v in resp.headers.items()}, resp.read()
+        except urllib.error.HTTPError as exc:
+            return exc.code, {k.lower(): v for k, v in (exc.headers or {}).items()}, exc.read() or b""
+        except urllib.error.URLError as exc:
+            raise UsageError(f"{method} {url.split('?')[0]}: {exc}") from exc
+
+    def _url(self, path: str) -> str:
+        return f"{self.base}/v2/{self.package}/{path}"
+
+    def get_manifest(self, reference: str) -> bytes:
+        headers = dict(self.auth, Accept=OCI_MANIFEST_MEDIA_TYPE)
+        status, _, body = self._call("GET", self._url(f"manifests/{reference}"), headers)
+        if status != 200:
+            raise UsageError(f"GET manifest {self.package}@{reference} -> HTTP {status}")
+        return body
+
+    def fetch_blob(self, digest: str, dest: str) -> None:
+        """Download a blob to `dest`, refusing it unless it hashes to `digest`."""
+        status, headers, body = self._call("GET", self._url(f"blobs/{digest}"), self.auth)
+        partial = dest + ".partial"
+        if status in (301, 302, 303, 307, 308):
+            location = headers.get("location")
+            if not location:
+                raise UsageError(f"blob {digest}: redirect without Location")
+            req = urllib.request.Request(location, headers={"User-Agent": "supervizio-release-contract"})
+            hasher = hashlib.sha256()
+            try:
+                with urllib.request.urlopen(req, timeout=600) as resp, open(partial, "wb") as fh:
+                    for block in iter(lambda: resp.read(1 << 20), b""):
+                        hasher.update(block)
+                        fh.write(block)
+            except urllib.error.URLError as exc:
+                raise UsageError(f"blob {digest}: download failed: {exc}") from exc
+            actual = "sha256:" + hasher.hexdigest()
+        elif status == 200:
+            with open(partial, "wb") as fh:
+                fh.write(body)
+            actual = "sha256:" + hashlib.sha256(body).hexdigest()
+        else:
+            raise UsageError(f"GET blob {self.package}@{digest} -> HTTP {status}")
+        if actual != digest:
+            os.remove(partial)
+            raise ContractError(f"blob {digest} arrived as {actual}")
+        os.replace(partial, dest)
+
+    def has_blob(self, digest: str) -> bool:
+        status, _, _ = self._call("HEAD", self._url(f"blobs/{digest}"), self.auth)
+        return status == 200
+
+    def push_blob(self, path: str, digest: str) -> None:
+        if self.has_blob(digest):
+            return
+        status, headers, body = self._call("POST", self._url("blobs/uploads/"), self.auth, data=b"")
+        if status != 202 or "location" not in headers:
+            raise UsageError(f"start upload {digest} -> HTTP {status}: {body[:200]!r}")
+        location = headers["location"]
+        if location.startswith("/"):
+            location = self.base + location
+        sep = "&" if "?" in location else "?"
+        size = os.path.getsize(path)
+        with open(path, "rb") as fh:
+            put_headers = dict(self.auth, **{"Content-Type": "application/octet-stream", "Content-Length": str(size)})
+            status, _, body = self._call("PUT", f"{location}{sep}digest={digest}", put_headers, data=fh, timeout=1800)
+        if status != 201:
+            raise UsageError(f"finish upload {digest} -> HTTP {status}: {body[:200]!r}")
+
+    def put_manifest(self, tag: str, raw: bytes) -> str:
+        headers = dict(self.auth, **{"Content-Type": OCI_MANIFEST_MEDIA_TYPE})
+        status, _, body = self._call("PUT", self._url(f"manifests/{tag}"), headers, data=raw)
+        if status != 201:
+            raise UsageError(f"PUT manifest {self.package}:{tag} -> HTTP {status}: {body[:200]!r}")
+        return "sha256:" + hashlib.sha256(raw).hexdigest()
+
+
+def push_candidate(registry: Registry, body: Dict[str, Any], directory: str, tag: str) -> str:
+    """Push every candidate file from `directory`, each re-hashed against the payload
+    first (a stale file must not be published under a digest it does not have), then
+    the manifest that names them. Returns the manifest digest for bridge.digest."""
+    payload = body["client_payload"]
+    layers = []
+    for name, want in sorted(candidate_files(payload).items()):
+        path = os.path.join(directory, name)
+        if not os.path.isfile(path):
+            raise ContractError(f"{name} is not in {directory}")
+        actual = sha256_file(path)
+        if actual != want:
+            raise ContractError(f"{name}: sha256 {actual} != payload {want}")
+        registry.push_blob(path, "sha256:" + actual)
+        layers.append((name, actual, os.path.getsize(path)))
+    if not registry.has_blob(EMPTY_CONFIG["digest"]):
+        with tempfile.NamedTemporaryFile(delete=False) as fh:
+            fh.write(b"{}")
+        try:
+            registry.push_blob(fh.name, EMPTY_CONFIG["digest"])
+        finally:
+            os.remove(fh.name)
+    return registry.put_manifest(tag, build_candidate_manifest(payload["candidate"], layers))
+
+
+def pull_candidate(registry: Registry, payload: Dict[str, Any], directory: str, only: Optional[List[str]] = None) -> List[str]:
+    """Re-admit the artifact (the pull does not trust admit's word), then download the
+    requested files by layer digest into `directory`. Returns the names written."""
+    layers = check_candidate_manifest(registry.get_manifest(payload["bridge"]["digest"]), payload)
+    names = only or sorted(layers)
+    unknown = [n for n in names if n not in layers]
+    if unknown:
+        raise ContractError("not in the candidate: " + ", ".join(unknown))
+    os.makedirs(directory, exist_ok=True)
+    for name in names:
+        registry.fetch_blob(layers[name]["digest"], os.path.join(directory, name))
+    return names
+
+
 def resolve_tag(api: Api, repository: str, tag: str) -> Optional[str]:
     """Tag -> commit, peeling annotated tags (a tag object may point at another tag
     object). None when the tag does not exist."""
@@ -990,7 +1302,7 @@ def cmd_run_name(args: argparse.Namespace, policy: Dict[str, Any]) -> int:
 def cmd_evidence(args: argparse.Namespace, policy: Dict[str, Any]) -> int:
     pending = _read_json(args.pending)
     if args.run_id is not None:
-        run, jobs = fetch_run(Api(), policy["staging"]["repository"], args.run_id)
+        run, jobs = fetch_run(Api(), policy["validation"]["repository"], args.run_id)
     else:
         if not (args.run and args.jobs):
             raise UsageError("evidence needs --run-id, or both --run and --jobs")
@@ -1021,6 +1333,112 @@ def cmd_verify_promotion(args: argparse.Namespace, policy: Dict[str, Any]) -> in
     r = state["release"]["receipt"]
     print(f"PASS promote {r['repository']}@{r['tag']} release {r['release_id']} g{r['candidate_generation']} {r['asset_manifest_digest']}")
     return 0
+
+
+def _checked_dispatch(path: str, policy: Dict[str, Any]) -> Dict[str, Any]:
+    body = _read_json(path)
+    validate_dispatch(body, policy)
+    return body
+
+
+def cmd_bridge_push(args: argparse.Namespace, policy: Dict[str, Any]) -> int:
+    body = _read_json(args.dispatch)
+    # The digest is what this command produces, so the body may arrive without a
+    # usable one; everything else is checked before a byte leaves the machine.
+    probe = json.loads(json.dumps(body))
+    if isinstance(probe.get("client_payload"), dict):
+        bridge = probe["client_payload"].get("bridge")
+        if isinstance(bridge, dict):
+            bridge["digest"] = EMPTY_CONFIG["digest"]
+    validate_dispatch(probe, policy)
+    _require_match(args.tag, OCI_TAG_RE, "--tag")
+    payload = probe["client_payload"]
+    registry = Registry(payload["bridge"]["package"], "pull,push")
+    digest = push_candidate(registry, probe, args.dir, args.tag)
+    body["client_payload"]["bridge"]["digest"] = digest
+    validate_dispatch(body, policy)
+    _write(_dump(body), args.output)
+    print(f"pushed ghcr.io/{payload['bridge']['package']}:{args.tag}@{digest}", file=sys.stderr)
+    return 0
+
+
+def cmd_bridge_admit(args: argparse.Namespace, policy: Dict[str, Any]) -> int:
+    body = _checked_dispatch(args.dispatch, policy)
+    payload = body["client_payload"]
+    if args.run_id is not None:
+        # The run-name is what evidence later binds the run to; a workflow that
+        # rendered it differently would produce a run no receipt can be built from.
+        run = Api().get_ok(f"/repos/{policy['validation']['repository']}/actions/runs/{args.run_id}")
+        want = expected_run_name(payload["candidate"])
+        if run.get("display_title") != want:
+            raise ContractError(f"this run is titled {run.get('display_title')!r}, the candidate requires {want!r}")
+    registry = Registry(payload["bridge"]["package"], "pull")
+    layers = check_candidate_manifest(registry.get_manifest(payload["bridge"]["digest"]), payload)
+    legs, unknown = leg_matrix(payload, policy)
+    for leg in unknown:
+        print(f"WARN required leg {leg} has no runner in this revision's policy: it will not run, and reads as missing")
+    if args.legs_output:
+        with open(args.legs_output, "w") as fh:
+            fh.write(json.dumps(legs, separators=(",", ":")))
+    print(f"PASS candidate {payload['bridge']['package']}@{payload['bridge']['digest']}: {len(layers)} file(s) match the manifest; {len(legs)} leg(s) scheduled")
+    return 0
+
+
+def cmd_bridge_pull(args: argparse.Namespace, policy: Dict[str, Any]) -> int:
+    body = _checked_dispatch(args.dispatch, policy)
+    payload = body["client_payload"]
+    registry = Registry(payload["bridge"]["package"], "pull")
+    names = pull_candidate(registry, payload, args.dir, args.only)
+    print(f"PASS pulled {len(names)} file(s), each re-hashed against the manifest")
+    return 0
+
+
+def cmd_judge(args: argparse.Namespace, policy: Dict[str, Any]) -> int:
+    body = _checked_dispatch(args.dispatch, policy)
+    payload = body["client_payload"]
+    if args.run_id is not None:
+        _, jobs = fetch_run(Api(), policy["validation"]["repository"], args.run_id)
+    elif args.jobs:
+        jobs_doc = _read_json(args.jobs)
+        jobs = jobs_doc["jobs"] if isinstance(jobs_doc, dict) else jobs_doc
+    else:
+        raise UsageError("judge needs --run-id or --jobs")
+    results, verdict = judge_jobs(payload, jobs)
+    required = set(payload["required_matrix"])
+    lines = ["| leg | gating | result |", "|---|---|---|"]
+    for leg, result in results.items():
+        lines.append(f"| `{leg}` | {'required' if leg in required else 'advisory'} | {result} |")
+    table = "\n".join(lines)
+    print(table)
+    print(f"verdict={verdict}")
+    if args.summary:
+        with open(args.summary, "a", encoding="utf-8") as fh:
+            fh.write(f"### validate-release: {verdict}\n\n{expected_run_name(payload['candidate'])}\n\n{table}\n\n"
+                     "This is the verdict the legs imply. The receipt is built from the completed run by `evidence`.\n")
+    return 0 if verdict == "success" else 1
+
+
+def cmd_scenario(args: argparse.Namespace, policy: Dict[str, Any]) -> int:
+    body = _checked_dispatch(args.dispatch, policy)
+    payload = body["client_payload"]
+    known = {leg["id"]: leg for leg in repo_policy(policy, payload["candidate"]["repository"])["legs"]}
+    leg = known.get(args.leg)
+    if leg is None:
+        raise ContractError(f"leg {args.leg!r} is not in the policy for {payload['candidate']['repository']}")
+    scenario = leg.get("scenario")
+    if scenario is None:
+        # Fail closed: a leg whose release scenario is not written yet has proven
+        # nothing about these bytes, and must not read as a pass.
+        raise ContractError(f"leg {args.leg}: no release scenario is wired yet (policy.json scenario: null)")
+    if scenario == "integrity":
+        files = candidate_files(payload)
+        for name, want in sorted(files.items()):
+            path = os.path.join(args.dir, name)
+            if not os.path.isfile(path) or sha256_file(path) != want:
+                raise ContractError(f"{name} is missing or does not match the manifest")
+        print(f"PASS integrity-only scenario: {len(files)} file(s) present and matching; nothing executed")
+        return 0
+    raise ContractError(f"leg {args.leg}: unknown scenario {scenario!r}")
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -1091,6 +1509,37 @@ def build_parser() -> argparse.ArgumentParser:
         help="check a release that may already be published, against the matrix its receipt was validated with",
     )
     vp.set_defaults(func=cmd_verify_promotion)
+
+    br = sub.add_parser("bridge", help="the candidate as an OCI artifact in its GHCR package").add_subparsers(dest="sub", required=True)
+    bp = br.add_parser("push", help="private side: push the candidate files, print the dispatch body with bridge.digest set")
+    bp.add_argument("--dispatch", required=True, help="dispatch body; bridge.digest is overwritten")
+    bp.add_argument("--dir", required=True, help="directory holding every manifest and support file, and the manifest file")
+    bp.add_argument("--tag", required=True, help="OCI tag for humans, e.g. v1.4.2-g1; the dispatch pins the digest")
+    bp.add_argument("--output")
+    bp.set_defaults(func=cmd_bridge_push)
+    ba = br.add_parser("admit", help="check the dispatched artifact against the manifest without downloading it")
+    ba.add_argument("--dispatch", required=True)
+    ba.add_argument("--legs-output", help="write the leg matrix [{id, runner, required}] as JSON")
+    ba.add_argument("--run-id", type=int, help="also check that this validation run renders the candidate's run-name")
+    ba.set_defaults(func=cmd_bridge_admit)
+    bl = br.add_parser("pull", help="download candidate files by digest, each re-hashed on arrival")
+    bl.add_argument("--dispatch", required=True)
+    bl.add_argument("--dir", required=True)
+    bl.add_argument("--only", action="append", help="pull only this file (repeatable)")
+    bl.set_defaults(func=cmd_bridge_pull)
+
+    j = sub.add_parser("judge", help="the verdict a run's leg jobs imply so far (not a receipt)")
+    j.add_argument("--dispatch", required=True)
+    j.add_argument("--run-id", type=int)
+    j.add_argument("--jobs")
+    j.add_argument("--summary", help="append a Markdown table to this file")
+    j.set_defaults(func=cmd_judge)
+
+    sc = sub.add_parser("scenario", help="run a leg's release scenario on pulled files")
+    sc.add_argument("--dispatch", required=True)
+    sc.add_argument("--leg", required=True)
+    sc.add_argument("--dir", required=True)
+    sc.set_defaults(func=cmd_scenario)
     return p
 
 
