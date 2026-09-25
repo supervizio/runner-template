@@ -114,14 +114,25 @@ jobs:
             echo "::warning::AGENT_REPO_TOKEN not set - cannot pre-check artifacts, letting the legs try"
             exit 0
           fi
-          names="$(gh api --paginate "repos/$SRC_REPO/actions/runs/$SRC_RUN/artifacts?per_page=100"                      --jq '.artifacts[].name' 2>/dev/null | sort -u || true)"
+          # An expired artifact stays LISTED, with expired=true, and its
+          # download fails. Counting it as present let an old run through here
+          # and then failed every leg at its own download step: run 35575688538
+          # lists 18 artifacts, 16 of them expired, supervizio-linux-amd64 included.
+          listing="$(gh api --paginate "repos/$SRC_REPO/actions/runs/$SRC_RUN/artifacts?per_page=100" \
+            --jq '.artifacts[] | "\(.expired) \(.name)"' 2>/dev/null || true)"
+          names="$(printf '%s\n' "$listing" | awk '$1 == "false" { print $2 }' | sort -u)"
+          expired="$(printf '%s\n' "$listing" | awk '$1 == "true" { print $2 }' | sort -u)"
           count="$(printf '%s' "$names" | grep -c . || true)"
-          echo "run $SRC_RUN carries $count artifact(s)"
+          echo "run $SRC_RUN carries $count downloadable artifact(s)"
           printf '%s\n' "$names" | sed 's/^/  /'
+          if [ -n "$expired" ]; then
+            echo "expired, so not downloadable: $(printf '%s\n' "$expired" | grep -c .)"
+            printf '%s\n' "$expired" | sed 's/^/  /'
+          fi
           # linux-amd64 is the floor: the docker legs cannot run without it, and
           # no useful subset of this matrix exists when it is missing.
           if ! printf '%s\n' "$names" | grep -qx 'supervizio-linux-amd64'; then
-            echo "::error::agent run $SRC_RUN published no supervizio-linux-amd64 - nothing here can be tested. If that run is green, the artifact bridge is what is missing (supervizio/agent#202); if it is still going, dispatch again once it finishes." >&2
+            echo "::error::agent run $SRC_RUN has no downloadable supervizio-linux-amd64 - nothing here can be tested. If it is listed above as expired, the run is older than its artifact retention: dispatch against a newer one. If that run is green and published nothing, the artifact bridge is what is missing (supervizio/agent#202); if it is still going, dispatch again once it finishes." >&2
             exit 1
           fi
           # Advisory, not fatal. The openbsd leg reports its own red, which is
