@@ -200,6 +200,13 @@ runs:
         else
           echo "::warning::no image checksum given - booting an unverified image and handing it a root shell"
         fi
+        # Which host this landed on, printed because hosted runners are not all
+        # alike and a guest can depend on it: vmactions strips AVX-512 on the
+        # AMD hosts that have it, and Rocky 10 then never boots. -cpu host below
+        # passes the host's features through, so this line says what the guest
+        # was given.
+        echo "host CPU: $(awk -F': ' '/^model name/ { print $2; exit }' /proc/cpuinfo)" \
+             "(avx512f: $(grep -qw avx512f /proc/cpuinfo && echo yes || echo no))"
         # Copy-on-write overlay: the base stays pristine and the guest's writes
         # cost tens of MiB, not the image size.
         qemu-img create -f qcow2 -F qcow2 -b base.qcow2 disk.qcow2 10G >/dev/null

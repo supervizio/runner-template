@@ -1,0 +1,48 @@
+# TEMPORARY proof for PR #109, deleted before merge: does Rocky Linux 10 boot
+# under ./.github/actions/qemu-vm on a hosted runner that lands on an AMD host
+# with AVX-512 (EPYC 9V74), where vmactions/rockylinux-vm never boots it?
+# Eight identical boots, so that at least one lands on such a host; each one
+# logs the host CPU (from the action) and what the guest sees.
+name: rocky-avx512-proof
+on:
+  push:
+    branches: [fix/e2e-signed-upstream-images]
+    paths: ['.github/workflows/rocky-avx512-proof.yml']
+permissions:
+  contents: read
+jobs:
+  boot:
+    name: rocky boot ${{ matrix.n }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix:
+        n: [1, 2, 3, 4, 5, 6, 7, 8]
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Resolve the current Rocky Linux 10 image
+        id: image
+        run: |
+          set -euo pipefail
+          dir=https://dl.rockylinux.org/pub/rocky/10/images/x86_64
+          name=$(.github/actions/qemu-vm/resolve-image.sh listing "$dir" \
+            'Rocky-10-GenericCloud-Base-10\.[0-9]+-[0-9]{8}\.[0-9]+\.x86_64\.qcow2')
+          echo "url=$dir/$name" >> "$GITHUB_OUTPUT"
+      - name: Boot Rocky 10 and report what the guest sees
+        uses: ./.github/actions/qemu-vm
+        with:
+          image-url: ${{ steps.image.outputs.url }}
+          image-checksum-url: ${{ steps.image.outputs.url }}.CHECKSUM
+          image-signature-url: ${{ steps.image.outputs.url }}.CHECKSUM.asc
+          image-signing-key: .github/keys/rocky-linux-10-release-key.asc
+          image-signing-fingerprint: FC226859C0860BF0DDB95B085B106C736FEDFC85
+          memory: "2048"
+          run: |
+            echo "guest PID1=$(cat /proc/1/comm)"
+            echo "guest CPU: $(awk -F': ' '/^model name/ { print $2; exit }' /proc/cpuinfo)"
+            echo "guest avx512f: $(grep -qw avx512f /proc/cpuinfo && echo yes || echo no)"
+            [ "$(cat /proc/1/comm)" = systemd ] || { echo "::error::PID 1 is not systemd"; exit 1; }
+            systemctl is-system-running --wait || true
