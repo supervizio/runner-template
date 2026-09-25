@@ -136,7 +136,10 @@ jobs:
     name: leg/${{ matrix.leg.id }}
     needs: [admit]
     runs-on: ${{ matrix.leg.runner }}
-    timeout-minutes: 60
+    # A BSD guest on an arm64 runner has no KVM: QEMU emulates every instruction
+    # and the boot alone can take most of an hour (external-e2e.yml measured
+    # 64-122 min for a whole leg there). Everything else fits in 60.
+    timeout-minutes: ${{ (contains(fromJSON('["freebsd","openbsd","netbsd"]'), matrix.leg.host) && matrix.leg.runner == 'ubuntu-24.04-arm') && 150 || 60 }}
     # packages: read is the one thing a leg holds, and only the pull step reads
     # it. The scenario step executes candidate bytes with no token in its env.
     permissions:
@@ -170,13 +173,114 @@ jobs:
           read -r manifest_file digest < <("$PY" -c 'import json; c = json.load(open("dispatch.json"))["client_payload"]["candidate"]; print(c["manifest_file"], c["asset_manifest_digest"])' | tr -d '\r')
           $RC manifest verify-files --manifest "candidate/$manifest_file" --expect-digest "$digest" --dir candidate
 
-      - name: Scenario
+      # The scenario in three steps: prepare (host, Python: checks the pulled
+      # files and, for a harness, stages it in work/), the harness itself where
+      # the leg's platform lives, and check (host, Python: judges what the
+      # harness left). A leg without a harness (integrity) is done at prepare.
+      # No step from here on holds a token.
+      - name: Scenario -- prepare
         shell: bash
         env:
           LEG: ${{ matrix.leg.id }}
         run: |
           set -euo pipefail
-          $RC scenario --dispatch dispatch.json --leg "$LEG" --dir candidate
+          $RC scenario --dispatch dispatch.json --leg "$LEG" --dir candidate --work work --stage prepare
+
+      # --- the libprobe ABI harness (release-contract/harness/libprobe) --------
+      # windows-arm64's archive is aarch64-pc-windows-gnullvm, which links with
+      # an LLVM mingw toolchain; no hosted image carries one. Pinned release,
+      # checked against the digest GitHub publishes for that asset.
+      - name: Harness toolchain -- llvm-mingw (windows-arm64)
+        if: ${{ matrix.leg.scenario == 'abi' && matrix.leg.platform == 'windows-arm64' }}
+        shell: pwsh
+        env:
+          LLVM_MINGW: llvm-mingw-20260922-ucrt-aarch64
+          LLVM_MINGW_URL: https://github.com/mstorsjo/llvm-mingw/releases/download/20260922/llvm-mingw-20260922-ucrt-aarch64.zip
+          LLVM_MINGW_SHA256: a317514a7a63badd692032c0c2b8e165f630bbaebbe7a3254348051f43a64949
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $zip = Join-Path $env:RUNNER_TEMP "$env:LLVM_MINGW.zip"
+          Invoke-WebRequest -Uri $env:LLVM_MINGW_URL -OutFile $zip
+          $got = (Get-FileHash -Algorithm SHA256 $zip).Hash.ToLower()
+          if ($got -ne $env:LLVM_MINGW_SHA256) { throw "llvm-mingw sha256 $got, pinned $env:LLVM_MINGW_SHA256" }
+          Expand-Archive -Path $zip -DestinationPath $env:RUNNER_TEMP
+          Join-Path $env:RUNNER_TEMP "$env:LLVM_MINGW\bin" | Out-File -Append -Encoding utf8 $env:GITHUB_PATH
+
+      - name: Harness -- on the runner
+        if: ${{ matrix.leg.scenario == 'abi' && matrix.leg.host == 'native' }}
+        shell: bash
+        run: sh work/run.sh
+
+      # A guest syncs the whole workspace in and back after every step. The
+      # candidate has done its job (work/ holds the one platform the leg runs),
+      # and 26 archives over an emulated NIC is what an arm64 guest cannot
+      # afford.
+      - name: Harness -- keep only work/ for the guest
+        if: ${{ matrix.leg.scenario == 'abi' && contains(fromJSON('["freebsd","openbsd","netbsd"]'), matrix.leg.host) }}
+        shell: bash
+        run: rm -rf candidate
+
+      # Releases pinned, as in external-e2e.yml. The base system's cc is the
+      # consumer's compiler; nothing is installed in the guest.
+      - name: Harness -- boot FreeBSD 15.0
+        if: ${{ matrix.leg.scenario == 'abi' && matrix.leg.host == 'freebsd' }}
+        uses: vmactions/freebsd-vm@4469451fe39bee80be4066836c5170362e9349f3 # v1.5.7
+        with:
+          release: '15.0'
+          arch: ${{ runner.arch == 'ARM64' && 'aarch64' || 'x86_64' }}
+          custom-shell-name: bsdvm
+      - name: Harness -- boot OpenBSD 7.9
+        if: ${{ matrix.leg.scenario == 'abi' && matrix.leg.host == 'openbsd' }}
+        uses: vmactions/openbsd-vm@86cdc08415d9d0865267e686561e276c52d62530 # v1.4.7
+        with:
+          release: '7.9'
+          arch: ${{ runner.arch == 'ARM64' && 'aarch64' || 'x86_64' }}
+          custom-shell-name: bsdvm
+      - name: Harness -- boot NetBSD 10.1
+        if: ${{ matrix.leg.scenario == 'abi' && matrix.leg.host == 'netbsd' }}
+        uses: vmactions/netbsd-vm@20ee93a005c9fc78743e6e05269f4cb023b87413 # v1.5.0
+        with:
+          release: '10.1'
+          arch: ${{ runner.arch == 'ARM64' && 'aarch64' || 'x86_64' }}
+          custom-shell-name: bsdvm
+      - name: Harness -- in the guest
+        if: ${{ matrix.leg.scenario == 'abi' && contains(fromJSON('["freebsd","openbsd","netbsd"]'), matrix.leg.host) }}
+        shell: bsdvm {0}
+        run: sh work/run.sh
+
+      # Built and run inside the image itself, with that image's libc; scratch
+      # is built static in Alpine and run in an image holding only the binary.
+      - name: Harness -- in a container
+        if: ${{ matrix.leg.scenario == 'abi' && startsWith(matrix.leg.host, 'container-') }}
+        shell: bash
+        env:
+          HOST: ${{ matrix.leg.host }}
+        run: |
+          set -euo pipefail
+          case "$HOST" in
+            container-ubuntu)
+              docker run --rm -v "$PWD/work:/work" ubuntu:24.04 sh -c \
+                'apt-get update -qq && apt-get install -y -qq gcc libc6-dev >/dev/null && sh /work/run.sh' ;;
+            container-alpine)
+              docker run --rm -v "$PWD/work:/work" alpine:3.21 sh -c \
+                'apk add --no-cache -q gcc musl-dev && sh /work/run.sh' ;;
+            container-scratch)
+              docker run --rm -v "$PWD/work:/work" alpine:3.21 sh -c \
+                'apk add --no-cache -q gcc musl-dev && sh /work/run.sh build'
+              printf 'FROM scratch\nCOPY consumer /consumer\nENTRYPOINT ["/consumer"]\n' > work/Dockerfile.scratch
+              docker build -q -f work/Dockerfile.scratch -t libprobe-abi-scratch work >/dev/null
+              version="$(sed -n 's/^EXPECTED_VERSION=//p' work/plan.env)"
+              docker run --rm -v "$PWD/work:/out" libprobe-abi-scratch "$version" /out/report.json ;;
+            *) echo "::error::no container recipe for $HOST"; exit 1 ;;
+          esac
+
+      - name: Scenario -- check
+        shell: bash
+        env:
+          LEG: ${{ matrix.leg.id }}
+        run: |
+          set -euo pipefail
+          $RC scenario --dispatch dispatch.json --leg "$LEG" --dir candidate --work work --stage check
 
   verdict:
     name: verdict

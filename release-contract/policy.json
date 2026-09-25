@@ -454,7 +454,11 @@
           "merge_ci": "gating",
           "from": "external-e2e.yml native[linux-amd64]",
           "runner": "ubuntu-24.04",
-          "scenario": null
+          "scenario": "abi",
+          "harness": {
+            "platform": "linux-amd64",
+            "host": "native"
+          }
         },
         {
           "id": "native/linux-arm64",
@@ -462,7 +466,11 @@
           "merge_ci": "gating",
           "from": "external-e2e.yml native[linux-arm64]",
           "runner": "ubuntu-24.04-arm",
-          "scenario": null
+          "scenario": "abi",
+          "harness": {
+            "platform": "linux-arm64",
+            "host": "native"
+          }
         },
         {
           "id": "native/windows-amd64",
@@ -470,7 +478,11 @@
           "merge_ci": "gating",
           "from": "external-e2e.yml native[windows-amd64]",
           "runner": "windows-latest",
-          "scenario": null
+          "scenario": "abi",
+          "harness": {
+            "platform": "windows-amd64",
+            "host": "native"
+          }
         },
         {
           "id": "native/windows-arm64",
@@ -478,7 +490,11 @@
           "merge_ci": "gating",
           "from": "external-e2e.yml native[windows-arm64]",
           "runner": "windows-11-arm",
-          "scenario": null
+          "scenario": "abi",
+          "harness": {
+            "platform": "windows-arm64",
+            "host": "native"
+          }
         },
         {
           "id": "native/macos-amd64",
@@ -486,7 +502,11 @@
           "merge_ci": "gating",
           "from": "external-e2e.yml native[macos-amd64]",
           "runner": "macos-26-intel",
-          "scenario": null
+          "scenario": "abi",
+          "harness": {
+            "platform": "darwin-amd64",
+            "host": "native"
+          }
         },
         {
           "id": "native/macos-arm64",
@@ -494,7 +514,11 @@
           "merge_ci": "gating",
           "from": "external-e2e.yml native[macos-arm64]",
           "runner": "macos-26",
-          "scenario": null
+          "scenario": "abi",
+          "harness": {
+            "platform": "darwin-arm64",
+            "host": "native"
+          }
         },
         {
           "id": "bsd/freebsd-amd64",
@@ -502,7 +526,11 @@
           "merge_ci": "gating",
           "from": "external-e2e.yml freebsd[amd64] (FreeBSD 15.0)",
           "runner": "ubuntu-24.04",
-          "scenario": null
+          "scenario": "abi",
+          "harness": {
+            "platform": "freebsd-amd64",
+            "host": "freebsd"
+          }
         },
         {
           "id": "bsd/freebsd-arm64",
@@ -510,7 +538,11 @@
           "merge_ci": "advisory",
           "from": "external-e2e.yml freebsd[arm64] (FreeBSD 15.0)",
           "runner": "ubuntu-24.04-arm",
-          "scenario": null
+          "scenario": "abi",
+          "harness": {
+            "platform": "freebsd-arm64",
+            "host": "freebsd"
+          }
         },
         {
           "id": "bsd/openbsd-amd64",
@@ -518,7 +550,11 @@
           "merge_ci": "gating",
           "from": "external-e2e.yml openbsd[amd64] (OpenBSD 7.9)",
           "runner": "ubuntu-24.04",
-          "scenario": null
+          "scenario": "abi",
+          "harness": {
+            "platform": "openbsd-amd64",
+            "host": "openbsd"
+          }
         },
         {
           "id": "bsd/openbsd-arm64",
@@ -526,7 +562,11 @@
           "merge_ci": "advisory",
           "from": "external-e2e.yml openbsd[arm64] (OpenBSD 7.9)",
           "runner": "ubuntu-24.04-arm",
-          "scenario": null
+          "scenario": "abi",
+          "harness": {
+            "platform": "openbsd-arm64",
+            "host": "openbsd"
+          }
         },
         {
           "id": "bsd/netbsd-amd64",
@@ -534,7 +574,11 @@
           "merge_ci": "gating",
           "from": "external-e2e.yml netbsd[amd64] (NetBSD 10.1)",
           "runner": "ubuntu-24.04",
-          "scenario": null
+          "scenario": "abi",
+          "harness": {
+            "platform": "netbsd-amd64",
+            "host": "netbsd"
+          }
         },
         {
           "id": "bsd/netbsd-arm64",
@@ -542,7 +586,11 @@
           "merge_ci": "advisory",
           "from": "external-e2e.yml netbsd[arm64] (NetBSD 10.1)",
           "runner": "ubuntu-24.04-arm",
-          "scenario": null
+          "scenario": "abi",
+          "harness": {
+            "platform": "netbsd-arm64",
+            "host": "netbsd"
+          }
         },
         {
           "id": "container/ubuntu",
@@ -550,7 +598,11 @@
           "merge_ci": "advisory",
           "from": "external-e2e.yml containers[ubuntu]",
           "runner": "ubuntu-24.04",
-          "scenario": null
+          "scenario": "abi",
+          "harness": {
+            "platform": "linux-amd64",
+            "host": "container-ubuntu"
+          }
         },
         {
           "id": "container/alpine",
@@ -558,7 +610,11 @@
           "merge_ci": "advisory",
           "from": "external-e2e.yml containers[alpine]",
           "runner": "ubuntu-24.04",
-          "scenario": null
+          "scenario": "abi",
+          "harness": {
+            "platform": "linux-amd64-musl",
+            "host": "container-alpine"
+          }
         },
         {
           "id": "container/scratch",
@@ -566,7 +622,11 @@
           "merge_ci": "advisory",
           "from": "external-e2e.yml containers[scratch]",
           "runner": "ubuntu-24.04",
-          "scenario": null
+          "scenario": "abi",
+          "harness": {
+            "platform": "linux-amd64-musl",
+            "host": "container-scratch"
+          }
         }
       ]
     }

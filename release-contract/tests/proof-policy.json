@@ -1,7 +1,7 @@
 {
   "schema": "supervizio.release-policy/v1",
   "inventory": {
-    "purpose": "validate-release.yml, run by hand (workflow_dispatch) on a branch, against a candidate of RANDOM bytes. Three integrity-only legs on three OS families: they prove the bridge -- admission, pull by digest, re-hash -- and execute nothing. Never selected by repository_dispatch.",
+    "purpose": "validate-release.yml, run by hand (workflow_dispatch) on a branch. supervizio/agent: a candidate of RANDOM bytes and three integrity-only legs on three OS families; they prove the bridge -- admission, pull by digest, re-hash -- and execute nothing. supervizio/libprobe: the bytes of a real, already published libprobe release re-pushed as a candidate, and the production libprobe legs with their abi scenario, unchanged; they prove the ABI harness on every leg. Both use the proof package, never a production one. Never selected by repository_dispatch.",
     "pending_prs": {}
   },
   "validation": {
@@ -19,6 +19,27 @@
         {"id": "proof/linux-amd64", "state": "required", "runner": "ubuntu-24.04", "scenario": "integrity"},
         {"id": "proof/macos-arm64", "state": "required", "runner": "macos-15", "scenario": "integrity"},
         {"id": "proof/windows-amd64", "state": "required", "runner": "windows-2025", "scenario": "integrity"}
+      ]
+    },
+    "supervizio/libprobe": {
+      "manifest_file": "SHA256SUMS",
+      "bridge_package": "supervizio/release-contract-bridge-probe",
+      "legs": [
+        {"id": "native/linux-amd64", "state": "required", "runner": "ubuntu-24.04", "scenario": "abi", "harness": {"platform": "linux-amd64", "host": "native"}},
+        {"id": "native/linux-arm64", "state": "required", "runner": "ubuntu-24.04-arm", "scenario": "abi", "harness": {"platform": "linux-arm64", "host": "native"}},
+        {"id": "native/windows-amd64", "state": "required", "runner": "windows-latest", "scenario": "abi", "harness": {"platform": "windows-amd64", "host": "native"}},
+        {"id": "native/windows-arm64", "state": "required", "runner": "windows-11-arm", "scenario": "abi", "harness": {"platform": "windows-arm64", "host": "native"}},
+        {"id": "native/macos-amd64", "state": "required", "runner": "macos-26-intel", "scenario": "abi", "harness": {"platform": "darwin-amd64", "host": "native"}},
+        {"id": "native/macos-arm64", "state": "required", "runner": "macos-26", "scenario": "abi", "harness": {"platform": "darwin-arm64", "host": "native"}},
+        {"id": "bsd/freebsd-amd64", "state": "required", "runner": "ubuntu-24.04", "scenario": "abi", "harness": {"platform": "freebsd-amd64", "host": "freebsd"}},
+        {"id": "bsd/freebsd-arm64", "state": "advisory", "runner": "ubuntu-24.04-arm", "scenario": "abi", "harness": {"platform": "freebsd-arm64", "host": "freebsd"}},
+        {"id": "bsd/openbsd-amd64", "state": "required", "runner": "ubuntu-24.04", "scenario": "abi", "harness": {"platform": "openbsd-amd64", "host": "openbsd"}},
+        {"id": "bsd/openbsd-arm64", "state": "advisory", "runner": "ubuntu-24.04-arm", "scenario": "abi", "harness": {"platform": "openbsd-arm64", "host": "openbsd"}},
+        {"id": "bsd/netbsd-amd64", "state": "required", "runner": "ubuntu-24.04", "scenario": "abi", "harness": {"platform": "netbsd-amd64", "host": "netbsd"}},
+        {"id": "bsd/netbsd-arm64", "state": "advisory", "runner": "ubuntu-24.04-arm", "scenario": "abi", "harness": {"platform": "netbsd-arm64", "host": "netbsd"}},
+        {"id": "container/ubuntu", "state": "required", "runner": "ubuntu-24.04", "scenario": "abi", "harness": {"platform": "linux-amd64", "host": "container-ubuntu"}},
+        {"id": "container/alpine", "state": "required", "runner": "ubuntu-24.04", "scenario": "abi", "harness": {"platform": "linux-amd64-musl", "host": "container-alpine"}},
+        {"id": "container/scratch", "state": "required", "runner": "ubuntu-24.04", "scenario": "abi", "harness": {"platform": "linux-amd64-musl", "host": "container-scratch"}}
       ]
     }
   }

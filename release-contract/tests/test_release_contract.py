@@ -965,7 +965,19 @@ class LegMatrix(unittest.TestCase):
         self.assertEqual(unknown, [])
         self.assertEqual(len(legs), 53)
         self.assertTrue(all(leg["required"] for leg in legs))
-        self.assertIn({"id": "windows/arm64", "runner": "windows-11-arm", "required": True}, legs)
+        self.assertIn(
+            {"id": "windows/arm64", "runner": "windows-11-arm", "required": True, "scenario": None, "host": "native", "platform": ""},
+            legs,
+        )
+
+    def test_a_harness_leg_tells_the_workflow_where_it_runs(self):
+        legs, _ = rc.leg_matrix(dispatch_body(LIBPROBE)["client_payload"], POLICY)
+        by_id = {leg["id"]: leg for leg in legs}
+        self.assertEqual(
+            by_id["bsd/openbsd-amd64"],
+            {"id": "bsd/openbsd-amd64", "runner": "ubuntu-24.04", "required": True, "scenario": "abi", "host": "openbsd", "platform": "openbsd-amd64"},
+        )
+        self.assertEqual((by_id["container/scratch"]["host"], by_id["container/scratch"]["platform"]), ("container-scratch", "linux-amd64-musl"))
 
     def test_advisory_legs_run_without_being_required(self):
         legs, _ = rc.leg_matrix(dispatch_body(LIBPROBE)["client_payload"], POLICY)
@@ -1185,6 +1197,122 @@ class Scenario(unittest.TestCase):
             self.assertEqual(self.run_cli("scenario", "--dispatch", path, "--leg", "proof/linux-amd64", "--dir", d)[0], 1)
 
 
+class AbiScenario(unittest.TestCase):
+    """The libprobe harness's host half: what `scenario --stage prepare` refuses
+    before anything is compiled, and what `--stage check` refuses afterwards. The
+    consumer itself is proven on real archives by validate-release.yml runs."""
+
+    PLATFORM = "linux-amd64"
+    LEG = "native/linux-amd64"
+
+    def setUp(self):
+        self.tmp = tempfile.mkdtemp()
+        self.addCleanup(lambda: __import__("shutil").rmtree(self.tmp))
+        self.cand = os.path.join(self.tmp, "cand")
+        self.work = os.path.join(self.tmp, "work")
+        os.makedirs(self.cand)
+        self.header = b"/* probe.h */\n"
+        self.archive = b"!<arch>\nnot really an archive\n"
+        self.write_candidate()
+
+    def tarball(self, members):
+        import io
+        import tarfile
+
+        buf = io.BytesIO()
+        with tarfile.open(fileobj=buf, mode="w:gz") as tar:
+            for name, data in members:
+                info = tarfile.TarInfo(name)
+                info.size = len(data)
+                tar.addfile(info, io.BytesIO(data))
+        return buf.getvalue()
+
+    def meta(self, **over):
+        meta = {"name": "libprobe", "version": "v1.4.2", "platform": self.PLATFORM, "git_sha": COMMIT,
+                "rust_toolchain": "rustc 1.98.1", "abi_sha256": hashlib.sha256(self.archive).hexdigest()}
+        meta.update(over)
+        return json.dumps(meta).encode()
+
+    def write_candidate(self, members=None, header=None):
+        members = members if members is not None else [("libprobe.a", self.archive), ("probe.h", self.header), ("metadata.json", self.meta())]
+        files = {f"libprobe-{self.PLATFORM}-v1.4.2.tar.gz": self.tarball(members), "probe.h": header or self.header}
+        for name, data in files.items():
+            with open(os.path.join(self.cand, name), "wb") as fh:
+                fh.write(data)
+        self.body = bridge_body(files, repository=LIBPROBE)
+        self.payload = self.body["client_payload"]
+        self.leg = {leg["id"]: leg for leg in POLICY["repositories"][LIBPROBE]["legs"]}[self.LEG]
+
+    def prepare(self):
+        return rc.abi_prepare(self.payload, self.leg, self.cand, self.work)
+
+    def test_prepare_stages_the_published_pair_and_the_harness(self):
+        staged = self.prepare()
+        self.assertEqual(staged["EXPECTED_VERSION"], "1.4.2")
+        self.assertEqual(sorted(os.listdir(self.work)), ["consumer.c", "libprobe.a", "metadata.json", "plan.env", "probe.h", "run.sh"])
+        with open(os.path.join(self.work, "plan.env"), "rb") as fh:
+            self.assertEqual(fh.read(), b"PLATFORM=linux-amd64\nEXPECTED_VERSION=1.4.2\n")
+        with open(os.path.join(self.work, "libprobe.a"), "rb") as fh:
+            self.assertEqual(fh.read(), self.archive)
+
+    def test_prepare_refusals(self):
+        cases = {
+            "the tag metadata.json names": ([("libprobe.a", self.archive), ("probe.h", self.header), ("metadata.json", self.meta(version="v0.2.0"))], None, "version"),
+            "another platform": ([("libprobe.a", self.archive), ("probe.h", self.header), ("metadata.json", self.meta(platform="linux-arm64"))], None, "platform"),
+            "another archive": ([("libprobe.a", self.archive + b"x"), ("probe.h", self.header), ("metadata.json", self.meta())], None, "abi_sha256"),
+            "a header that is not the published one": ([("libprobe.a", self.archive), ("probe.h", b"/* other */"), ("metadata.json", self.meta())], None, "differs"),
+            "a member outside the bundle": ([("libprobe.a", self.archive), ("probe.h", self.header), ("metadata.json", self.meta()), ("../evil", b"x")], None, "unexpected member"),
+            "a missing member": ([("libprobe.a", self.archive), ("probe.h", self.header)], None, "lacks metadata.json"),
+            "a member twice": ([("libprobe.a", self.archive), ("libprobe.a", self.archive), ("probe.h", self.header), ("metadata.json", self.meta())], None, "twice"),
+        }
+        for name, (members, header, why) in cases.items():
+            with self.subTest(name):
+                self.write_candidate(members, header)
+                with self.assertRaisesRegex(rc.ContractError, why):
+                    self.prepare()
+
+    def test_prepare_refuses_a_platform_the_candidate_does_not_publish(self):
+        self.leg = dict(self.leg, harness={"platform": "linux-arm64", "host": "native"})
+        with self.assertRaisesRegex(rc.ContractError, "publishes no libprobe-linux-arm64-v1.4.2.tar.gz"):
+            self.prepare()
+
+    def test_prepare_refuses_bytes_changed_after_the_pull(self):
+        with open(os.path.join(self.cand, "probe.h"), "ab") as fh:
+            fh.write(b" ")
+        with self.assertRaisesRegex(rc.ContractError, "does not match the manifest"):
+            self.prepare()
+
+    def report(self, **over):
+        checks = [{"name": n, "ok": True, "detail": ""} for n in rc.ABI_REQUIRED_CHECKS]
+        report = {"schema": rc.ABI_REPORT_SCHEMA, "expected_version": "1.4.2", "version": "1.4.2", "abi_fingerprint": "0x1", "checks": checks, "ok": True}
+        report.update(over)
+        os.makedirs(self.work, exist_ok=True)
+        with open(os.path.join(self.work, "report.json"), "w") as fh:
+            json.dump(report, fh)
+
+    def test_check_accepts_a_complete_green_report(self):
+        self.report()
+        self.assertEqual(rc.abi_check_report(self.payload, self.work)["version"], "1.4.2")
+
+    def test_check_refusals(self):
+        with self.assertRaisesRegex(rc.ContractError, "never ran"):
+            rc.abi_check_report(self.payload, self.work)
+        green = [{"name": n, "ok": True, "detail": ""} for n in rc.ABI_REQUIRED_CHECKS]
+        cases = {
+            "the archive's own version": ({"version": "0.2.0"}, "reports version"),
+            "the version it was asked for": ({"expected_version": "1.4.1"}, "was asked for"),
+            "a failed check": ({"checks": green[:-1] + [{"name": "probe_shutdown", "ok": False, "detail": "x"}]}, "failed"),
+            "a check that never ran": ({"checks": green[1:]}, "check version is absent"),
+            "an overall not-ok": ({"ok": False}, "does not say ok"),
+            "another schema": ({"schema": "x"}, "is not a"),
+        }
+        for name, (over, why) in cases.items():
+            with self.subTest(name):
+                self.report(**over)
+                with self.assertRaisesRegex(rc.ContractError, why):
+                    rc.abi_check_report(self.payload, self.work)
+
+
 # --------------------------------------------------------------------------------------
 # the CLI: exit codes are the interface workflows rely on
 # --------------------------------------------------------------------------------------
@@ -1277,10 +1405,13 @@ class ShippedPolicy(unittest.TestCase):
         self.assertEqual(len(rc.required_legs(POLICY, LIBPROBE)), 12)
         self.assertEqual(rc.advisory_legs(POLICY, LIBPROBE), ["bsd/freebsd-arm64", "bsd/openbsd-arm64", "bsd/netbsd-arm64"])
         # Nothing may be promoted before a leg's release scenario exists: every
-        # production leg is scheduled, and fails closed, until it is wired.
-        for repo in (AGENT, LIBPROBE):
-            for leg in POLICY["repositories"][repo]["legs"]:
-                self.assertIsNone(leg["scenario"], leg["id"])
+        # agent leg is scheduled, and fails closed, until it is wired. Every
+        # libprobe leg runs the ABI consumer on its own platform's archive.
+        for leg in POLICY["repositories"][AGENT]["legs"]:
+            self.assertIsNone(leg["scenario"], leg["id"])
+        for leg in POLICY["repositories"][LIBPROBE]["legs"]:
+            self.assertEqual(leg["scenario"], "abi", leg["id"])
+            self.assertIn(leg["harness"]["host"], rc.HARNESS_HOSTS)
 
     def test_policy_refusals(self):
         bad = copy.deepcopy(POLICY)
@@ -1295,10 +1426,15 @@ class ShippedPolicy(unittest.TestCase):
         bad["repositories"][AGENT]["legs"][-1]["state"] = "pending-merge"
         with self.assertRaises(rc.ContractError):  # a pending leg must name its PR
             rc.validate_policy(bad)
-        for key, value in (("runner", None), ("runner", "ubuntu 24.04"), ("scenario", "run-anything"), ("state", "optional")):
+        for key, value in (("runner", None), ("runner", "ubuntu 24.04"), ("scenario", "run-anything"), ("state", "optional"), ("scenario", "abi")):
             bad = copy.deepcopy(POLICY)
             bad["repositories"][AGENT]["legs"][0][key] = value
             with self.subTest(key=key, value=value), self.assertRaises(rc.ContractError):
+                rc.validate_policy(bad)
+        for harness in (None, {"platform": "linux-amd64"}, {"platform": "linux amd64", "host": "native"}, {"platform": "linux-amd64", "host": "docker"}):
+            bad = copy.deepcopy(POLICY)
+            bad["repositories"][LIBPROBE]["legs"][0]["harness"] = harness
+            with self.subTest(harness=harness), self.assertRaises(rc.ContractError):
                 rc.validate_policy(bad)
         for package in (None, "Supervizio/Agent", "agent", "supervizio/agent candidates"):
             bad = copy.deepcopy(POLICY)

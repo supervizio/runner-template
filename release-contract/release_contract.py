@@ -24,6 +24,8 @@ import json
 import os
 import re
 import sys
+import shutil
+import tarfile
 import tempfile
 import urllib.error
 import urllib.parse
@@ -116,7 +118,28 @@ LEG_STATES = ("required", "advisory", "pending-merge")
 # GHCR package names are lowercase; `owner/name`, where name may itself carry a path.
 PACKAGE_RE = re.compile(r"^[a-z0-9]+(?:[._-][a-z0-9]+)*(?:/[a-z0-9]+(?:[._-][a-z0-9]+)*)+$")
 RUNNER_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$")
-SCENARIOS = ("integrity",)
+SCENARIOS = ("integrity", "abi")
+# Where a leg's harness executes (README section 5). `native` is the leg's runner
+# itself; a BSD name is a guest that runner boots; `container-*` is a container
+# on it. The workflow reads this to pick the steps between prepare and check.
+HARNESS_HOSTS = ("native", "freebsd", "openbsd", "netbsd", "container-ubuntu", "container-alpine", "container-scratch")
+PLATFORM_RE = re.compile(r"^[a-z0-9]+(?:-[a-z0-9]+)*$")
+HARNESS_DIR = os.path.join(HERE, "harness")
+ABI_REPORT_SCHEMA = "supervizio.libprobe-abi-report/v1"
+# The consumer checks a report must carry, whatever else it adds: a report
+# without one of these did not ask the archive the question.
+ABI_REQUIRED_CHECKS = (
+    "version",
+    "abi_fingerprint",
+    "carrier:unknown-sentinel",
+    "probe_init",
+    "probe_collect_cpu",
+    "probe_collect_memory",
+    "probe_collect_smoke_json",
+    "probe_shutdown",
+)
+# What a libprobe platform tarball holds, exactly (bundle-release.sh).
+ABI_TARBALL_MEMBERS = ("libprobe.a", "probe.h", "metadata.json")
 
 # The candidate as an OCI artifact (README section 4). One layer per file, its blob
 # the file's raw bytes, so a layer digest IS the file's sha256 and the artifact can
@@ -238,6 +261,14 @@ def validate_policy(policy: Dict[str, Any]) -> None:
             _require_match(leg.get("runner"), RUNNER_RE, f"{repo} leg {leg['id']} runner")
             if leg.get("scenario") is not None and leg["scenario"] not in SCENARIOS:
                 raise ContractError(f"{repo} leg {leg['id']}: scenario must be null or one of {', '.join(SCENARIOS)}")
+            harness = leg.get("harness")
+            if leg.get("scenario") == "abi" or harness is not None:
+                # The abi scenario runs one platform's published archive somewhere
+                # specific; a leg that does not say which, or where, cannot run it.
+                _require_keys(harness, {"platform", "host"}, f"{repo} leg {leg['id']} harness")
+                _require_match(harness["platform"], PLATFORM_RE, f"{repo} leg {leg['id']} harness.platform")
+                if harness["host"] not in HARNESS_HOSTS:
+                    raise ContractError(f"{repo} leg {leg['id']}: harness.host must be one of {', '.join(HARNESS_HOSTS)}")
         if not any(leg["state"] == "required" for leg in legs):
             raise ContractError(f"{repo} requires no leg at all")
 
@@ -701,11 +732,26 @@ def leg_matrix(payload: Dict[str, Any], policy: Dict[str, Any]) -> Tuple[List[Di
         if leg is None or leg["state"] == "pending-merge":
             unknown.append(leg_id)
             continue
-        legs.append({"id": leg_id, "runner": leg["runner"], "required": True})
+        legs.append(_scheduled(leg, True))
     for leg_id in advisory_legs(policy, repository):
         if leg_id not in payload["required_matrix"]:
-            legs.append({"id": leg_id, "runner": known[leg_id]["runner"], "required": False})
+            legs.append(_scheduled(known[leg_id], False))
     return legs, unknown
+
+
+def _scheduled(leg: Dict[str, Any], required: bool) -> Dict[str, Any]:
+    """One matrix entry of validate-release.yml. `host` and `platform` pick the
+    steps that run the harness between `scenario --stage prepare` and `--stage
+    check`; a leg without a harness runs natively and prepares nothing."""
+    harness = leg.get("harness") or {}
+    return {
+        "id": leg["id"],
+        "runner": leg["runner"],
+        "required": required,
+        "scenario": leg.get("scenario"),
+        "host": harness.get("host", "native"),
+        "platform": harness.get("platform", ""),
+    }
 
 
 def judge_jobs(payload: Dict[str, Any], jobs: List[Dict[str, Any]]) -> Tuple[Dict[str, str], str]:
@@ -1418,6 +1464,107 @@ def cmd_judge(args: argparse.Namespace, policy: Dict[str, Any]) -> int:
     return 0 if verdict == "success" else 1
 
 
+def abi_prepare(payload: Dict[str, Any], leg: Dict[str, Any], directory: str, work: str) -> Dict[str, str]:
+    """Stage one platform of a libprobe candidate for the ABI consumer.
+
+    Everything here is a check on PUBLISHED bytes before anything is compiled:
+    the platform tarball and the bare probe.h are manifest entries (so the leg's
+    earlier re-hash covers them), the tarball holds exactly the three files
+    bundle-release.sh puts in it, its probe.h is byte-identical to the published
+    one, and metadata.json names this tag, this platform and this libprobe.a.
+    Then consumer.c, run.sh and plan.env are written next to them."""
+    tag = payload["candidate"]["tag"]
+    platform = leg["harness"]["platform"]
+    manifest = payload["manifest"]
+    tarball = f"libprobe-{platform}-{tag}.tar.gz"
+    missing = [name for name in (tarball, "probe.h") if name not in manifest]
+    if missing:
+        raise ContractError(f"leg {leg['id']}: the candidate publishes no {', '.join(missing)}")
+    for name in (tarball, "probe.h"):
+        path = os.path.join(directory, name)
+        if not os.path.isfile(path) or sha256_file(path) != manifest[name]:
+            raise ContractError(f"{name} is missing or does not match the manifest")
+    if os.path.exists(work):
+        shutil.rmtree(work)
+    os.makedirs(work)
+    found: Dict[str, bytes] = {}
+    try:
+        with tarfile.open(os.path.join(directory, tarball), "r:gz") as tar:
+            for member in tar.getmembers():
+                # Names are compared, never used as paths: nothing in the tarball
+                # decides where a byte lands.
+                if member.name not in ABI_TARBALL_MEMBERS or not member.isfile():
+                    raise ContractError(f"{tarball}: unexpected member {member.name!r} (type {member.type!r})")
+                if member.name in found:
+                    raise ContractError(f"{tarball}: {member.name} is in it twice")
+                fh = tar.extractfile(member)
+                found[member.name] = fh.read() if fh else b""
+    except (tarfile.TarError, OSError, EOFError) as exc:
+        raise ContractError(f"{tarball} is not a readable tar.gz: {exc}") from exc
+    lacking = [name for name in ABI_TARBALL_MEMBERS if name not in found]
+    if lacking:
+        raise ContractError(f"{tarball} lacks {', '.join(lacking)}")
+    if hashlib.sha256(found["probe.h"]).hexdigest() != manifest["probe.h"]:
+        raise ContractError(f"{tarball}: its probe.h differs from the published probe.h")
+    try:
+        meta = json.loads(found["metadata.json"].decode("utf-8"))
+    except ValueError as exc:
+        raise ContractError(f"{tarball}: metadata.json is not JSON: {exc}") from exc
+    archive_sha = hashlib.sha256(found["libprobe.a"]).hexdigest()
+    problems = []
+    for key, want in (("name", "libprobe"), ("version", tag), ("platform", platform), ("abi_sha256", archive_sha)):
+        if not isinstance(meta, dict) or meta.get(key) != want:
+            problems.append(f"metadata.json {key} is {meta.get(key) if isinstance(meta, dict) else None!r}, expected {want!r}")
+    if problems:
+        raise ContractError(f"{tarball}: " + "; ".join(problems))
+    for name, data in found.items():
+        with open(os.path.join(work, name), "wb") as out:
+            out.write(data)
+    harness = os.path.join(HARNESS_DIR, "libprobe")
+    for name in ("consumer.c", "run.sh"):
+        shutil.copyfile(os.path.join(harness, name), os.path.join(work, name))
+    plan = {"PLATFORM": platform, "EXPECTED_VERSION": tag[1:]}
+    with open(os.path.join(work, "plan.env"), "w", newline="\n") as out:
+        out.write("".join(f"{k}={v}\n" for k, v in plan.items()))
+    return {"tarball": tarball, "libprobe.a": archive_sha, **plan}
+
+
+def abi_check_report(payload: Dict[str, Any], work: str) -> Dict[str, Any]:
+    """Judge the consumer's report on the host, independently of its exit status:
+    a harness that ran nothing, or ran it against another version, fails here."""
+    expected = payload["candidate"]["tag"][1:]
+    path = os.path.join(work, "report.json")
+    if not os.path.isfile(path):
+        raise ContractError(f"no report at {path}: the consumer never ran to its end")
+    try:
+        with open(path, "rb") as fh:
+            report = json.loads(fh.read().decode("utf-8"))
+    except ValueError as exc:
+        raise ContractError(f"{path} is not JSON: {exc}") from exc
+    if not isinstance(report, dict) or report.get("schema") != ABI_REPORT_SCHEMA:
+        raise ContractError(f"{path} is not a {ABI_REPORT_SCHEMA} report")
+    problems = []
+    if report.get("expected_version") != expected:
+        problems.append(f"the consumer was asked for {report.get('expected_version')!r}, the tag is {expected!r}")
+    if report.get("version") != expected:
+        problems.append(f"the archive reports version {report.get('version')!r}, the tag is {expected!r}")
+    checks = report.get("checks")
+    if not isinstance(checks, list):
+        raise ContractError(f"{path} has no checks")
+    names = [c.get("name") for c in checks if isinstance(c, dict)]
+    for name in ABI_REQUIRED_CHECKS:
+        if name not in names:
+            problems.append(f"check {name} is absent from the report")
+    for c in checks:
+        if not isinstance(c, dict) or c.get("ok") is not True:
+            problems.append(f"check {c.get('name') if isinstance(c, dict) else c!r} failed: {c.get('detail') if isinstance(c, dict) else ''}")
+    if report.get("ok") is not True:
+        problems.append("the report does not say ok")
+    if problems:
+        raise ContractError("; ".join(problems))
+    return report
+
+
 def cmd_scenario(args: argparse.Namespace, policy: Dict[str, Any]) -> int:
     body = _checked_dispatch(args.dispatch, policy)
     payload = body["client_payload"]
@@ -1431,12 +1578,25 @@ def cmd_scenario(args: argparse.Namespace, policy: Dict[str, Any]) -> int:
         # nothing about these bytes, and must not read as a pass.
         raise ContractError(f"leg {args.leg}: no release scenario is wired yet (policy.json scenario: null)")
     if scenario == "integrity":
+        if args.stage == "check":
+            print("PASS integrity-only scenario: nothing to check after prepare")
+            return 0
         files = candidate_files(payload)
         for name, want in sorted(files.items()):
             path = os.path.join(args.dir, name)
             if not os.path.isfile(path) or sha256_file(path) != want:
                 raise ContractError(f"{name} is missing or does not match the manifest")
         print(f"PASS integrity-only scenario: {len(files)} file(s) present and matching; nothing executed")
+        return 0
+    if scenario == "abi":
+        if not args.work:
+            raise UsageError("the abi scenario needs --work")
+        if args.stage == "prepare":
+            staged = abi_prepare(payload, leg, args.dir, args.work)
+            print(f"PASS staged {staged['tarball']} (libprobe.a {staged['libprobe.a']}) for version {staged['EXPECTED_VERSION']} in {args.work}")
+            return 0
+        report = abi_check_report(payload, args.work)
+        print(f"PASS abi scenario: {len(report['checks'])} consumer check(s) on the published archive, version {report['version']}, fingerprint {report.get('abi_fingerprint')}")
         return 0
     raise ContractError(f"leg {args.leg}: unknown scenario {scenario!r}")
 
@@ -1539,6 +1699,13 @@ def build_parser() -> argparse.ArgumentParser:
     sc.add_argument("--dispatch", required=True)
     sc.add_argument("--leg", required=True)
     sc.add_argument("--dir", required=True)
+    sc.add_argument(
+        "--stage",
+        choices=("prepare", "check"),
+        default="prepare",
+        help="prepare: check the pulled files and stage the harness; check: judge what the harness left in --work",
+    )
+    sc.add_argument("--work", help="the harness work directory (scenarios that execute something)")
     sc.set_defaults(func=cmd_scenario)
     return p
 
