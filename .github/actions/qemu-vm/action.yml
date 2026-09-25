@@ -38,9 +38,10 @@ inputs:
     default: "2"
   image-sha256:
     description: >-
-      sha256 of the image at image-url. Give this or image-sha512: without one
-      the action boots an unverified multi-hundred-MB blob from whatever mirror
-      the URL redirects to, and hands it a root shell.
+      sha256 of the image at image-url. One of image-sha256, image-sha512 or
+      image-checksum-url is REQUIRED: without one the action refuses to boot,
+      rather than hand a root shell to a multi-hundred-MB blob from whatever
+      mirror the URL redirects to.
     required: false
     default: ""
   image-sha512:
@@ -158,6 +159,18 @@ runs:
         SSH_PORT=$(python3 -c 'import socket;s=socket.socket();s.bind(("127.0.0.1",0));print(s.getsockname()[1]);s.close()')
         echo "SSH_PORT=$SSH_PORT" >> "$GITHUB_ENV"
 
+        # Verification is not optional. A signing input given without
+        # image-checksum-url is a caller whose checksum URL came out empty (an
+        # unset step output, say); falling through would boot an image that was
+        # meant to be verified, so that fails, like a call naming no
+        # verification at all.
+        if [ -z "${IMAGE_CHECKSUM_URL:-}" ] && [ -n "${IMAGE_SIGNATURE_URL:-}${IMAGE_SIGNING_KEY:-}${IMAGE_SIGNING_FPR:-}" ]; then
+          echo "::error::image-signature-url, image-signing-key or image-signing-fingerprint given without image-checksum-url - refusing to boot an image meant to be verified by signature" >&2; exit 1
+        fi
+        if [ -z "${IMAGE_SHA256:-}${IMAGE_SHA512:-}${IMAGE_CHECKSUM_URL:-}" ]; then
+          echo "::error::no image verification given (image-sha256, image-sha512 or image-checksum-url) - refusing to boot an unverified image and hand it a root shell" >&2; exit 1
+        fi
+
         # Signed checksum: resolve the expected sha256 BEFORE the download, from
         # the distribution's own checksum file, and only once its signature is
         # proven to come from the pinned key. From here on it is checked exactly
@@ -217,7 +230,7 @@ runs:
         elif [ -n "${IMAGE_SHA512:-}" ]; then
           echo "${IMAGE_SHA512}  base.qcow2" | sha512sum -c -
         else
-          echo "::warning::no image checksum given - booting an unverified image and handing it a root shell"
+          echo "::error::no checksum to check the image against" >&2; exit 1
         fi
         # Which host this landed on, printed because hosted runners are not all
         # alike and a guest can depend on it: vmactions strips AVX-512 on the
