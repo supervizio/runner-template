@@ -19,9 +19,37 @@ on:
         default: 'false'
   repository_dispatch:
     types: [run-e2e]
+  # Release mode: validate-release.yml calls this workflow for agent's legs,
+  # with the validate-release dispatch body and NO secret. Every job then reads
+  # the candidate instead of the private tree -- no checkout of it, no
+  # cross-repo download, no status posted -- and is named `leg/<leg id>`, the
+  # name release_contract.py reads its result under (as `e2e / leg/<id>`).
+  # A merge-lane run (repository_dispatch, workflow_dispatch) never sets
+  # `inputs.mode`, and every release-mode branch below is off for it.
+  workflow_call:
+    inputs:
+      mode:
+        description: "`release`: validate a release candidate (the only mode a caller may ask for)"
+        required: true
+        type: string
+      dispatch:
+        description: The validate-release dispatch body, as JSON
+        required: true
+        type: string
+      policy:
+        description: The contract policy the candidate is judged under (release-contract/<policy>)
+        required: false
+        type: string
+        default: policy.json
 
+# packages: read is for release mode alone: it is what lets a leg pull the
+# candidate from the private package granted to this repository. A merge-lane
+# run never uses it, but a permission cannot depend on the mode. What it
+# exposes there is the candidates of agent and libprobe to code of agent's
+# own pull requests, which already runs here with a checkout of agent.
 permissions:
   contents: read
+  packages: read
 
 concurrency:
   group: e2e-${{ github.event.client_payload.sha || inputs.sha || github.run_id }}
@@ -45,7 +73,23 @@ jobs:
         id: resolve
         env:
           PAYLOAD_SOURCE_REPO: ${{ github.event.client_payload.source_repo }}
+          MODE: ${{ inputs.mode }}
+          DISPATCH: ${{ inputs.dispatch }}
         run: |
+          # Release mode: no agent run, no ref, and above all no SHA -- every
+          # status step below is gated on `sha != ''`, so an empty one is what
+          # keeps a candidate's legs from posting anything anywhere.
+          if [ -n "$MODE" ]; then
+            [ "$MODE" = release ] || { echo "::error::unknown mode '$MODE'"; exit 1; }
+            [ -n "$DISPATCH" ] || { echo "::error::release mode without a dispatch body"; exit 1; }
+            {
+              echo "ref="
+              echo "run_id="
+              echo "sha="
+              echo "source_repo=supervizio/agent"
+            } >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
           if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
             echo "ref=${{ inputs.ref }}" >> "$GITHUB_OUTPUT"
             echo "run_id=${{ inputs.run_id }}" >> "$GITHUB_OUTPUT"
@@ -104,6 +148,7 @@ jobs:
       #
       # `needs: [resolve]` means a failure here skips the whole matrix instead.
       - name: Check the agent run actually produced artifacts
+        if: inputs.mode != 'release'
         env:
           GH_TOKEN: ${{ secrets.AGENT_REPO_TOKEN }}
           SRC_REPO: ${{ steps.resolve.outputs.source_repo }}
@@ -154,7 +199,7 @@ jobs:
   # ===========================================================================
 
   e2e-docker-amd64:
-    name: E2E Docker amd64 ${{ matrix.name }}
+    name: ${{ inputs.mode == 'release' && format('leg/docker/amd64/{0}', matrix.name) || format('E2E Docker amd64 {0}', matrix.name) }}
     needs: [resolve]
     if: ${{ github.event.inputs.arm_only != 'true' }}
     runs-on: ubuntu-24.04
@@ -190,6 +235,7 @@ jobs:
             -d '{"state":"pending","context":"e2e/docker/${{ matrix.name }}","description":"Running...","target_url":"${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"}'
 
       - name: Checkout agent code
+        if: inputs.mode != 'release'
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           repository: ${{ needs.resolve.outputs.source_repo }}
@@ -200,6 +246,26 @@ jobs:
           # AUTHORIZATION header that Actions log-masking does not cover.
           persist-credentials: false
 
+      # Release mode (validate-release.yml): no checkout of the private tree
+      # and no cross-repo download. The kit of the tagged commit and this
+      # leg's release assets, pulled by digest and proven against the
+      # manifest; .github/actions/release-candidate says how.
+      - name: Check out the release lane
+        if: inputs.mode == 'release'
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          path: .release-lane
+          persist-credentials: false
+
+      - name: Take the release candidate's files
+        if: inputs.mode == 'release'
+        uses: ./.release-lane/.github/actions/release-candidate
+        with:
+          dispatch: ${{ inputs.dispatch }}
+          policy: ${{ inputs.policy }}
+          kit-dir: .
+          files: ${{ matrix.artifact }} bin
+
       # e2e-docker used to init the libprobe submodule because it BUILT the
       # binary. It now downloads one, and none of the three Dockerfiles reads
       # third_party/libprobe -- they copy bin/ and setup/ only. Keeping the
@@ -208,6 +274,7 @@ jobs:
       # .dockerignore excludes **/target but not third_party.
 
       - name: Download binary from the agent run (cross-repo)
+        if: inputs.mode != 'release'
         uses: actions/download-artifact@70fc10c6e5e1ce46ad2ea6f2b72d43f7d47b13c3 # v8.0.0
         with:
           name: ${{ matrix.artifact }}
@@ -367,7 +434,7 @@ jobs:
   # ===========================================================================
 
   e2e-docker-arm64:
-    name: E2E Docker arm64 ${{ matrix.name }}
+    name: ${{ inputs.mode == 'release' && format('leg/docker/arm64/{0}', matrix.name) || format('E2E Docker arm64 {0}', matrix.name) }}
     needs: [resolve]
     # GitHub-hosted native arm64 runner: real Docker (no DinD sidecar, no QEMU)
     # and a native aarch64 toolchain. The binary is built natively here rather
@@ -411,6 +478,7 @@ jobs:
             -d '{"state":"pending","context":"e2e/docker-arm64/${{ matrix.name }}","description":"Running...","target_url":"${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"}'
 
       - name: Checkout agent code
+        if: inputs.mode != 'release'
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           repository: ${{ needs.resolve.outputs.source_repo }}
@@ -420,6 +488,26 @@ jobs:
           # steps; a persisted credential would travel with it as a base64
           # AUTHORIZATION header that Actions log-masking does not cover.
           persist-credentials: false
+
+      # Release mode (validate-release.yml): no checkout of the private tree
+      # and no cross-repo download. The kit of the tagged commit and this
+      # leg's release assets, pulled by digest and proven against the
+      # manifest; .github/actions/release-candidate says how.
+      - name: Check out the release lane
+        if: inputs.mode == 'release'
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          path: .release-lane
+          persist-credentials: false
+
+      - name: Take the release candidate's files
+        if: inputs.mode == 'release'
+        uses: ./.release-lane/.github/actions/release-candidate
+        with:
+          dispatch: ${{ inputs.dispatch }}
+          policy: ${{ inputs.policy }}
+          kit-dir: .
+          files: ${{ matrix.artifact }} bin
 
       # This leg used to install Go, Rust and Zig and compile the agent from
       # source before testing it -- so what it validated was a rebuild on a
@@ -431,6 +519,7 @@ jobs:
       # The libprobe submodule init went with the build: nothing in the three
       # Dockerfiles reads third_party/libprobe, they copy bin/ and setup/.
       - name: Download binary from the agent run (cross-repo)
+        if: inputs.mode != 'release'
         uses: actions/download-artifact@70fc10c6e5e1ce46ad2ea6f2b72d43f7d47b13c3 # v8.0.0
         with:
           name: ${{ matrix.artifact }}
@@ -552,7 +641,7 @@ jobs:
   # ===========================================================================
 
   e2e-macos:
-    name: E2E macOS x86_64
+    name: ${{ inputs.mode == 'release' && 'leg/macos/amd64' || 'E2E macOS x86_64' }}
     needs: [resolve]
     # macos-15-intel matches what agent's e2e/expected-matrix.json pins
     # darwin-amd64 to. It replaces bench VM 215 "sequoia" — an OpenCore
@@ -577,6 +666,7 @@ jobs:
             -d '{"state":"pending","context":"e2e/macos-x86_64","description":"Running...","target_url":"${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"}'
 
       - name: Checkout agent code
+        if: inputs.mode != 'release'
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           repository: ${{ needs.resolve.outputs.source_repo }}
@@ -584,11 +674,32 @@ jobs:
           token: ${{ secrets.AGENT_REPO_TOKEN }}
           persist-credentials: false
 
+      # Release mode (validate-release.yml): no checkout of the private tree
+      # and no cross-repo download. The kit of the tagged commit and this
+      # leg's release assets, pulled by digest and proven against the
+      # manifest; .github/actions/release-candidate says how.
+      - name: Check out the release lane
+        if: inputs.mode == 'release'
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          path: .release-lane
+          persist-credentials: false
+
+      - name: Take the release candidate's files
+        if: inputs.mode == 'release'
+        uses: ./.release-lane/.github/actions/release-candidate
+        with:
+          dispatch: ${{ inputs.dispatch }}
+          policy: ${{ inputs.policy }}
+          kit-dir: .
+          files: supervizio-darwin-amd64 bin
+
       # The bench leg pulled this from zot ON the VM, because sequoia sat on the
       # lab subnet. A hosted runner does not, so it comes from the GitHub
       # artifact agent's CI now mirrors — the same binary, one hop instead of
       # three, and no oras/brew bootstrap inside the guest.
       - name: Download binary from the agent run (cross-repo)
+        if: inputs.mode != 'release'
         uses: actions/download-artifact@70fc10c6e5e1ce46ad2ea6f2b72d43f7d47b13c3 # v8.0.0
         with:
           name: supervizio-darwin-amd64
@@ -657,7 +768,7 @@ jobs:
             -d "{\"state\":\"$STATE\",\"context\":\"e2e/macos-x86_64\",\"description\":\"$DESC\",\"target_url\":\"${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}\"}"
 
   e2e-macos-arm64:
-    name: E2E macOS ARM64
+    name: ${{ inputs.mode == 'release' && 'leg/macos/arm64' || 'E2E macOS ARM64' }}
     needs: [resolve]
     runs-on: macos-15
     timeout-minutes: 10
@@ -676,6 +787,7 @@ jobs:
             -d '{"state":"pending","context":"e2e/macos-arm64","description":"Running...","target_url":"${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"}'
 
       - name: Checkout agent code
+        if: inputs.mode != 'release'
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           repository: ${{ needs.resolve.outputs.source_repo }}
@@ -686,6 +798,26 @@ jobs:
           # AUTHORIZATION header that Actions log-masking does not cover.
           persist-credentials: false
 
+      # Release mode (validate-release.yml): no checkout of the private tree
+      # and no cross-repo download. The kit of the tagged commit and this
+      # leg's release assets, pulled by digest and proven against the
+      # manifest; .github/actions/release-candidate says how.
+      - name: Check out the release lane
+        if: inputs.mode == 'release'
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          path: .release-lane
+          persist-credentials: false
+
+      - name: Take the release candidate's files
+        if: inputs.mode == 'release'
+        uses: ./.release-lane/.github/actions/release-candidate
+        with:
+          dispatch: ${{ inputs.dispatch }}
+          policy: ${{ inputs.policy }}
+          kit-dir: .
+          files: supervizio-darwin-arm64 bin
+
       # This leg used to install Go and Rust and build darwin-arm64 from source,
       # so it validated a rebuild rather than the binary the release ships --
       # the one thing this migration exists to remove. It survived here because
@@ -694,6 +826,7 @@ jobs:
       # The libprobe submodule init goes with the build: nothing left in this
       # job reads third_party/libprobe.
       - name: Download binary from the agent run (cross-repo)
+        if: inputs.mode != 'release'
         uses: actions/download-artifact@70fc10c6e5e1ce46ad2ea6f2b72d43f7d47b13c3 # v8.0.0
         with:
           name: supervizio-darwin-arm64
@@ -812,7 +945,7 @@ jobs:
   # ===========================================================================
 
   e2e-windows-amd64:
-    name: E2E Windows amd64
+    name: ${{ inputs.mode == 'release' && 'leg/windows/amd64' || format('E2E Windows amd64 ({0})', matrix.name) }}
     needs: [resolve]
     # windows-2025, pinned. The first version of this pinned 2022 to match the
     # bench VM byte for byte -- but the point of leaving the bench is to stop
@@ -853,6 +986,7 @@ jobs:
             -d '{"state":"pending","context":"e2e/windows/amd64","description":"Running...","target_url":"${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"}'
 
       - name: Checkout agent code
+        if: inputs.mode != 'release'
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           repository: ${{ needs.resolve.outputs.source_repo }}
@@ -860,6 +994,26 @@ jobs:
           token: ${{ secrets.AGENT_REPO_TOKEN }}
           path: agent
           persist-credentials: false
+
+      # Release mode (validate-release.yml): no checkout of the private tree
+      # and no cross-repo download. The kit of the tagged commit and this
+      # leg's release assets, pulled by digest and proven against the
+      # manifest; .github/actions/release-candidate says how.
+      - name: Check out the release lane
+        if: inputs.mode == 'release'
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          path: .release-lane
+          persist-credentials: false
+
+      - name: Take the release candidate's files
+        if: inputs.mode == 'release'
+        uses: ./.release-lane/.github/actions/release-candidate
+        with:
+          dispatch: ${{ inputs.dispatch }}
+          policy: ${{ inputs.policy }}
+          kit-dir: agent
+          files: supervizio-windows-amd64.exe bin
 
       - name: Set up Go
         uses: actions/setup-go@4b73464bb391d4059bd26b0524d20df3927bd417 # v6.3.0
@@ -882,6 +1036,7 @@ jobs:
       # E2E-consumed binaries to GitHub artifacts, so the same bytes the bench
       # built are fetchable cross-repo.
       - name: Download binary from the agent run (cross-repo)
+        if: inputs.mode != 'release'
         uses: actions/download-artifact@70fc10c6e5e1ce46ad2ea6f2b72d43f7d47b13c3 # v8.0.0
         with:
           name: supervizio-windows-amd64
@@ -934,7 +1089,7 @@ jobs:
             -d "{\"state\":\"$STATE\",\"context\":\"e2e/windows/amd64\",\"description\":\"$DESC\",\"target_url\":\"${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}\"}"
 
   e2e-windows-arm64:
-    name: E2E Windows arm64
+    name: ${{ inputs.mode == 'release' && 'leg/windows/arm64' || format('E2E Windows arm64 ({0})', matrix.name) }}
     needs: [resolve]
     # NEW COVERAGE, not a migration. The bench has no Windows arm64 VM and
     # never had one: agent cross-compiles windows-arm64 and nothing has ever
@@ -974,6 +1129,7 @@ jobs:
             -d '{"state":"pending","context":"e2e/windows/arm64","description":"Running...","target_url":"${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"}'
 
       - name: Checkout agent code
+        if: inputs.mode != 'release'
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           repository: ${{ needs.resolve.outputs.source_repo }}
@@ -981,6 +1137,26 @@ jobs:
           token: ${{ secrets.AGENT_REPO_TOKEN }}
           path: agent
           persist-credentials: false
+
+      # Release mode (validate-release.yml): no checkout of the private tree
+      # and no cross-repo download. The kit of the tagged commit and this
+      # leg's release assets, pulled by digest and proven against the
+      # manifest; .github/actions/release-candidate says how.
+      - name: Check out the release lane
+        if: inputs.mode == 'release'
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          path: .release-lane
+          persist-credentials: false
+
+      - name: Take the release candidate's files
+        if: inputs.mode == 'release'
+        uses: ./.release-lane/.github/actions/release-candidate
+        with:
+          dispatch: ${{ inputs.dispatch }}
+          policy: ${{ inputs.policy }}
+          kit-dir: agent
+          files: supervizio-windows-arm64.exe bin
 
       - name: Set up Go
         uses: actions/setup-go@4b73464bb391d4059bd26b0524d20df3927bd417 # v6.3.0
@@ -1003,6 +1179,7 @@ jobs:
       # E2E-consumed binaries to GitHub artifacts, so the same bytes the bench
       # built are fetchable cross-repo.
       - name: Download binary from the agent run (cross-repo)
+        if: inputs.mode != 'release'
         uses: actions/download-artifact@70fc10c6e5e1ce46ad2ea6f2b72d43f7d47b13c3 # v8.0.0
         with:
           name: supervizio-windows-arm64
@@ -1068,7 +1245,7 @@ jobs:
   # them would strand history for nothing.
   # ---------------------------------------------------------------------------
   e2e-linux-artix-dinit:
-    name: E2E Linux artix-dinit
+    name: ${{ inputs.mode == 'release' && 'leg/linux/amd64/artix-dinit' || 'E2E Linux artix-dinit' }}
     needs: [resolve]
     runs-on: ubuntu-24.04
     timeout-minutes: 30
@@ -1091,6 +1268,7 @@ jobs:
             -d '{"state":"pending","context":"e2e/vm/artix-dinit","description":"Running...","target_url":"${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"}'
 
       - name: Checkout agent code
+        if: inputs.mode != 'release'
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           repository: ${{ needs.resolve.outputs.source_repo }}
@@ -1098,7 +1276,28 @@ jobs:
           token: ${{ secrets.AGENT_REPO_TOKEN }}
           persist-credentials: false
 
+      # Release mode (validate-release.yml): no checkout of the private tree
+      # and no cross-repo download. The kit of the tagged commit and this
+      # leg's release assets, pulled by digest and proven against the
+      # manifest; .github/actions/release-candidate says how.
+      - name: Check out the release lane
+        if: inputs.mode == 'release'
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          path: .release-lane
+          persist-credentials: false
+
+      - name: Take the release candidate's files
+        if: inputs.mode == 'release'
+        uses: ./.release-lane/.github/actions/release-candidate
+        with:
+          dispatch: ${{ inputs.dispatch }}
+          policy: ${{ inputs.policy }}
+          kit-dir: .
+          files: supervizio-amd64.pkg.tar.zst pkg
+
       - name: Download the pacman package from the agent run (cross-repo)
+        if: inputs.mode != 'release'
         uses: actions/download-artifact@70fc10c6e5e1ce46ad2ea6f2b72d43f7d47b13c3 # v8.0.0
         with:
           name: supervizio-amd64.pkg.tar.zst
@@ -1193,7 +1392,7 @@ jobs:
             -d "{\"state\":\"$STATE\",\"context\":\"e2e/vm/artix-dinit\",\"description\":\"$DESC\",\"target_url\":\"${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}\"}"
 
   e2e-linux-debian-sysvinit:
-    name: E2E Linux debian-sysvinit
+    name: ${{ inputs.mode == 'release' && 'leg/linux/amd64/debian-sysvinit' || 'E2E Linux debian-sysvinit' }}
     needs: [resolve]
     runs-on: ubuntu-24.04
     timeout-minutes: 30
@@ -1211,6 +1410,7 @@ jobs:
             -d '{"state":"pending","context":"e2e/vm/debian-sysvinit","description":"Running...","target_url":"${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"}'
 
       - name: Checkout agent code
+        if: inputs.mode != 'release'
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           repository: ${{ needs.resolve.outputs.source_repo }}
@@ -1218,7 +1418,28 @@ jobs:
           token: ${{ secrets.AGENT_REPO_TOKEN }}
           persist-credentials: false
 
+      # Release mode (validate-release.yml): no checkout of the private tree
+      # and no cross-repo download. The kit of the tagged commit and this
+      # leg's release assets, pulled by digest and proven against the
+      # manifest; .github/actions/release-candidate says how.
+      - name: Check out the release lane
+        if: inputs.mode == 'release'
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          path: .release-lane
+          persist-credentials: false
+
+      - name: Take the release candidate's files
+        if: inputs.mode == 'release'
+        uses: ./.release-lane/.github/actions/release-candidate
+        with:
+          dispatch: ${{ inputs.dispatch }}
+          policy: ${{ inputs.policy }}
+          kit-dir: .
+          files: supervizio-amd64.deb pkg
+
       - name: Download the deb from the agent run (cross-repo)
+        if: inputs.mode != 'release'
         uses: actions/download-artifact@70fc10c6e5e1ce46ad2ea6f2b72d43f7d47b13c3 # v8.0.0
         with:
           name: supervizio-amd64.deb
@@ -1320,7 +1541,7 @@ jobs:
 
 
   e2e-linux-alpine-openrc:
-    name: E2E Linux alpine-openrc
+    name: ${{ inputs.mode == 'release' && 'leg/linux/amd64/alpine-openrc' || 'E2E Linux alpine-openrc' }}
     needs: [resolve]
     runs-on: ubuntu-24.04
     timeout-minutes: 30
@@ -1338,6 +1559,7 @@ jobs:
             -d '{"state":"pending","context":"e2e/vm/alpine-openrc","description":"Running...","target_url":"${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"}'
 
       - name: Checkout agent code
+        if: inputs.mode != 'release'
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           repository: ${{ needs.resolve.outputs.source_repo }}
@@ -1345,11 +1567,32 @@ jobs:
           token: ${{ secrets.AGENT_REPO_TOKEN }}
           persist-credentials: false
 
+      # Release mode (validate-release.yml): no checkout of the private tree
+      # and no cross-repo download. The kit of the tagged commit and this
+      # leg's release assets, pulled by digest and proven against the
+      # manifest; .github/actions/release-candidate says how.
+      - name: Check out the release lane
+        if: inputs.mode == 'release'
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          path: .release-lane
+          persist-credentials: false
+
+      - name: Take the release candidate's files
+        if: inputs.mode == 'release'
+        uses: ./.release-lane/.github/actions/release-candidate
+        with:
+          dispatch: ${{ inputs.dispatch }}
+          policy: ${{ inputs.policy }}
+          kit-dir: .
+          files: supervizio-amd64.apk pkg
+
       # The bench leg pulled this package from zot at 192.168.100.250, which a
       # hosted runner cannot reach. Same bytes, taken from the GitHub artifact
       # agent's packaging jobs now mirror. Downloaded on the HOST and synced in
       # by vmactions -- the token never enters the guest.
       - name: Download package from the agent run (cross-repo)
+        if: inputs.mode != 'release'
         uses: actions/download-artifact@70fc10c6e5e1ce46ad2ea6f2b72d43f7d47b13c3 # v8.0.0
         with:
           name: supervizio-amd64.apk
@@ -1445,7 +1688,7 @@ jobs:
             -d "{\"state\":\"$STATE\",\"context\":\"e2e/vm/alpine-openrc\",\"description\":\"$DESC\",\"target_url\":\"${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}\"}"
 
   e2e-linux-debian-systemd:
-    name: E2E Linux debian-systemd
+    name: ${{ inputs.mode == 'release' && 'leg/linux/amd64/debian-systemd' || 'E2E Linux debian-systemd' }}
     needs: [resolve]
     runs-on: ubuntu-24.04
     timeout-minutes: 30
@@ -1463,6 +1706,7 @@ jobs:
             -d '{"state":"pending","context":"e2e/vm/debian-systemd","description":"Running...","target_url":"${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"}'
 
       - name: Checkout agent code
+        if: inputs.mode != 'release'
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           repository: ${{ needs.resolve.outputs.source_repo }}
@@ -1470,11 +1714,32 @@ jobs:
           token: ${{ secrets.AGENT_REPO_TOKEN }}
           persist-credentials: false
 
+      # Release mode (validate-release.yml): no checkout of the private tree
+      # and no cross-repo download. The kit of the tagged commit and this
+      # leg's release assets, pulled by digest and proven against the
+      # manifest; .github/actions/release-candidate says how.
+      - name: Check out the release lane
+        if: inputs.mode == 'release'
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          path: .release-lane
+          persist-credentials: false
+
+      - name: Take the release candidate's files
+        if: inputs.mode == 'release'
+        uses: ./.release-lane/.github/actions/release-candidate
+        with:
+          dispatch: ${{ inputs.dispatch }}
+          policy: ${{ inputs.policy }}
+          kit-dir: .
+          files: supervizio-amd64.deb pkg
+
       # The bench leg pulled this package from zot at 192.168.100.250, which a
       # hosted runner cannot reach. Same bytes, taken from the GitHub artifact
       # agent's packaging jobs now mirror. Downloaded on the HOST and synced in
       # by vmactions -- the token never enters the guest.
       - name: Download package from the agent run (cross-repo)
+        if: inputs.mode != 'release'
         uses: actions/download-artifact@70fc10c6e5e1ce46ad2ea6f2b72d43f7d47b13c3 # v8.0.0
         with:
           name: supervizio-amd64.deb
@@ -1560,7 +1825,7 @@ jobs:
             -d "{\"state\":\"$STATE\",\"context\":\"e2e/vm/debian-systemd\",\"description\":\"$DESC\",\"target_url\":\"${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}\"}"
 
   e2e-linux-rocky-systemd:
-    name: E2E Linux rocky-systemd
+    name: ${{ inputs.mode == 'release' && 'leg/linux/amd64/rocky-systemd' || 'E2E Linux rocky-systemd' }}
     needs: [resolve]
     runs-on: ubuntu-24.04
     timeout-minutes: 30
@@ -1583,6 +1848,7 @@ jobs:
           persist-credentials: false
 
       - name: Checkout agent code
+        if: inputs.mode != 'release'
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           repository: ${{ needs.resolve.outputs.source_repo }}
@@ -1591,11 +1857,32 @@ jobs:
           path: agent
           persist-credentials: false
 
+      # Release mode (validate-release.yml): no checkout of the private tree
+      # and no cross-repo download. The kit of the tagged commit and this
+      # leg's release assets, pulled by digest and proven against the
+      # manifest; .github/actions/release-candidate says how.
+      - name: Check out the release lane
+        if: inputs.mode == 'release'
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          path: .release-lane
+          persist-credentials: false
+
+      - name: Take the release candidate's files
+        if: inputs.mode == 'release'
+        uses: ./.release-lane/.github/actions/release-candidate
+        with:
+          dispatch: ${{ inputs.dispatch }}
+          policy: ${{ inputs.policy }}
+          kit-dir: agent
+          files: supervizio-amd64.rpm pkg
+
       # The bench leg pulled this package from zot at 192.168.100.250, which a
       # hosted runner cannot reach. Same bytes, taken from the GitHub artifact
       # agent's packaging jobs now mirror. Downloaded on the HOST and pushed in
       # by scp -- the token never enters the guest.
       - name: Download package from the agent run (cross-repo)
+        if: inputs.mode != 'release'
         uses: actions/download-artifact@70fc10c6e5e1ce46ad2ea6f2b72d43f7d47b13c3 # v8.0.0
         with:
           name: supervizio-amd64.rpm
@@ -1731,7 +2018,7 @@ jobs:
   # detect-init contract textually), so naming them is enough and keeps what
   # crosses into a root shell explicit.
   e2e-linux-opensuse-zypper:
-    name: E2E Linux opensuse-zypper
+    name: ${{ inputs.mode == 'release' && 'leg/linux/amd64/opensuse-zypper' || 'E2E Linux opensuse-zypper' }}
     needs: [resolve]
     runs-on: ubuntu-24.04
     timeout-minutes: 30
@@ -1754,6 +2041,7 @@ jobs:
           persist-credentials: false
 
       - name: Checkout agent code
+        if: inputs.mode != 'release'
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           repository: ${{ needs.resolve.outputs.source_repo }}
@@ -1762,7 +2050,28 @@ jobs:
           path: agent
           persist-credentials: false
 
+      # Release mode (validate-release.yml): no checkout of the private tree
+      # and no cross-repo download. The kit of the tagged commit and this
+      # leg's release assets, pulled by digest and proven against the
+      # manifest; .github/actions/release-candidate says how.
+      - name: Check out the release lane
+        if: inputs.mode == 'release'
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          path: .release-lane
+          persist-credentials: false
+
+      - name: Take the release candidate's files
+        if: inputs.mode == 'release'
+        uses: ./.release-lane/.github/actions/release-candidate
+        with:
+          dispatch: ${{ inputs.dispatch }}
+          policy: ${{ inputs.policy }}
+          kit-dir: agent
+          files: supervizio-amd64.rpm pkg
+
       - name: Download package from the agent run (cross-repo)
+        if: inputs.mode != 'release'
         uses: actions/download-artifact@70fc10c6e5e1ce46ad2ea6f2b72d43f7d47b13c3 # v8.0.0
         with:
           name: supervizio-amd64.rpm
@@ -1899,7 +2208,7 @@ jobs:
   # A VERSIONED path, never images/latest/: latest/ rolls on each build and
   # would silently invalidate the checksum below.
   e2e-linux-arch-pacman:
-    name: E2E Linux arch-pacman
+    name: ${{ inputs.mode == 'release' && 'leg/linux/amd64/arch-pacman' || 'E2E Linux arch-pacman' }}
     needs: [resolve]
     runs-on: ubuntu-24.04
     timeout-minutes: 30
@@ -1922,6 +2231,7 @@ jobs:
           persist-credentials: false
 
       - name: Checkout agent code
+        if: inputs.mode != 'release'
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           repository: ${{ needs.resolve.outputs.source_repo }}
@@ -1930,7 +2240,28 @@ jobs:
           path: agent
           persist-credentials: false
 
+      # Release mode (validate-release.yml): no checkout of the private tree
+      # and no cross-repo download. The kit of the tagged commit and this
+      # leg's release assets, pulled by digest and proven against the
+      # manifest; .github/actions/release-candidate says how.
+      - name: Check out the release lane
+        if: inputs.mode == 'release'
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          path: .release-lane
+          persist-credentials: false
+
+      - name: Take the release candidate's files
+        if: inputs.mode == 'release'
+        uses: ./.release-lane/.github/actions/release-candidate
+        with:
+          dispatch: ${{ inputs.dispatch }}
+          policy: ${{ inputs.policy }}
+          kit-dir: agent
+          files: supervizio-amd64.pkg.tar.zst pkg
+
       - name: Download package from the agent run (cross-repo)
+        if: inputs.mode != 'release'
         uses: actions/download-artifact@70fc10c6e5e1ce46ad2ea6f2b72d43f7d47b13c3 # v8.0.0
         with:
           name: supervizio-amd64.pkg.tar.zst
@@ -2051,7 +2382,7 @@ jobs:
   # reboot, no bootloader edit and no cache-after-prepare. The scandir matches
   # the one expected-matrix.json pins for this column (/etc/service).
   e2e-linux-alpine-runit:
-    name: E2E Linux alpine-runit
+    name: ${{ inputs.mode == 'release' && 'leg/linux/amd64/alpine-runit' || 'E2E Linux alpine-runit' }}
     needs: [resolve]
     runs-on: ubuntu-24.04
     timeout-minutes: 30
@@ -2069,6 +2400,7 @@ jobs:
             -d '{"state":"pending","context":"e2e/vm/alpine-runit","description":"Running...","target_url":"${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"}'
 
       - name: Checkout agent code
+        if: inputs.mode != 'release'
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           repository: ${{ needs.resolve.outputs.source_repo }}
@@ -2076,7 +2408,28 @@ jobs:
           token: ${{ secrets.AGENT_REPO_TOKEN }}
           persist-credentials: false
 
+      # Release mode (validate-release.yml): no checkout of the private tree
+      # and no cross-repo download. The kit of the tagged commit and this
+      # leg's release assets, pulled by digest and proven against the
+      # manifest; .github/actions/release-candidate says how.
+      - name: Check out the release lane
+        if: inputs.mode == 'release'
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          path: .release-lane
+          persist-credentials: false
+
+      - name: Take the release candidate's files
+        if: inputs.mode == 'release'
+        uses: ./.release-lane/.github/actions/release-candidate
+        with:
+          dispatch: ${{ inputs.dispatch }}
+          policy: ${{ inputs.policy }}
+          kit-dir: .
+          files: supervizio-amd64.apk pkg
+
       - name: Download package from the agent run (cross-repo)
+        if: inputs.mode != 'release'
         uses: actions/download-artifact@70fc10c6e5e1ce46ad2ea6f2b72d43f7d47b13c3 # v8.0.0
         with:
           name: supervizio-amd64.apk
@@ -2204,7 +2557,7 @@ jobs:
   # reboot, no bootloader edit and no cache-after-prepare. The scandir matches
   # the one expected-matrix.json pins for this column (/run/service).
   e2e-linux-alpine-s6:
-    name: E2E Linux alpine-s6
+    name: ${{ inputs.mode == 'release' && 'leg/linux/amd64/alpine-s6' || 'E2E Linux alpine-s6' }}
     needs: [resolve]
     runs-on: ubuntu-24.04
     timeout-minutes: 30
@@ -2222,6 +2575,7 @@ jobs:
             -d '{"state":"pending","context":"e2e/vm/alpine-s6","description":"Running...","target_url":"${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"}'
 
       - name: Checkout agent code
+        if: inputs.mode != 'release'
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           repository: ${{ needs.resolve.outputs.source_repo }}
@@ -2229,7 +2583,28 @@ jobs:
           token: ${{ secrets.AGENT_REPO_TOKEN }}
           persist-credentials: false
 
+      # Release mode (validate-release.yml): no checkout of the private tree
+      # and no cross-repo download. The kit of the tagged commit and this
+      # leg's release assets, pulled by digest and proven against the
+      # manifest; .github/actions/release-candidate says how.
+      - name: Check out the release lane
+        if: inputs.mode == 'release'
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          path: .release-lane
+          persist-credentials: false
+
+      - name: Take the release candidate's files
+        if: inputs.mode == 'release'
+        uses: ./.release-lane/.github/actions/release-candidate
+        with:
+          dispatch: ${{ inputs.dispatch }}
+          policy: ${{ inputs.policy }}
+          kit-dir: .
+          files: supervizio-amd64.apk pkg
+
       - name: Download package from the agent run (cross-repo)
+        if: inputs.mode != 'release'
         uses: actions/download-artifact@70fc10c6e5e1ce46ad2ea6f2b72d43f7d47b13c3 # v8.0.0
         with:
           name: supervizio-amd64.apk
@@ -2415,6 +2790,10 @@ jobs:
   # containers start, which is the same reason `resolve` pre-checks artifacts.
   arm64-packages:
     name: Build arm64 packages
+    # Release mode installs the arm64 packages the RELEASE carries, built
+    # privately and bound by the manifest; building others here would test
+    # bytes nobody downloads.
+    if: inputs.mode != 'release'
     needs: [resolve]
     runs-on: ubuntu-24.04-arm
     timeout-minutes: 20
@@ -2521,8 +2900,12 @@ jobs:
           if-no-files-found: error
 
   e2e-linux-arm64:
-    name: E2E Linux arm64 ${{ matrix.name }}
+    name: ${{ inputs.mode == 'release' && format('leg/linux/arm64/{0}', matrix.name) || format('E2E Linux arm64 {0}', matrix.name) }}
     needs: [resolve, arm64-packages]
+    # arm64-packages is skipped in release mode, and a skipped need skips this
+    # job by default. Spelled out, the merge lane is exactly what it was: run
+    # only when both needs succeeded and nothing was cancelled.
+    if: ${{ !cancelled() && needs.resolve.result == 'success' && (inputs.mode == 'release' || needs.arm64-packages.result == 'success') }}
     runs-on: ubuntu-24.04-arm
     timeout-minutes: 30
     strategy:
@@ -2678,6 +3061,7 @@ jobs:
             -d '{"state":"pending","context":"e2e/linux-arm64/${{ matrix.name }}","description":"Running...","target_url":"${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"}'
 
       - name: Checkout agent code
+        if: inputs.mode != 'release'
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           repository: ${{ needs.resolve.outputs.source_repo }}
@@ -2685,8 +3069,29 @@ jobs:
           token: ${{ secrets.AGENT_REPO_TOKEN }}
           persist-credentials: false
 
+      # Release mode (validate-release.yml): no checkout of the private tree
+      # and no cross-repo download. The kit of the tagged commit and this
+      # leg's release assets, pulled by digest and proven against the
+      # manifest; .github/actions/release-candidate says how.
+      - name: Check out the release lane
+        if: inputs.mode == 'release'
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          path: .release-lane
+          persist-credentials: false
+
+      - name: Take the release candidate's files
+        if: inputs.mode == 'release'
+        uses: ./.release-lane/.github/actions/release-candidate
+        with:
+          dispatch: ${{ inputs.dispatch }}
+          policy: ${{ inputs.policy }}
+          kit-dir: .
+          files: ${{ matrix.pkg }} pkg
+
       # From THIS run, not from agent's: see arm64-packages above.
       - name: Download the arm64 packages built in this run
+        if: inputs.mode != 'release'
         uses: actions/download-artifact@70fc10c6e5e1ce46ad2ea6f2b72d43f7d47b13c3 # v8.0.0
         with:
           name: supervizio-arm64-packages
@@ -2919,7 +3324,7 @@ jobs:
   # ===========================================================================
 
   e2e-linux-exotic:
-    name: E2E Linux exotic ${{ matrix.name }}
+    name: ${{ inputs.mode == 'release' && format('leg/linux-exotic/{0}', matrix.name) || format('E2E Linux exotic {0}', matrix.name) }}
     needs: [resolve]
     runs-on: ubuntu-24.04
     timeout-minutes: 45
@@ -2945,6 +3350,11 @@ jobs:
         # artifact  the bridged GitHub artifact from agent's run. deb for the
         #         glibc targets, apk for the musl ones -- see
         #         E2E_BRIDGE_PKG_ARCHES in agent's ci.yml.
+        # release_asset  the same package under the name agent's RELEASE
+        #         publishes it (release.yml canonical_asset_name): nfpm's arch
+        #         input for the artifact, install.sh's vocabulary for the
+        #         release -- arm7 is `arm`, arm6 is `armhf`. Release mode pulls
+        #         this one; the leg renames it to `artifact` either way.
         include:
           - name: 386-glibc
             target: linux-386
@@ -2954,6 +3364,7 @@ jobs:
             distro_arch: i386
             family: deb
             artifact: supervizio-386.deb
+            release_asset: supervizio-386.deb
             prep: "apt-get update -qq && DEBIAN_FRONTEND=noninteractive apt-get install -y -qq jq procps"
           - name: 386-musl
             target: linux-386-musl
@@ -2963,6 +3374,7 @@ jobs:
             distro_arch: x86
             family: apk
             artifact: supervizio-386.apk
+            release_asset: supervizio-386.apk
             prep: "apk add --no-cache jq"
           - name: armv7-glibc
             target: linux-arm
@@ -2972,6 +3384,7 @@ jobs:
             distro_arch: armhf
             family: deb
             artifact: supervizio-arm7.deb
+            release_asset: supervizio-arm.deb
             prep: "apt-get update -qq && DEBIAN_FRONTEND=noninteractive apt-get install -y -qq jq procps"
           - name: armv7-musl
             target: linux-arm-musl
@@ -2981,6 +3394,7 @@ jobs:
             distro_arch: armv7
             family: apk
             artifact: supervizio-arm7.apk
+            release_asset: supervizio-arm.apk
             prep: "apk add --no-cache jq"
           # armv6 and armv7 are the SAME qemu-arm and report the same
           # `uname -m` (armv7l, measured). What separates them is the apk
@@ -2995,6 +3409,7 @@ jobs:
             distro_arch: armhf
             family: apk
             artifact: supervizio-arm6.apk
+            release_asset: supervizio-armhf.apk
             prep: "apk add --no-cache jq"
           - name: riscv64-glibc
             target: linux-riscv64
@@ -3004,6 +3419,7 @@ jobs:
             distro_arch: riscv64
             family: deb
             artifact: supervizio-riscv64.deb
+            release_asset: supervizio-riscv64.deb
             prep: "apt-get update -qq && DEBIAN_FRONTEND=noninteractive apt-get install -y -qq jq procps"
           - name: riscv64-musl
             target: linux-riscv64-musl
@@ -3013,6 +3429,7 @@ jobs:
             distro_arch: riscv64
             family: apk
             artifact: supervizio-riscv64.apk
+            release_asset: supervizio-riscv64.apk
             prep: "apk add --no-cache jq"
           - name: ppc64le-glibc
             target: linux-ppc64le
@@ -3025,6 +3442,7 @@ jobs:
             distro_arch: ppc64el
             family: deb
             artifact: supervizio-ppc64le.deb
+            release_asset: supervizio-ppc64le.deb
             prep: "apt-get update -qq && DEBIAN_FRONTEND=noninteractive apt-get install -y -qq jq procps"
           - name: ppc64le-musl
             target: linux-ppc64le-musl
@@ -3034,6 +3452,7 @@ jobs:
             distro_arch: ppc64le
             family: apk
             artifact: supervizio-ppc64le.apk
+            release_asset: supervizio-ppc64le.apk
             prep: "apk add --no-cache jq"
           # The only big-endian legs in this repo. The musl build comes from a
           # bootlin GCC rather than zig (agent's build-cross), and byte order
@@ -3048,6 +3467,7 @@ jobs:
             distro_arch: s390x
             family: deb
             artifact: supervizio-s390x.deb
+            release_asset: supervizio-s390x.deb
             prep: "apt-get update -qq && DEBIAN_FRONTEND=noninteractive apt-get install -y -qq jq procps"
           - name: s390x-musl
             target: linux-s390x-musl
@@ -3057,6 +3477,7 @@ jobs:
             distro_arch: s390x
             family: apk
             artifact: supervizio-s390x.apk
+            release_asset: supervizio-s390x.apk
             prep: "apk add --no-cache jq"
           # loong64: binary, not package. agent builds linux-loong64 and then
           # stops -- it is in no packaging matrix, so there is no .deb/.apk to
@@ -3073,6 +3494,7 @@ jobs:
             distro_arch: loong64
             family: bin
             artifact: supervizio-linux-loong64
+            release_asset: supervizio-linux-loong64
             prep: "apt-get update -qq && DEBIAN_FRONTEND=noninteractive apt-get install -y -qq jq procps"
     steps:
       - name: Report status (pending)
@@ -3087,6 +3509,7 @@ jobs:
             -d '{"state":"pending","context":"e2e/linux-exotic/${{ matrix.name }}","description":"Running...","target_url":"${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"}'
 
       - name: Checkout agent code
+        if: inputs.mode != 'release'
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           repository: ${{ needs.resolve.outputs.source_repo }}
@@ -3094,7 +3517,28 @@ jobs:
           token: ${{ secrets.AGENT_REPO_TOKEN }}
           persist-credentials: false
 
+      # Release mode (validate-release.yml): no checkout of the private tree
+      # and no cross-repo download. The kit of the tagged commit and this
+      # leg's release assets, pulled by digest and proven against the
+      # manifest; .github/actions/release-candidate says how.
+      - name: Check out the release lane
+        if: inputs.mode == 'release'
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          path: .release-lane
+          persist-credentials: false
+
+      - name: Take the release candidate's files
+        if: inputs.mode == 'release'
+        uses: ./.release-lane/.github/actions/release-candidate
+        with:
+          dispatch: ${{ inputs.dispatch }}
+          policy: ${{ inputs.policy }}
+          kit-dir: .
+          files: ${{ matrix.release_asset }} dl
+
       - name: Download the artifact from the agent run (cross-repo)
+        if: inputs.mode != 'release'
         uses: actions/download-artifact@70fc10c6e5e1ce46ad2ea6f2b72d43f7d47b13c3 # v8.0.0
         with:
           name: ${{ matrix.artifact }}
@@ -3353,7 +3797,7 @@ jobs:
             -d "{\"state\":\"$STATE\",\"context\":\"e2e/linux-exotic/${{ matrix.name }}\",\"description\":\"$DESC\",\"target_url\":\"${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}\"}"
 
   e2e-bsd-freebsd-amd64:
-    name: E2E BSD freebsd amd64
+    name: ${{ inputs.mode == 'release' && 'leg/freebsd/amd64' || 'E2E BSD freebsd amd64' }}
     needs: [resolve]
     runs-on: ubuntu-24.04
     timeout-minutes: 30
@@ -3371,6 +3815,7 @@ jobs:
             -d '{"state":"pending","context":"e2e/bsd/freebsd-amd64","description":"Running...","target_url":"${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"}'
 
       - name: Checkout agent code
+        if: inputs.mode != 'release'
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           repository: ${{ needs.resolve.outputs.source_repo }}
@@ -3378,10 +3823,31 @@ jobs:
           token: ${{ secrets.AGENT_REPO_TOKEN }}
           persist-credentials: false
 
+      # Release mode (validate-release.yml): no checkout of the private tree
+      # and no cross-repo download. The kit of the tagged commit and this
+      # leg's release assets, pulled by digest and proven against the
+      # manifest; .github/actions/release-candidate says how.
+      - name: Check out the release lane
+        if: inputs.mode == 'release'
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          path: .release-lane
+          persist-credentials: false
+
+      - name: Take the release candidate's files
+        if: inputs.mode == 'release'
+        uses: ./.release-lane/.github/actions/release-candidate
+        with:
+          dispatch: ${{ inputs.dispatch }}
+          policy: ${{ inputs.policy }}
+          kit-dir: .
+          files: supervizio-freebsd-amd64 bin
+
       # The bench pulled this from zot; the hosted runner takes the same bytes
       # from the GitHub artifact agent's CI mirrors. Downloaded on the HOST and
       # synced into the guest by vmactions -- the token never enters the VM.
       - name: Download binary from the agent run (cross-repo)
+        if: inputs.mode != 'release'
         uses: actions/download-artifact@70fc10c6e5e1ce46ad2ea6f2b72d43f7d47b13c3 # v8.0.0
         with:
           name: supervizio-freebsd-amd64
@@ -3457,7 +3923,7 @@ jobs:
             -d "{\"state\":\"$STATE\",\"context\":\"e2e/bsd/freebsd-amd64\",\"description\":\"$DESC\",\"target_url\":\"${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}\"}"
 
   e2e-bsd-netbsd-amd64:
-    name: E2E BSD netbsd amd64
+    name: ${{ inputs.mode == 'release' && 'leg/netbsd/amd64' || 'E2E BSD netbsd amd64' }}
     needs: [resolve]
     runs-on: ubuntu-24.04
     timeout-minutes: 30
@@ -3475,6 +3941,7 @@ jobs:
             -d '{"state":"pending","context":"e2e/bsd/netbsd-amd64","description":"Running...","target_url":"${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"}'
 
       - name: Checkout agent code
+        if: inputs.mode != 'release'
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           repository: ${{ needs.resolve.outputs.source_repo }}
@@ -3482,10 +3949,31 @@ jobs:
           token: ${{ secrets.AGENT_REPO_TOKEN }}
           persist-credentials: false
 
+      # Release mode (validate-release.yml): no checkout of the private tree
+      # and no cross-repo download. The kit of the tagged commit and this
+      # leg's release assets, pulled by digest and proven against the
+      # manifest; .github/actions/release-candidate says how.
+      - name: Check out the release lane
+        if: inputs.mode == 'release'
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          path: .release-lane
+          persist-credentials: false
+
+      - name: Take the release candidate's files
+        if: inputs.mode == 'release'
+        uses: ./.release-lane/.github/actions/release-candidate
+        with:
+          dispatch: ${{ inputs.dispatch }}
+          policy: ${{ inputs.policy }}
+          kit-dir: .
+          files: supervizio-netbsd-amd64 bin
+
       # The bench pulled this from zot; the hosted runner takes the same bytes
       # from the GitHub artifact agent's CI mirrors. Downloaded on the HOST and
       # synced into the guest by vmactions -- the token never enters the VM.
       - name: Download binary from the agent run (cross-repo)
+        if: inputs.mode != 'release'
         uses: actions/download-artifact@70fc10c6e5e1ce46ad2ea6f2b72d43f7d47b13c3 # v8.0.0
         with:
           name: supervizio-netbsd-amd64
@@ -3561,7 +4049,7 @@ jobs:
             -d "{\"state\":\"$STATE\",\"context\":\"e2e/bsd/netbsd-amd64\",\"description\":\"$DESC\",\"target_url\":\"${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}\"}"
 
   e2e-bsd-openbsd-amd64:
-    name: E2E BSD openbsd amd64 (${{ matrix.release }})
+    name: ${{ inputs.mode == 'release' && format('leg/openbsd/amd64/{0}', matrix.release) || format('E2E BSD openbsd amd64 ({0})', matrix.release) }}
     needs: [resolve]
     runs-on: ubuntu-24.04
     timeout-minutes: 30
@@ -3622,6 +4110,7 @@ jobs:
             -d '{"state":"pending","context":"e2e/bsd/openbsd-amd64/${{ matrix.release }}","description":"Running...","target_url":"${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"}'
 
       - name: Checkout agent code
+        if: inputs.mode != 'release'
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           repository: ${{ needs.resolve.outputs.source_repo }}
@@ -3630,6 +4119,26 @@ jobs:
           # The workspace is synced wholesale into the guest; a persisted
           # credential would travel with it.
           persist-credentials: false
+
+      # Release mode (validate-release.yml): no checkout of the private tree
+      # and no cross-repo download. The kit of the tagged commit and this
+      # leg's release assets, pulled by digest and proven against the
+      # manifest; .github/actions/release-candidate says how.
+      - name: Check out the release lane
+        if: inputs.mode == 'release'
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          path: .release-lane
+          persist-credentials: false
+
+      - name: Take the release candidate's files
+        if: inputs.mode == 'release'
+        uses: ./.release-lane/.github/actions/release-candidate
+        with:
+          dispatch: ${{ inputs.dispatch }}
+          policy: ${{ inputs.policy }}
+          kit-dir: .
+          files: supervizio-openbsd-amd64.tgz pkg
 
       # OpenBSD used to be the one platform whose SHIPPED binary was not the
       # cross-compiled one: upstream lld could not produce a runnable OpenBSD
@@ -3649,6 +4158,7 @@ jobs:
       # across seven releases in agent run 35571265130, which is where the
       # matrix above comes from.
       - name: Download the OpenBSD amd64 package from the agent run
+        if: inputs.mode != 'release'
         uses: actions/download-artifact@70fc10c6e5e1ce46ad2ea6f2b72d43f7d47b13c3 # v8.0.0
         with:
           name: supervizio-openbsd-amd64-pkg
@@ -3919,7 +4429,7 @@ jobs:
             -d "{\"state\":\"$STATE\",\"context\":\"e2e/bsd/openbsd-amd64/${{ matrix.release }}\",\"description\":\"$DESC\",\"target_url\":\"${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}\"}"
 
   e2e-bsd-freebsd-arm64:
-    name: E2E BSD freebsd arm64
+    name: ${{ inputs.mode == 'release' && 'leg/freebsd/arm64' || 'E2E BSD freebsd arm64' }}
     needs: [resolve]
     runs-on: ubuntu-24.04
     timeout-minutes: 180
@@ -3937,6 +4447,7 @@ jobs:
             -d '{"state":"pending","context":"e2e/bsd/freebsd-arm64","description":"Running...","target_url":"${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"}'
 
       - name: Checkout agent code
+        if: inputs.mode != 'release'
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           repository: ${{ needs.resolve.outputs.source_repo }}
@@ -3944,10 +4455,31 @@ jobs:
           token: ${{ secrets.AGENT_REPO_TOKEN }}
           persist-credentials: false
 
+      # Release mode (validate-release.yml): no checkout of the private tree
+      # and no cross-repo download. The kit of the tagged commit and this
+      # leg's release assets, pulled by digest and proven against the
+      # manifest; .github/actions/release-candidate says how.
+      - name: Check out the release lane
+        if: inputs.mode == 'release'
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          path: .release-lane
+          persist-credentials: false
+
+      - name: Take the release candidate's files
+        if: inputs.mode == 'release'
+        uses: ./.release-lane/.github/actions/release-candidate
+        with:
+          dispatch: ${{ inputs.dispatch }}
+          policy: ${{ inputs.policy }}
+          kit-dir: .
+          files: supervizio-freebsd-arm64 bin
+
       # The bench pulled this from zot; the hosted runner takes the same bytes
       # from the GitHub artifact agent's CI mirrors. Downloaded on the HOST and
       # synced into the guest by vmactions -- the token never enters the VM.
       - name: Download binary from the agent run (cross-repo)
+        if: inputs.mode != 'release'
         uses: actions/download-artifact@70fc10c6e5e1ce46ad2ea6f2b72d43f7d47b13c3 # v8.0.0
         with:
           name: supervizio-freebsd-arm64
@@ -4059,7 +4591,7 @@ jobs:
             -d "{\"state\":\"$STATE\",\"context\":\"e2e/bsd/freebsd-arm64\",\"description\":\"$DESC\",\"target_url\":\"${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}\"}"
 
   e2e-bsd-netbsd-arm64:
-    name: E2E BSD netbsd arm64
+    name: ${{ inputs.mode == 'release' && 'leg/netbsd/arm64' || 'E2E BSD netbsd arm64' }}
     needs: [resolve]
     runs-on: ubuntu-24.04
     timeout-minutes: 180
@@ -4077,6 +4609,7 @@ jobs:
             -d '{"state":"pending","context":"e2e/bsd/netbsd-arm64","description":"Running...","target_url":"${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"}'
 
       - name: Checkout agent code
+        if: inputs.mode != 'release'
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           repository: ${{ needs.resolve.outputs.source_repo }}
@@ -4084,10 +4617,31 @@ jobs:
           token: ${{ secrets.AGENT_REPO_TOKEN }}
           persist-credentials: false
 
+      # Release mode (validate-release.yml): no checkout of the private tree
+      # and no cross-repo download. The kit of the tagged commit and this
+      # leg's release assets, pulled by digest and proven against the
+      # manifest; .github/actions/release-candidate says how.
+      - name: Check out the release lane
+        if: inputs.mode == 'release'
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          path: .release-lane
+          persist-credentials: false
+
+      - name: Take the release candidate's files
+        if: inputs.mode == 'release'
+        uses: ./.release-lane/.github/actions/release-candidate
+        with:
+          dispatch: ${{ inputs.dispatch }}
+          policy: ${{ inputs.policy }}
+          kit-dir: .
+          files: supervizio-netbsd-arm64 bin
+
       # The bench pulled this from zot; the hosted runner takes the same bytes
       # from the GitHub artifact agent's CI mirrors. Downloaded on the HOST and
       # synced into the guest by vmactions -- the token never enters the VM.
       - name: Download binary from the agent run (cross-repo)
+        if: inputs.mode != 'release'
         uses: actions/download-artifact@70fc10c6e5e1ce46ad2ea6f2b72d43f7d47b13c3 # v8.0.0
         with:
           name: supervizio-netbsd-arm64
@@ -4225,7 +4779,7 @@ jobs:
   # point of validating the PACKAGE rather than the build.
   # ===========================================================================
   e2e-bsd-openbsd-arm64:
-    name: E2E BSD openbsd arm64 (${{ matrix.release }})
+    name: ${{ inputs.mode == 'release' && format('leg/openbsd/arm64/{0}', matrix.release) || format('E2E BSD openbsd arm64 ({0})', matrix.release) }}
     needs: [resolve]
     runs-on: ubuntu-24.04
     # 180, like the freebsd-arm64 and netbsd-arm64 legs: the guest is TCG, and
@@ -4287,6 +4841,7 @@ jobs:
             -d '{"state":"pending","context":"e2e/bsd/openbsd-arm64/${{ matrix.release }}","description":"Running...","target_url":"${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"}'
 
       - name: Checkout agent code
+        if: inputs.mode != 'release'
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           repository: ${{ needs.resolve.outputs.source_repo }}
@@ -4296,7 +4851,28 @@ jobs:
           # credential would travel with it.
           persist-credentials: false
 
+      # Release mode (validate-release.yml): no checkout of the private tree
+      # and no cross-repo download. The kit of the tagged commit and this
+      # leg's release assets, pulled by digest and proven against the
+      # manifest; .github/actions/release-candidate says how.
+      - name: Check out the release lane
+        if: inputs.mode == 'release'
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          path: .release-lane
+          persist-credentials: false
+
+      - name: Take the release candidate's files
+        if: inputs.mode == 'release'
+        uses: ./.release-lane/.github/actions/release-candidate
+        with:
+          dispatch: ${{ inputs.dispatch }}
+          policy: ${{ inputs.policy }}
+          kit-dir: .
+          files: supervizio-openbsd-arm64.tgz pkg
+
       - name: Download the native OpenBSD arm64 package from the agent run
+        if: inputs.mode != 'release'
         uses: actions/download-artifact@70fc10c6e5e1ce46ad2ea6f2b72d43f7d47b13c3 # v8.0.0
         with:
           name: supervizio-openbsd-arm64-pkg
@@ -4497,7 +5073,9 @@ jobs:
              arm64-packages, e2e-linux-arm64, e2e-linux-exotic,
              e2e-bsd-freebsd-amd64, e2e-bsd-netbsd-amd64, e2e-bsd-openbsd-amd64,
              e2e-bsd-freebsd-arm64, e2e-bsd-netbsd-arm64, e2e-bsd-openbsd-arm64]
-    if: always()
+    # Release mode reports nothing: validate-release.yml's verdict reads the
+    # leg jobs themselves, and this workflow holds no token to post with.
+    if: always() && inputs.mode != 'release'
     runs-on: ubuntu-24.04
     steps:
       # One verdict, computed once. The three consumers below (commit status,

@@ -118,7 +118,17 @@ LEG_STATES = ("required", "advisory", "pending-merge")
 # GHCR package names are lowercase; `owner/name`, where name may itself carry a path.
 PACKAGE_RE = re.compile(r"^[a-z0-9]+(?:[._-][a-z0-9]+)*(?:/[a-z0-9]+(?:[._-][a-z0-9]+)*)+$")
 RUNNER_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$")
-SCENARIOS = ("integrity", "abi")
+# `integrity`: re-hash the pulled files, execute nothing (the proof policy).
+# `abi`: libprobe's ABI consumer (section 5). `e2e`: the leg is one of
+# e2e.yml's jobs, run in release mode by validate-release.yml's `e2e` job --
+# not by its generic `leg` matrix, which leg_matrix therefore leaves it out of.
+# Its job is `e2e / leg/<id>`.
+SCENARIOS = ("integrity", "abi", "e2e")
+SCENARIO_E2E = "e2e"
+# A job of a called workflow is reported as `<caller job> / <called job>`. The
+# only caller whose legs count is validate-release.yml's `e2e` job.
+E2E_CALLER = "e2e"
+CALLER_SEPARATOR = " / "
 # Where a leg's harness executes (README section 5). `native` is the leg's runner
 # itself; a BSD name is a guest that runner boots; `container-*` is a container
 # on it. The workflow reads this to pick the steps between prepare and check.
@@ -738,9 +748,11 @@ def leg_matrix(payload: Dict[str, Any], policy: Dict[str, Any]) -> Tuple[List[Di
         if leg is None or leg["state"] == "pending-merge":
             unknown.append(leg_id)
             continue
+        if leg.get("scenario") == SCENARIO_E2E:
+            continue
         legs.append(_scheduled(leg, True))
     for leg_id in advisory_legs(policy, repository):
-        if leg_id not in payload["required_matrix"]:
+        if leg_id not in payload["required_matrix"] and known[leg_id].get("scenario") != SCENARIO_E2E:
             legs.append(_scheduled(known[leg_id], False))
     return legs, unknown
 
@@ -760,6 +772,18 @@ def _scheduled(leg: Dict[str, Any], required: bool) -> Dict[str, Any]:
     }
 
 
+def e2e_scheduled(payload: Dict[str, Any], policy: Dict[str, Any]) -> bool:
+    """Whether validate-release.yml must call e2e.yml in release mode: some leg
+    it would run (required and known, or advisory) has the `e2e` scenario. The
+    legs themselves are e2e.yml's jobs; which of them exist is e2e.yml's to say,
+    and a required leg it does not produce reads `missing`."""
+    repository = payload["candidate"]["repository"]
+    known = {leg["id"]: leg for leg in repo_policy(policy, repository)["legs"]}
+    wanted = [known[i] for i in payload["required_matrix"] if i in known and known[i]["state"] != "pending-merge"]
+    wanted += [known[i] for i in advisory_legs(policy, repository)]
+    return any(leg.get("scenario") == SCENARIO_E2E for leg in wanted)
+
+
 def judge_jobs(payload: Dict[str, Any], jobs: List[Dict[str, Any]]) -> Tuple[Dict[str, str], str]:
     """The verdict the leg jobs of a run imply, read while the run is still going.
     It is NOT a receipt: a receipt is only ever built by `evidence` from a completed
@@ -775,14 +799,24 @@ def judge_jobs(payload: Dict[str, Any], jobs: List[Dict[str, Any]]) -> Tuple[Dic
 
 
 def results_from_jobs(jobs: List[Dict[str, Any]], required: List[str]) -> Dict[str, str]:
-    """One job per leg, named exactly `leg/<leg-id>`. Its conclusion is the leg's
+    """One job per leg, named exactly `leg/<leg-id>`, or `e2e / leg/<leg-id>`
+    when e2e.yml runs it for validate-release.yml's `e2e` job. Its conclusion is the leg's
     result. A required leg without such a job is `missing`; a leg reported twice is
     `incomplete` (which of the two would be believed is exactly what must not be
     left to chance); a job not yet completed is `incomplete`."""
     seen: Dict[str, List[Dict[str, Any]]] = {}
     for job in jobs:
         name = job.get("name")
-        if not isinstance(name, str) or not name.startswith(LEG_JOB_PREFIX):
+        if not isinstance(name, str):
+            continue
+        # `e2e / leg/<id>`: a leg run by e2e.yml in release mode, called by
+        # validate-release.yml's `e2e` job. That caller only, one level: any
+        # other `x / leg/<id>` would let any job of the run report a leg.
+        if CALLER_SEPARATOR in name:
+            caller, _, name = name.partition(CALLER_SEPARATOR)
+            if caller != E2E_CALLER or CALLER_SEPARATOR in name:
+                continue
+        if not name.startswith(LEG_JOB_PREFIX):
             continue
         leg = name[len(LEG_JOB_PREFIX):]
         if not LEG_RE.fullmatch(leg):
@@ -1429,10 +1463,17 @@ def cmd_bridge_admit(args: argparse.Namespace, policy: Dict[str, Any]) -> int:
     legs, unknown = leg_matrix(payload, policy)
     for leg in unknown:
         print(f"WARN required leg {leg} has no runner in this revision's policy: it will not run, and reads as missing")
+    e2e = e2e_scheduled(payload, policy)
     if args.legs_output:
         with open(args.legs_output, "w") as fh:
             fh.write(json.dumps(legs, separators=(",", ":")))
-    print(f"PASS candidate {payload['bridge']['package']}@{payload['bridge']['digest']}: {len(layers)} file(s) match the manifest; {len(legs)} leg(s) scheduled")
+    if args.e2e_output:
+        with open(args.e2e_output, "w") as fh:
+            fh.write("true" if e2e else "false")
+    print(
+        f"PASS candidate {payload['bridge']['package']}@{payload['bridge']['digest']}: {len(layers)} file(s) match the manifest; "
+        f"{len(legs)} leg(s) scheduled here" + ("; the e2e legs run in e2e.yml (release mode)" if e2e else "")
+    )
     return 0
 
 
@@ -1608,6 +1649,10 @@ def cmd_scenario(args: argparse.Namespace, policy: Dict[str, Any]) -> int:
         # Fail closed: a leg whose release scenario is not written yet has proven
         # nothing about these bytes, and must not read as a pass.
         raise ContractError(f"leg {args.leg}: no release scenario is wired yet (policy.json scenario: null)")
+    if scenario == SCENARIO_E2E:
+        # Scheduled by e2e.yml, not by the generic leg job: reaching here means a
+        # workflow ran the leg in the wrong place, and that proves nothing.
+        raise ContractError(f"leg {args.leg}: its scenario is e2e.yml in release mode, not `scenario`")
     if scenario == "integrity":
         if args.stage == "check":
             print("PASS integrity-only scenario: nothing to check after prepare")
@@ -1712,6 +1757,7 @@ def build_parser() -> argparse.ArgumentParser:
     ba.add_argument("--dispatch", required=True)
     ba.add_argument("--legs-output", help="write the leg matrix [{id, runner, required}] as JSON")
     ba.add_argument("--run-id", type=int, help="also check that this validation run renders the candidate's run-name")
+    ba.add_argument("--e2e-output", help="write `true` if e2e.yml must run in release mode for this candidate, else `false`")
     ba.set_defaults(func=cmd_bridge_admit)
     bl = br.add_parser("pull", help="download candidate files by digest, each re-hashed on arrival")
     bl.add_argument("--dispatch", required=True)

@@ -33,6 +33,7 @@ SCRIPT = os.path.join(ROOT, "release_contract.py")
 VECTOR = os.path.join(HERE, "vectors", "manifest-v1")
 POLICY = rc.load_policy()
 PROOF_POLICY = os.path.join(HERE, "proof-policy.json")
+E2E_PROOF_POLICY = os.path.join(HERE, "e2e-proof-policy.json")
 
 AGENT = "supervizio/agent"
 LIBPROBE = "supervizio/libprobe"
@@ -960,15 +961,31 @@ class BridgeAdmission(unittest.TestCase):
 
 
 class LegMatrix(unittest.TestCase):
+    def test_e2e_legs_are_left_to_e2e_yml(self):
+        # Every agent leg is an e2e.yml job in release mode: the generic leg
+        # matrix schedules none of them, and admit says e2e.yml must run.
+        payload = dispatch_body()["client_payload"]
+        legs, unknown = rc.leg_matrix(payload, POLICY)
+        self.assertEqual((legs, unknown), ([], []))
+        self.assertTrue(rc.e2e_scheduled(payload, POLICY))
+        self.assertFalse(rc.e2e_scheduled(dispatch_body(LIBPROBE)["client_payload"], POLICY))
+
     def test_required_legs_are_scheduled_with_their_runner(self):
-        legs, unknown = rc.leg_matrix(dispatch_body()["client_payload"], POLICY)
+        legs, unknown = rc.leg_matrix(dispatch_body(LIBPROBE)["client_payload"], POLICY)
         self.assertEqual(unknown, [])
+        self.assertIn("native/windows-arm64", [leg["id"] for leg in legs])
+        self.assertEqual(len([leg for leg in legs if leg["required"]]), 12)
+        # Without the e2e scenario the same agent legs go back to the leg matrix.
+        policy = copy.deepcopy(POLICY)
+        for leg in policy["repositories"][AGENT]["legs"]:
+            leg["scenario"] = None
+        legs, _ = rc.leg_matrix(dispatch_body()["client_payload"], policy)
         self.assertEqual(len(legs), 53)
-        self.assertTrue(all(leg["required"] for leg in legs))
         self.assertIn(
             {"id": "windows/arm64", "runner": "windows-11-arm", "required": True, "scenario": None, "host": "native", "platform": ""},
             legs,
         )
+        self.assertFalse(rc.e2e_scheduled(dispatch_body()["client_payload"], policy))
 
     def test_a_harness_leg_tells_the_workflow_where_it_runs(self):
         legs, _ = rc.leg_matrix(dispatch_body(LIBPROBE)["client_payload"], POLICY)
@@ -1010,6 +1027,55 @@ class Judge(unittest.TestCase):
 
     def test_skipped_legs_after_a_refused_admission_are_errors(self):
         self.assertEqual(rc.judge_jobs(self.payload, jobs_for(self.required, "skipped"))[1], "error")
+
+
+class CalledWorkflowLegs(unittest.TestCase):
+    """e2e.yml runs agent's legs as a called workflow: GitHub reports each job as
+    `<caller job> / <called job>`, e.g. `e2e / leg/windows/arm64`."""
+
+    def setUp(self):
+        self.payload = dispatch_body()["client_payload"]
+        self.required = self.payload["required_matrix"]
+
+    def called(self, legs, conclusion="success", **per_leg):
+        jobs = jobs_for(legs, conclusion, **per_leg)
+        for job in jobs[1:]:
+            job["name"] = "e2e / " + job["name"]
+        return jobs
+
+    def test_a_called_leg_is_the_leg(self):
+        results, verdict = rc.judge_jobs(self.payload, self.called(self.required))
+        self.assertEqual(verdict, "success")
+        self.assertEqual(set(results), set(self.required))
+
+    def test_a_called_failure_decides(self):
+        jobs = self.called(self.required, **{"openbsd/amd64/7.3": "failure"})
+        self.assertEqual(rc.judge_jobs(self.payload, jobs)[1], "failure")
+
+    def test_the_same_leg_reported_twice_is_incomplete(self):
+        # Once by e2e.yml, once by the generic leg job: which to believe is
+        # exactly what must not be left to chance.
+        jobs = self.called(self.required) + [{"name": "leg/macos/arm64", "status": "completed", "conclusion": "success"}]
+        results, verdict = rc.judge_jobs(self.payload, jobs)
+        self.assertEqual((results["macos/arm64"], verdict), ("incomplete", "error"))
+
+    def test_a_leg_reported_under_another_caller_is_not_a_result(self):
+        jobs = self.called(self.required, **{"macos/arm64": "failure"})
+        jobs.append({"name": "impostor / leg/macos/arm64", "status": "completed", "conclusion": "success"})
+        results, verdict = rc.judge_jobs(self.payload, jobs)
+        self.assertEqual((results["macos/arm64"], verdict), ("failure", "failure"))
+
+    def test_names_that_only_look_like_legs_are_ignored(self):
+        # Nothing but `e2e / leg/<id>` counts: no other caller (any job of the
+        # run could otherwise report a leg), no nested caller, no caller that is
+        # itself a leg, no empty caller, and the unexpanded name a skipped
+        # matrix job keeps.
+        for name in ("other / leg/macos/arm64", "a / b / leg/macos/arm64", "e2e / e2e / leg/macos/arm64",
+                     "leg/x / leg/macos/arm64", " / leg/macos/arm64",
+                     "e2e / leg/linux-exotic/${{ matrix.name }}", "e2e / E2E macOS ARM64"):
+            with self.subTest(name):
+                jobs = [{"name": name, "status": "completed", "conclusion": "success"}]
+                self.assertEqual(rc.results_from_jobs(jobs, ["macos/arm64"]), {"macos/arm64": "missing"})
 
 
 class _Registry(http.server.BaseHTTPRequestHandler):
@@ -1167,14 +1233,32 @@ class Scenario(unittest.TestCase):
         proc = subprocess.run([sys.executable, SCRIPT, *args], capture_output=True, text=True)
         return proc.returncode, proc.stdout + proc.stderr
 
-    def test_production_legs_fail_closed_until_wired(self):
+    def test_a_leg_without_a_scenario_fails_closed(self):
+        # No production leg is unwired today; a leg added with scenario null
+        # must still fail rather than pass by having nothing to run.
+        policy = copy.deepcopy(POLICY)
+        for leg in policy["repositories"][AGENT]["legs"]:
+            leg["scenario"] = None
+        with tempfile.TemporaryDirectory() as d:
+            body = os.path.join(d, "body.json")
+            with open(body, "w") as fh:
+                json.dump(dispatch_body(), fh)
+            pol = os.path.join(d, "policy.json")
+            with open(pol, "w") as fh:
+                json.dump(policy, fh)
+            code, out = self.run_cli("--policy", pol, "scenario", "--dispatch", body, "--leg", "docker/amd64/scratch", "--dir", d)
+        self.assertEqual(code, 1, out)
+        self.assertIn("no release scenario is wired", out)
+
+    def test_an_e2e_leg_never_passes_through_the_generic_scenario(self):
+        # e2e.yml runs it; a workflow that asks `scenario` instead proved nothing.
         with tempfile.TemporaryDirectory() as d:
             body = os.path.join(d, "body.json")
             with open(body, "w") as fh:
                 json.dump(dispatch_body(), fh)
             code, out = self.run_cli("scenario", "--dispatch", body, "--leg", "docker/amd64/scratch", "--dir", d)
         self.assertEqual(code, 1, out)
-        self.assertIn("no release scenario is wired", out)
+        self.assertIn("e2e.yml in release mode", out)
 
     def test_integrity_scenario_under_the_proof_policy(self):
         files = {"a.bin": b"a"}
@@ -1444,13 +1528,25 @@ class ShippedPolicy(unittest.TestCase):
         self.assertEqual(len(rc.required_legs(POLICY, LIBPROBE)), 12)
         self.assertEqual(rc.advisory_legs(POLICY, LIBPROBE), ["bsd/freebsd-arm64", "bsd/openbsd-arm64", "bsd/netbsd-arm64"])
         # Nothing may be promoted before a leg's release scenario exists: every
-        # agent leg is scheduled, and fails closed, until it is wired. Every
-        # libprobe leg runs the ABI consumer on its own platform's archive.
+        # agent leg is an e2e.yml job in release mode. Every libprobe leg runs
+        # the ABI consumer on its own platform's archive.
         for leg in POLICY["repositories"][AGENT]["legs"]:
-            self.assertIsNone(leg["scenario"], leg["id"])
+            self.assertEqual(leg["scenario"], "e2e", leg["id"])
         for leg in POLICY["repositories"][LIBPROBE]["legs"]:
             self.assertEqual(leg["scenario"], "abi", leg["id"])
             self.assertIn(leg["harness"]["host"], rc.HARNESS_HOSTS)
+
+    def test_e2e_proof_policy_is_the_production_agent_policy_on_the_probe_package(self):
+        # The only difference a hand-run proof of e2e.yml's release mode may have
+        # from production is WHERE the candidate lives -- never which legs run.
+        proof = rc.load_policy(E2E_PROOF_POLICY)
+        self.assertEqual(list(proof["repositories"]), [AGENT])
+        mine, prod = proof["repositories"][AGENT], POLICY["repositories"][AGENT]
+        self.assertEqual(mine["bridge_package"], "supervizio/release-contract-bridge-probe")
+        self.assertEqual({k: v for k, v in mine.items() if k != "bridge_package"},
+                         {k: v for k, v in prod.items() if k != "bridge_package"})
+        for key in ("schema", "validation", "receipt_asset"):
+            self.assertEqual(proof[key], POLICY[key], key)
 
     def test_policy_refusals(self):
         bad = copy.deepcopy(POLICY)

@@ -11,9 +11,10 @@ GitHub-specific configurations: workflows, templates, and instructions.
 .github/
 ├── workflows/          # GitHub Actions — see workflows/CLAUDE.md for what each one is for
 ├── actions/
-│   └── qemu-vm/        # Throwaway QEMU+KVM guest on a hosted runner
-│       ├── action.yml        # image verified by pinned sha256/sha512 OR by a signed checksum
-│       └── resolve-image.sh  # finds the build an upstream publishes now (openSUSE, Rocky)
+│   ├── qemu-vm/        # Throwaway QEMU+KVM guest on a hosted runner
+│   │   ├── action.yml        # image verified by pinned sha256/sha512 OR by a signed checksum
+│   │   └── resolve-image.sh  # finds the build an upstream publishes now (openSUSE, Rocky)
+│   └── release-candidate/  # e2e.yml release mode: pull a candidate's files by digest, place them
 ├── keys/               # PUBLIC OpenPGP keys qemu-vm verifies upstream images with (keys/CLAUDE.md)
 ├── instructions/       # AI instructions (gitignored)
 ├── dependabot.yml      # Dependency updates
