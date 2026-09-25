@@ -1,0 +1,196 @@
+name: validate-release
+
+# =============================================================================
+# The public half of a release of supervizio/agent or supervizio/libprobe
+# (release-contract/README.md, section 4). The private release job pushes the
+# candidate's bytes to its repository's PRIVATE GHCR package, then dispatches
+# `validate-release` with the manifest and the artifact's digest. This workflow:
+#
+#   admit    checks the dispatch against release-contract/policy.json and the
+#            artifact the digest names against the manifest -- a layer's digest
+#            IS its file's sha256, so no byte is downloaded to do it -- and
+#            schedules one leg per required leg (plus the advisory ones).
+#   leg/<id> pulls the candidate BY DIGEST, re-hashes every file on arrival and
+#            again against the manifest file, and only then runs its scenario.
+#   verdict  reads this run's leg jobs and says what they imply. It is not the
+#            receipt: the private side builds that itself from the completed
+#            run (`release_contract.py evidence`), and believes nothing else.
+#
+# NOTHING BINARY IS STORED IN THIS REPOSITORY. The candidate lives in the private
+# package; the legs read it with their own GITHUB_TOKEN, `packages: read`, which
+# works only because the package owner granted this repository Read on that one
+# package (README section 4 lists them). No job here references a secret: the
+# only credentials are the per-job tokens GitHub mints with the permissions
+# below. The doorbell that wakes the private side is a separate workflow,
+# validate-release-doorbell.yml, so that this one never holds one.
+#
+# Triggers: repository_dispatch (the private release job) and workflow_dispatch
+# (a maintainer, e.g. the proof under tests/proof-policy.json). Never
+# pull_request or pull_request_target: a fork's code must not run with a token
+# that can read the candidate packages. A receipt can only ever be built from a
+# repository_dispatch run on main (`evidence` refuses anything else), so a
+# workflow_dispatch run proves the machinery and validates no release.
+# =============================================================================
+
+run-name: >-
+  ${{ format('validate-release {0} {1} g{2} {3} {4}',
+  github.event.client_payload.candidate.repository || fromJSON(inputs.dispatch || '{}').client_payload.candidate.repository,
+  github.event.client_payload.candidate.tag || fromJSON(inputs.dispatch || '{}').client_payload.candidate.tag,
+  github.event.client_payload.candidate.candidate_generation || fromJSON(inputs.dispatch || '{}').client_payload.candidate.candidate_generation,
+  github.event.client_payload.candidate.resolved_commit || fromJSON(inputs.dispatch || '{}').client_payload.candidate.resolved_commit,
+  github.event.client_payload.candidate.asset_manifest_digest || fromJSON(inputs.dispatch || '{}').client_payload.candidate.asset_manifest_digest) }}
+
+on:
+  repository_dispatch:
+    types: [validate-release]
+  workflow_dispatch:
+    inputs:
+      dispatch:
+        description: "The full dispatch body: {event_type, client_payload}"
+        required: true
+        type: string
+      policy:
+        description: "Policy to judge it under"
+        required: true
+        type: choice
+        default: policy.json
+        options:
+          - policy.json
+          - tests/proof-policy.json
+
+permissions: {}
+
+# One run per candidate; a second dispatch of the same one waits instead of
+# racing the first for the same verdict.
+concurrency:
+  group: validate-release-${{ github.event.client_payload.bridge.digest || github.run_id }}
+  cancel-in-progress: false
+
+jobs:
+  admit:
+    name: admit
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    permissions:
+      contents: read
+      actions: read   # read this run's own title
+      packages: read  # read the candidate's OCI manifest -- never its blobs
+    outputs:
+      legs: ${{ steps.admit.outputs.legs }}
+    steps:
+      - &checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      # The same step in every job: the dispatch body, from the event, to a file.
+      # Through env, never interpolated into the script -- the payload is text a
+      # dispatcher chose.
+      - &body
+        name: Write the dispatch body
+        shell: bash
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          EVENT_ACTION: ${{ github.event.action }}
+          EVENT_PAYLOAD: ${{ toJSON(github.event.client_payload) }}
+          INPUT_BODY: ${{ inputs.dispatch }}
+          INPUT_POLICY: ${{ inputs.policy }}
+        run: |
+          set -euo pipefail
+          PY="$(command -v python3 || command -v python)"
+          case "$EVENT_NAME" in
+            repository_dispatch) policy=policy.json ;;
+            workflow_dispatch)
+              case "$INPUT_POLICY" in
+                policy.json|tests/proof-policy.json) policy="$INPUT_POLICY" ;;
+                *) echo "::error::unknown policy '$INPUT_POLICY'"; exit 1 ;;
+              esac ;;
+            *) echo "::error::validate-release does not run on $EVENT_NAME"; exit 1 ;;
+          esac
+          "$PY" - <<'PYEOF'
+          import json, os
+          if os.environ["EVENT_NAME"] == "repository_dispatch":
+              body = {"event_type": os.environ["EVENT_ACTION"], "client_payload": json.loads(os.environ["EVENT_PAYLOAD"])}
+          else:
+              body = json.loads(os.environ["INPUT_BODY"])
+          with open("dispatch.json", "w") as fh:
+              json.dump(body, fh)
+          PYEOF
+          {
+            echo "PY=$PY"
+            echo "RC=$PY release-contract/release_contract.py --policy release-contract/$policy"
+          } >> "$GITHUB_ENV"
+
+      - name: Admit the dispatch and the candidate it points at
+        id: admit
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RUN_ID: ${{ github.run_id }}
+        run: |
+          set -euo pipefail
+          $RC dispatch check dispatch.json
+          $RC bridge admit --dispatch dispatch.json --run-id "$RUN_ID" --legs-output legs.json
+          echo "legs=$(cat legs.json)" >> "$GITHUB_OUTPUT"
+
+  leg:
+    name: leg/${{ matrix.leg.id }}
+    needs: [admit]
+    runs-on: ${{ matrix.leg.runner }}
+    timeout-minutes: 60
+    # packages: read is the one thing a leg holds, and only the pull step reads
+    # it. The scenario step executes candidate bytes with no token in its env.
+    permissions:
+      contents: read
+      packages: read
+    strategy:
+      fail-fast: false
+      matrix:
+        leg: ${{ fromJSON(needs.admit.outputs.legs) }}
+    steps:
+      - *checkout
+      - *body
+
+      - name: Pull the candidate by digest
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          $RC bridge pull --dispatch dispatch.json --dir candidate
+
+      # Second, independent check: the files against the manifest FILE, pinned by
+      # asset_manifest_digest -- the exact command anyone can re-run on a release.
+      - name: Re-hash every file against the manifest
+        shell: bash
+        run: |
+          set -euo pipefail
+          read -r manifest_file digest < <("$PY" -c 'import json; c = json.load(open("dispatch.json"))["client_payload"]["candidate"]; print(c["manifest_file"], c["asset_manifest_digest"])')
+          $RC manifest verify-files --manifest "candidate/$manifest_file" --expect-digest "$digest" --dir candidate
+
+      - name: Scenario
+        shell: bash
+        env:
+          LEG: ${{ matrix.leg.id }}
+        run: |
+          set -euo pipefail
+          $RC scenario --dispatch dispatch.json --leg "$LEG" --dir candidate
+
+  verdict:
+    name: verdict
+    needs: [admit, leg]
+    if: always()
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    permissions:
+      contents: read
+      actions: read   # this run's jobs
+    steps:
+      - *checkout
+      - *body
+      - name: What the legs imply
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RUN_ID: ${{ github.run_id }}
+        run: |
+          set -euo pipefail
+          $RC judge --dispatch dispatch.json --run-id "$RUN_ID" --summary "$GITHUB_STEP_SUMMARY"
