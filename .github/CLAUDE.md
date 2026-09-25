@@ -9,22 +9,23 @@ GitHub-specific configurations: workflows, templates, and instructions.
 
 ```
 .github/
-├── workflows/          # GitHub Actions
-│   ├── docker-images.yml
-│   ├── release.yml
-│   └── CLAUDE.md
+├── workflows/          # GitHub Actions — see workflows/CLAUDE.md for what each one is for
+├── actions/
+│   └── qemu-vm/        # Throwaway QEMU+KVM guest on a hosted runner
+│       ├── action.yml        # image verified by pinned sha256/sha512 OR by a signed checksum
+│       └── resolve-image.sh  # finds the build an upstream publishes now (openSUSE, Rocky)
+├── keys/               # PUBLIC OpenPGP keys qemu-vm verifies upstream images with (keys/CLAUDE.md)
 ├── instructions/       # AI instructions (gitignored)
-│   └── codacy.instructions.md
 ├── dependabot.yml      # Dependency updates
 └── CLAUDE.md           # This file
 ```
 
 ## Workflows
 
-| Workflow | Trigger | Description |
-|----------|---------|-------------|
-| docker-images.yml | push/PR | Build devcontainer images |
-| release.yml | push to main | Create release with claude-assets.tar.gz |
+This repository is supervizio's public E2E runner; the devcontainer-template
+workflows it was forked from (`docker-images.yml`, `release.yml`) are
+inheritance, not the work. `workflows/CLAUDE.md` lists every workflow, where
+it runs (GitHub-hosted only) and why.
 
 ## Dependency Management
 
