@@ -371,8 +371,9 @@ archive — never a rebuild:
 
 What the scenario checks, in order. **prepare** (host, Python): the platform
 tarball `libprobe-<platform>-<tag>.tar.gz` and `probe.h` are manifest entries;
-the tarball holds exactly `libprobe.a`, `probe.h`, `metadata.json`, regular files,
-each once; its `probe.h` is byte-identical to the published one; `metadata.json`
+the tarball holds exactly `libprobe.a`, `probe.h`, `metadata.json`, plain regular
+files, each once, read as a stream and cut off at 256 MiB, 4 MiB and 64 KiB
+respectively (a manifest-valid tarball is still candidate input); its `probe.h` is byte-identical to the published one; `metadata.json`
 says `libprobe`, this tag, this platform, and the `abi_sha256` of this
 `libprobe.a`. **harness** (`run.sh`, POSIX sh, a C compiler and nothing else):
 `consumer.c` includes only `probe.h`, links only `libprobe.a` (plus the system

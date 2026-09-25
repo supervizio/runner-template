@@ -1271,6 +1271,45 @@ class AbiScenario(unittest.TestCase):
                 with self.assertRaisesRegex(rc.ContractError, why):
                     self.prepare()
 
+    def test_prepare_bounds_what_a_tarball_may_unpack_to(self):
+        # A manifest-valid tarball is still candidate input. Each case below is
+        # accepted by an unbounded reader: padded JSON parses, a big archive
+        # hashes. The limits are what refuse them, before memory is spent.
+        padded = self.meta()[:-1] + b" " * (70 << 10) + b"}"
+        self.write_candidate([("libprobe.a", self.archive), ("probe.h", self.header), ("metadata.json", padded)])
+        with self.assertRaisesRegex(rc.ContractError, "metadata.json declares .* more than"):
+            self.prepare()
+        self.write_candidate()
+        saved = dict(rc.ABI_MEMBER_LIMITS)
+        self.addCleanup(rc.ABI_MEMBER_LIMITS.update, saved)
+        rc.ABI_MEMBER_LIMITS["libprobe.a"] = len(self.archive) - 1
+        with self.assertRaisesRegex(rc.ContractError, "libprobe.a declares .* more than"):
+            self.prepare()
+
+    def test_prepare_stops_at_a_fourth_entry(self):
+        members = [("libprobe.a", self.archive), ("probe.h", self.header), ("metadata.json", self.meta())]
+        self.write_candidate(members + [("metadata.json", self.meta())] * 100)
+        with self.assertRaisesRegex(rc.ContractError, "more than 3 entries"):
+            self.prepare()
+
+    def test_prepare_refuses_anything_but_a_plain_file(self):
+        import io
+        import tarfile
+
+        buf = io.BytesIO()
+        with tarfile.open(fileobj=buf, mode="w:gz") as tar:
+            link = tarfile.TarInfo("libprobe.a")
+            link.type = tarfile.SYMTYPE
+            link.linkname = "/etc/passwd"
+            tar.addfile(link)
+        path = os.path.join(self.cand, f"libprobe-{self.PLATFORM}-v1.4.2.tar.gz")
+        with open(path, "wb") as fh:
+            fh.write(buf.getvalue())
+        self.body = bridge_body({os.path.basename(path): buf.getvalue(), "probe.h": self.header}, repository=LIBPROBE)
+        self.payload = self.body["client_payload"]
+        with self.assertRaisesRegex(rc.ContractError, "unexpected member 'libprobe.a'"):
+            self.prepare()
+
     def test_prepare_refuses_a_platform_the_candidate_does_not_publish(self):
         self.leg = dict(self.leg, harness={"platform": "linux-arm64", "host": "native"})
         with self.assertRaisesRegex(rc.ContractError, "publishes no libprobe-linux-arm64-v1.4.2.tar.gz"):

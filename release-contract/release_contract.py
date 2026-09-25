@@ -138,8 +138,14 @@ ABI_REQUIRED_CHECKS = (
     "probe_collect_smoke_json",
     "probe_shutdown",
 )
-# What a libprobe platform tarball holds, exactly (bundle-release.sh).
-ABI_TARBALL_MEMBERS = ("libprobe.a", "probe.h", "metadata.json")
+# What a libprobe platform tarball holds, exactly (bundle-release.sh), and the most
+# bytes each may unpack to. The tarball is candidate input: a manifest-valid one
+# can still be a decompression bomb, so nothing is read past these, and nothing
+# is held in memory -- members stream to disk, hashed on the way. Measured on
+# v0.7.0: the largest libprobe.a is 34 MB (linux-riscv64), probe.h 0.2 MB,
+# metadata.json 0.3 KB; the limits leave room for growth and none for abuse.
+ABI_MEMBER_LIMITS = {"libprobe.a": 256 << 20, "probe.h": 4 << 20, "metadata.json": 64 << 10}
+ABI_TARBALL_MEMBERS = tuple(ABI_MEMBER_LIMITS)
 
 # The candidate as an OCI artifact (README section 4). One layer per file, its blob
 # the file's raw bytes, so a layer digest IS the file's sha256 and the artifact can
@@ -1487,39 +1493,21 @@ def abi_prepare(payload: Dict[str, Any], leg: Dict[str, Any], directory: str, wo
     if os.path.exists(work):
         shutil.rmtree(work)
     os.makedirs(work)
-    found: Dict[str, bytes] = {}
-    try:
-        with tarfile.open(os.path.join(directory, tarball), "r:gz") as tar:
-            for member in tar.getmembers():
-                # Names are compared, never used as paths: nothing in the tarball
-                # decides where a byte lands.
-                if member.name not in ABI_TARBALL_MEMBERS or not member.isfile():
-                    raise ContractError(f"{tarball}: unexpected member {member.name!r} (type {member.type!r})")
-                if member.name in found:
-                    raise ContractError(f"{tarball}: {member.name} is in it twice")
-                fh = tar.extractfile(member)
-                found[member.name] = fh.read() if fh else b""
-    except (tarfile.TarError, OSError, EOFError) as exc:
-        raise ContractError(f"{tarball} is not a readable tar.gz: {exc}") from exc
-    lacking = [name for name in ABI_TARBALL_MEMBERS if name not in found]
-    if lacking:
-        raise ContractError(f"{tarball} lacks {', '.join(lacking)}")
-    if hashlib.sha256(found["probe.h"]).hexdigest() != manifest["probe.h"]:
+    found = _abi_unpack(os.path.join(directory, tarball), tarball, work)
+    if found["probe.h"] != manifest["probe.h"]:
         raise ContractError(f"{tarball}: its probe.h differs from the published probe.h")
     try:
-        meta = json.loads(found["metadata.json"].decode("utf-8"))
+        with open(os.path.join(work, "metadata.json"), "rb") as fh:
+            meta = json.loads(fh.read().decode("utf-8"))
     except ValueError as exc:
         raise ContractError(f"{tarball}: metadata.json is not JSON: {exc}") from exc
-    archive_sha = hashlib.sha256(found["libprobe.a"]).hexdigest()
+    archive_sha = found["libprobe.a"]
     problems = []
     for key, want in (("name", "libprobe"), ("version", tag), ("platform", platform), ("abi_sha256", archive_sha)):
         if not isinstance(meta, dict) or meta.get(key) != want:
             problems.append(f"metadata.json {key} is {meta.get(key) if isinstance(meta, dict) else None!r}, expected {want!r}")
     if problems:
         raise ContractError(f"{tarball}: " + "; ".join(problems))
-    for name, data in found.items():
-        with open(os.path.join(work, name), "wb") as out:
-            out.write(data)
     harness = os.path.join(HARNESS_DIR, "libprobe")
     for name in ("consumer.c", "run.sh"):
         shutil.copyfile(os.path.join(harness, name), os.path.join(work, name))
@@ -1527,6 +1515,49 @@ def abi_prepare(payload: Dict[str, Any], leg: Dict[str, Any], directory: str, wo
     with open(os.path.join(work, "plan.env"), "w", newline="\n") as out:
         out.write("".join(f"{k}={v}\n" for k, v in plan.items()))
     return {"tarball": tarball, "libprobe.a": archive_sha, **plan}
+
+
+def _abi_unpack(path: str, tarball: str, work: str) -> Dict[str, str]:
+    """Stream the three members of a platform tarball into `work`, each hashed on
+    the way and cut off at its limit. Returns {name: sha256}.
+
+    Bounded in every dimension a hostile tarball controls: members are read one
+    header at a time (never `getmembers()`, which parses the whole index first),
+    a fourth entry is refused before it is read, a member is refused on its
+    declared size and again on the bytes actually read, and only plain regular
+    files are accepted (no sparse, link or device entries)."""
+    digests: Dict[str, str] = {}
+    try:
+        with tarfile.open(path, "r|gz") as tar:  # stream mode: no member index is kept
+            for count, member in enumerate(tar, start=1):
+                # Names are compared, never used as paths: nothing in the tarball
+                # decides where a byte lands.
+                if member.name not in ABI_MEMBER_LIMITS or member.type not in (tarfile.REGTYPE, tarfile.AREGTYPE):
+                    raise ContractError(f"{tarball}: unexpected member {member.name!r} (type {member.type!r})")
+                if count > len(ABI_TARBALL_MEMBERS):
+                    raise ContractError(f"{tarball}: more than {len(ABI_TARBALL_MEMBERS)} entries")
+                if member.name in digests:
+                    raise ContractError(f"{tarball}: {member.name} is in it twice")
+                limit = ABI_MEMBER_LIMITS[member.name]
+                if member.size > limit:
+                    raise ContractError(f"{tarball}: {member.name} declares {member.size} bytes, more than the {limit} allowed")
+                src = tar.extractfile(member)
+                hasher = hashlib.sha256()
+                written = 0
+                with open(os.path.join(work, member.name), "wb") as out:
+                    for block in iter(lambda: src.read(1 << 20), b"") if src else ():
+                        written += len(block)
+                        if written > limit:
+                            raise ContractError(f"{tarball}: {member.name} unpacks past the {limit} bytes allowed")
+                        hasher.update(block)
+                        out.write(block)
+                digests[member.name] = hasher.hexdigest()
+    except (tarfile.TarError, OSError, EOFError) as exc:
+        raise ContractError(f"{tarball} is not a readable tar.gz: {exc}") from exc
+    lacking = [name for name in ABI_TARBALL_MEMBERS if name not in digests]
+    if lacking:
+        raise ContractError(f"{tarball} lacks {', '.join(lacking)}")
+    return digests
 
 
 def abi_check_report(payload: Dict[str, Any], work: str) -> Dict[str, Any]:
