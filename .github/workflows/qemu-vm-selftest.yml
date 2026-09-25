@@ -16,13 +16,15 @@ on:
   # to exist on the DEFAULT branch, so a self-test that only lives on a feature
   # branch can never be triggered — and this one never had a single run.
   #
-  # Scoped to its own two files, so it fires when the action or the test changes
-  # and stays silent otherwise. Cheap on a public repo, and it can live here
-  # permanently instead of being added and reverted around each attempt.
+  # Scoped to its own files, so it fires when the action, its resolver, the keys
+  # it verifies with, or the test changes, and stays silent otherwise. Cheap on
+  # a public repo, and it can live here permanently instead of being added and
+  # reverted around each attempt.
   push:
     paths:
       - '.github/workflows/qemu-vm-selftest.yml'
-      - '.github/actions/qemu-vm/action.yml'
+      - '.github/actions/qemu-vm/**'
+      - '.github/keys/**'
 
 permissions:
   contents: read
@@ -54,7 +56,7 @@ jobs:
         # 2 jobs, both opensuse, instead of 8. The includes below now attach
         # per-guest fields to an existing host x guest combination rather than
         # trying to create one.
-        guest: [alpine-openrc, debian-systemd, fedora-systemd, opensuse-systemd]
+        guest: [alpine-openrc, debian-systemd, fedora-systemd, opensuse-systemd, rocky-systemd]
         include:
           # The four legs whose init ships in a STOCK upstream cloud image, so
           # no guest-side package install is needed. alpine-s6, alpine-runit and
@@ -87,18 +89,61 @@ jobs:
             url: https://dl.fedoraproject.org/pub/fedora/linux/releases/43/Cloud/x86_64/images/Fedora-Cloud-Base-Generic-43-1.6.x86_64.qcow2
             sha512: ""
             sha256: 846574c8a97cd2d8dc1f231062d73107cc85cbbbda56335e264a46e3a6c8ab2f
+          # openSUSE and Rocky cannot be pinned by hash: openSUSE rebuilds in
+          # place and keeps only the newest build (the pin that stood here went
+          # stale on 2026-09-24), Rocky moves each build out of pub/ at the next
+          # point release. Both are resolved at run time by resolve-image.sh and
+          # verified against the checksum file their distribution signs, with
+          # the key committed in .github/keys/ and its fingerprint pinned here.
           - guest: opensuse-systemd
             name: opensuse-systemd
             init: systemd
             probe: "systemctl is-system-running || true"
-            url: https://download.opensuse.org/distribution/leap/16.0/appliances/Leap-16.0-Minimal-VM.x86_64-Cloud.qcow2
-            sha512: ""
-            sha256: c5cd6904632c86d5368dea3896da8c17571c238ef96a0e2c8b0ca1835d796e07
+            resolve: mirrorcache https://download.opensuse.org/distribution/leap/16.0/appliances Leap-16.0-Minimal-VM.x86_64-Cloud.qcow2
+            checksum_suffix: .sha256
+            signature_suffix: .sha256.asc
+            key: .github/keys/opensuse-project-signing-key.asc
+            fingerprint: AD485664E901B867051AB15F35A2F86E29B700A4
+          - guest: rocky-systemd
+            name: rocky-systemd
+            init: systemd
+            probe: "systemctl is-system-running || true"
+            resolve: listing https://dl.rockylinux.org/pub/rocky/10/images/x86_64 Rocky-10-GenericCloud-Base-10\.[0-9]+-[0-9]{8}\.[0-9]+\.x86_64\.qcow2
+            checksum_suffix: .CHECKSUM
+            signature_suffix: .CHECKSUM.asc
+            key: .github/keys/rocky-linux-10-release-key.asc
+            fingerprint: FC226859C0860BF0DDB95B085B106C736FEDFC85
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
       - name: Prepare a file to push into the guest
         run: echo "pushed-by-selftest" > payload.txt
+
+      # A pinned guest passes its url straight through; a signed one resolves
+      # the build its upstream publishes now, and the action then takes the
+      # sha256 from the signed checksum file next to it.
+      - name: Resolve the image
+        id: image
+        env:
+          RESOLVE: ${{ matrix.resolve }}
+          PINNED_URL: ${{ matrix.url }}
+          CHECKSUM_SUFFIX: ${{ matrix.checksum_suffix }}
+          SIGNATURE_SUFFIX: ${{ matrix.signature_suffix }}
+        run: |
+          set -euo pipefail
+          if [ -z "$RESOLVE" ]; then
+            echo "url=$PINNED_URL" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          read -r mode dir arg <<< "$RESOLVE"
+          name=$(.github/actions/qemu-vm/resolve-image.sh "$mode" "$dir" "$arg")
+          url="${dir%/}/$name"
+          echo "resolved: $name"
+          {
+            echo "url=$url"
+            echo "checksum=$url$CHECKSUM_SUFFIX"
+            echo "signature=$url$SIGNATURE_SUFFIX"
+          } >> "$GITHUB_OUTPUT"
 
       - name: Boot ${{ matrix.name }} and assert its init
         uses: ./.github/actions/qemu-vm
@@ -115,14 +160,19 @@ jobs:
           # leg failed "PID 1 is 'systemd', expected ''" -- run 35400445441,
           # eight legs, one cause.
           envs: EXPECTED_INIT LEG_NAME MANAGER_PROBE
-          image-url: ${{ matrix.url }}
-          # Every image is checksum-pinned, each from its own upstream published
-          # file -- Debian and Alpine publish sha512 only, Fedora and openSUSE
-          # sha256. The URLs redirect to arbitrary mirrors (Debian landed on a
-          # Swedish one when checked), and the guest gets a root shell, so an
+          image-url: ${{ steps.image.outputs.url }}
+          # Every image is verified. Alpine, Debian and Fedora are pinned by the
+          # checksum their upstream publishes (sha512 for Debian and Alpine,
+          # sha256 for Fedora); openSUSE and Rocky by the signature on theirs.
+          # The URLs redirect to arbitrary mirrors (Debian landed on a Swedish
+          # one when checked), and the guest gets a root shell, so an
           # unverified blob is not acceptable here.
           image-sha256: ${{ matrix.sha256 }}
           image-sha512: ${{ matrix.sha512 }}
+          image-checksum-url: ${{ steps.image.outputs.checksum }}
+          image-signature-url: ${{ steps.image.outputs.signature }}
+          image-signing-key: ${{ matrix.key }}
+          image-signing-fingerprint: ${{ matrix.fingerprint }}
           memory: "2048"
           # Exercises the `files` path, which nothing else here would.
           files: |
