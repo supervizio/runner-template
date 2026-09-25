@@ -12,6 +12,15 @@ name: External E2E (dispatched)
 # regenerated (no hand-authored assessment). They contain only ephemeral
 # CI-runner / QEMU-VM system metrics — no secrets.
 #
+# THE VERDICT (commit status e2e-public/<run>-<attempt> on the source SHA) is
+# success iff all 9 GATING legs passed:
+#   * the 6 native legs -- linux, windows, macos x amd64, arm64;
+#   * the 3 BSD amd64 legs -- freebsd, openbsd, netbsd (QEMU with KVM, 4-7 min).
+# ADVISORY, shown in the report table and never in the verdict:
+#   * the 3 BSD arm64 legs (QEMU without KVM, 1-2 h each: gating on them would
+#     hold every libprobe merge for hours);
+#   * the 3 container legs.
+#
 # SECURITY MODEL (public executor of private code — critical surface):
 #   * repository_dispatch-only trigger; no pull_request / pull_request_target.
 #   * LIBPROBE_REPO_TOKEN = fine-grained PAT, Contents:read + Commit statuses:write
@@ -66,7 +75,13 @@ env:
   # the #[ignore]-gated E2E ones. Doctests are excluded (--doc) on purpose: they
   # are compile-checked examples, not functional tests, and one stale example in
   # the darwin backend would otherwise red the gate on macOS.
-  TEST_CMD: "cargo test --release -p probe-platform --lib --tests -- --include-ignored"
+  #
+  # --no-fail-fast: cargo otherwise stops at the first failing test BINARY. On
+  # NetBSD one failing lib test meant tests/capability.rs, inventory.rs and
+  # behavioral.rs never ran at all, so a red leg said nothing about them. The
+  # verdict is the same -- any failure is a failure -- but one run now lists
+  # every failing binary instead of one per round trip.
+  TEST_CMD: "cargo test --release -p probe-platform --lib --tests --no-fail-fast -- --include-ignored"
   REPORT_CMD: "cargo run --release -p probe-platform --bin metrics_report"
 
 jobs:
@@ -155,132 +170,242 @@ jobs:
           path: report-${{ matrix.platform }}.json
           if-no-files-found: warn
 
-  # --- BSD legs via QEMU (vmactions). Matched arch to host: amd64 on ubuntu-24.04,
-  # arm64 on ubuntu-24.04-arm. Advisory (continue-on-error) — they report and emit
-  # artifacts but do not gate. Each OS is its own job because `uses:` cannot be a
-  # matrix expression (the action name differs per OS); the arch is the matrix.
-  freebsd:
-    name: e2e freebsd-${{ matrix.arch }}
+  # --- BSD legs via QEMU (vmactions): one job per (os, arch) -------------------
+  #
+  # amd64 GATES, arm64 does not. The amd64 guests get /dev/kvm on ubuntu-24.04
+  # and a whole leg takes 4-7 min. The arm64 runner exposes no KVM, so QEMU
+  # emulates every instruction and a leg takes 64-122 min: gating on it would
+  # hold every libprobe merge for hours. arm64 stays advisory -- red when it
+  # fails, shown in the report table, outside the verdict.
+  #
+  # One job per (os, arch), not a matrix over the arch, because `needs:`
+  # attaches to a JOB and never to one leg of its matrix: with the arch as a
+  # matrix, `report` could only gate on amd64 by also waiting for the arm64 leg
+  # of the same job. Separate jobs let `report` need the amd64 legs and nothing
+  # slower.
+  #
+  # The steps are written once, under the &bsd-leg anchor, and every BSD job
+  # aliases them; a job only sets LEG_OS / LEG_ARCH / VM_ARCH / BOOT_TIMEOUT_MIN.
+  # `uses:` takes no expression, so the three vmactions boots are listed and the
+  # two for the other OSes are skipped. `custom-shell-name: bsdvm` gives the
+  # three guests one shell name, so the test and report steps exist once.
+  #
+  # BOOTSTRAP vs VERDICT. Everything before `Bootstrap complete` -- checkout, VM
+  # boot, the rust package, `cargo fetch` -- is infrastructure: no libprobe code
+  # has been compiled yet, so a failure there says nothing about the code.
+  # Everything after it -- compile, tests, metrics report -- is the verdict.
+  # `cargo fetch` sits on the bootstrap side on purpose: a crates.io download
+  # that fails is a network fault, not something libprobe has to answer for.
+  #
+  # RETRY: amd64 only, bootstrap only. A gating leg whose attempt 1 never got
+  # past bootstrap (no `bootstrapped` output) runs once more as <os>-amd64-retry,
+  # on a fresh runner with a fresh VM. A leg that reached its tests is never
+  # retried: a failing assertion is an answer, and asking twice would turn a
+  # real regression into a coin toss. `report` takes the retry's result exactly
+  # when attempt 1 did not bootstrap. arm64 is not retried: it gates nothing,
+  # and a second attempt can cost two more hours.
+  #
+  # The cargo target dir lives outside the synced workspace ($HOME/e2e-target in
+  # the guest): the custom shell rsyncs the workspace back to the host after
+  # every step, and the host needs the report JSON from it, not a release
+  # target/ pulled back twice -- over an emulated NIC on arm64.
+  freebsd-amd64:
+    name: e2e freebsd-amd64
     needs: [ack]
-    runs-on: ${{ matrix.runner }}
-    continue-on-error: true
-    strategy:
-      fail-fast: false
-      matrix:
-        include:
-          - { arch: amd64, runner: ubuntu-24.04,     vmarch: x86_64 }
-          - { arch: arm64, runner: ubuntu-24.04-arm, vmarch: aarch64 }
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+    runs-on: ubuntu-24.04
+    timeout-minutes: 40
+    env: &freebsd-amd64
+      LEG_OS: freebsd
+      LEG_ARCH: amd64
+      VM_ARCH: x86_64
+      BOOT_TIMEOUT_MIN: "15"
+    outputs:
+      bootstrapped: ${{ steps.bootstrapped.outputs.bootstrapped }}
+    steps: &bsd-leg
+      - name: Checkout private source (ephemeral, no persisted creds)
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           repository: ${{ env.SOURCE_REPO }}
           ref: ${{ env.SOURCE_SHA }}
           token: ${{ secrets.LIBPROBE_REPO_TOKEN }}
           persist-credentials: false
-      - uses: vmactions/freebsd-vm@4469451fe39bee80be4066836c5170362e9349f3 # v1.5.7
+
+      # Releases pinned, like e2e.yml. Unpinned, the action follows its own
+      # default, which moves without notice -- netbsd already drifted to 11.0
+      # while the bench and expected-matrix.json still said 10.1. A guest that
+      # changes under you turns a red leg into a mystery.
+      - name: Boot FreeBSD 15.0 ${{ env.LEG_ARCH }}, install rust, fetch crates
+        id: boot-freebsd
+        if: ${{ env.LEG_OS == 'freebsd' }}
+        timeout-minutes: ${{ fromJSON(env.BOOT_TIMEOUT_MIN) }}
+        uses: vmactions/freebsd-vm@4469451fe39bee80be4066836c5170362e9349f3 # v1.5.7
         with:
-          usesh: true
-          # Pinned, like e2e.yml. Unpinned, the action follows its own
-          # default, which moves without notice -- netbsd already drifted
-          # to 11.0 while the bench and expected-matrix.json still say 10.1.
-          # A guest that changes under you turns a red leg into a mystery.
           release: '15.0'
-          arch: ${{ matrix.vmarch }}
-          copyback: true
+          arch: ${{ env.VM_ARCH }}
+          custom-shell-name: bsdvm
           prepare: pkg install -y rust
-          run: |
-            ${{ env.TEST_CMD }} || true
-            ${{ env.REPORT_CMD }} > report-freebsd-${{ matrix.arch }}.json
-      - name: Upload metrics report
-        if: ${{ always() }}
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+          run: cargo fetch
+      - name: Boot OpenBSD 7.9 ${{ env.LEG_ARCH }}, install rust, fetch crates
+        id: boot-openbsd
+        if: ${{ env.LEG_OS == 'openbsd' }}
+        timeout-minutes: ${{ fromJSON(env.BOOT_TIMEOUT_MIN) }}
+        uses: vmactions/openbsd-vm@86cdc08415d9d0865267e686561e276c52d62530 # v1.4.7
         with:
-          name: report-freebsd-${{ matrix.arch }}
-          path: report-freebsd-${{ matrix.arch }}.json
-          if-no-files-found: warn
-
-  openbsd:
-    name: e2e openbsd-${{ matrix.arch }}
-    needs: [ack]
-    runs-on: ${{ matrix.runner }}
-    continue-on-error: true
-    strategy:
-      fail-fast: false
-      matrix:
-        include:
-          - { arch: amd64, runner: ubuntu-24.04,     vmarch: x86_64 }
-          - { arch: arm64, runner: ubuntu-24.04-arm, vmarch: aarch64 }
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with:
-          repository: ${{ env.SOURCE_REPO }}
-          ref: ${{ env.SOURCE_SHA }}
-          token: ${{ secrets.LIBPROBE_REPO_TOKEN }}
-          persist-credentials: false
-      - uses: vmactions/openbsd-vm@86cdc08415d9d0865267e686561e276c52d62530 # v1.4.7
-        with:
-          usesh: true
-          # Pinned, like e2e.yml. Unpinned, the action follows its own
-          # default, which moves without notice -- netbsd already drifted
-          # to 11.0 while the bench and expected-matrix.json still say 10.1.
-          # A guest that changes under you turns a red leg into a mystery.
           release: '7.9'
-          arch: ${{ matrix.vmarch }}
-          copyback: true
+          arch: ${{ env.VM_ARCH }}
+          custom-shell-name: bsdvm
           prepare: pkg_add -I rust
-          run: |
-            ${{ env.TEST_CMD }} || true
-            ${{ env.REPORT_CMD }} > report-openbsd-${{ matrix.arch }}.json
-      - name: Upload metrics report
-        if: ${{ always() }}
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+          run: cargo fetch
+      - name: Boot NetBSD 10.1 ${{ env.LEG_ARCH }}, install rust, fetch crates
+        id: boot-netbsd
+        if: ${{ env.LEG_OS == 'netbsd' }}
+        timeout-minutes: ${{ fromJSON(env.BOOT_TIMEOUT_MIN) }}
+        uses: vmactions/netbsd-vm@20ee93a005c9fc78743e6e05269f4cb023b87413 # v1.5.0
         with:
-          name: report-openbsd-${{ matrix.arch }}
-          path: report-openbsd-${{ matrix.arch }}.json
-          if-no-files-found: warn
-
-  # NetBSD: amd64 is the guaranteed baseline. arm64 is attempted too (advisory) —
-  # if vmactions ships no NetBSD/aarch64 image the leg fails harmlessly and only
-  # the amd64 report is produced.
-  netbsd:
-    name: e2e netbsd-${{ matrix.arch }}
-    needs: [ack]
-    runs-on: ${{ matrix.runner }}
-    continue-on-error: true
-    strategy:
-      fail-fast: false
-      matrix:
-        include:
-          - { arch: amd64, runner: ubuntu-24.04,     vmarch: x86_64 }
-          - { arch: arm64, runner: ubuntu-24.04-arm, vmarch: aarch64 }
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with:
-          repository: ${{ env.SOURCE_REPO }}
-          ref: ${{ env.SOURCE_SHA }}
-          token: ${{ secrets.LIBPROBE_REPO_TOKEN }}
-          persist-credentials: false
-      - uses: vmactions/netbsd-vm@20ee93a005c9fc78743e6e05269f4cb023b87413 # v1.5.0
-        with:
-          usesh: true
-          # Pinned, like e2e.yml. Unpinned, the action follows its own
-          # default, which moves without notice -- netbsd already drifted
-          # to 11.0 while the bench and expected-matrix.json still say 10.1.
-          # A guest that changes under you turns a red leg into a mystery.
           release: '10.1'
-          arch: ${{ matrix.vmarch }}
-          copyback: true
+          arch: ${{ env.VM_ARCH }}
+          custom-shell-name: bsdvm
           prepare: /usr/sbin/pkg_add -I rust || pkgin -y install rust
-          run: |
-            ${{ env.TEST_CMD }} || true
-            ${{ env.REPORT_CMD }} > report-netbsd-${{ matrix.arch }}.json
+          run: cargo fetch
+
+      # The boundary. Set only when one of the three boots succeeded, so a job
+      # whose LEG_OS matches none of them cannot pass for bootstrapped.
+      - name: Bootstrap complete -- every failure from here on is the code's
+        id: bootstrapped
+        if: ${{ steps.boot-freebsd.outcome == 'success' || steps.boot-openbsd.outcome == 'success' || steps.boot-netbsd.outcome == 'success' }}
+        run: echo "bootstrapped=true" >> "$GITHUB_OUTPUT"
+      - name: VM never became ready (infrastructure, not a test result)
+        if: ${{ !cancelled() && steps.bootstrapped.outcome != 'success' }}
+        run: |
+          echo "::error::${LEG_OS}-${LEG_ARCH}: the guest never became ready to test (VM boot, rust package or crate download failed) -- no libprobe code ran. Attempt 1 of an amd64 leg is retried once on a fresh runner; a retry that fails too, or an arm64 leg, stays failed."
+          exit 1
+
+      - name: Full test suite
+        if: ${{ steps.bootstrapped.outcome == 'success' }}
+        shell: bsdvm {0}
+        run: |
+          CARGO_TARGET_DIR="$HOME/e2e-target"; export CARGO_TARGET_DIR
+          ${{ env.TEST_CMD }}
+      # Whatever the tests concluded, as long as the guest is up: a red leg
+      # still owes its ground-truth report.
+      - name: Generate metrics report (real ground-truth artifact)
+        if: ${{ !cancelled() && steps.bootstrapped.outcome == 'success' }}
+        shell: bsdvm {0}
+        run: |
+          CARGO_TARGET_DIR="$HOME/e2e-target"; export CARGO_TARGET_DIR
+          ${{ env.REPORT_CMD }} > report-${{ env.LEG_OS }}-${{ env.LEG_ARCH }}.json
       - name: Upload metrics report
         if: ${{ always() }}
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
-          name: report-netbsd-${{ matrix.arch }}
-          path: report-netbsd-${{ matrix.arch }}.json
+          name: report-${{ env.LEG_OS }}-${{ env.LEG_ARCH }}
+          path: report-${{ env.LEG_OS }}-${{ env.LEG_ARCH }}.json
           if-no-files-found: warn
+          # A retry runs only when attempt 1 never reached the report, so the
+          # two never both upload. Were they ever to, the retry's is the leg's.
+          overwrite: true
+
+  freebsd-amd64-retry:
+    name: e2e freebsd-amd64 (retry)
+    needs: [ack, freebsd-amd64]
+    if: ${{ !cancelled() && needs.ack.result == 'success' && needs.freebsd-amd64.outputs.bootstrapped != 'true' }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 40
+    env: *freebsd-amd64
+    outputs:
+      bootstrapped: ${{ steps.bootstrapped.outputs.bootstrapped }}
+    steps: *bsd-leg
+
+  openbsd-amd64:
+    name: e2e openbsd-amd64
+    needs: [ack]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 40
+    env: &openbsd-amd64
+      LEG_OS: openbsd
+      LEG_ARCH: amd64
+      VM_ARCH: x86_64
+      BOOT_TIMEOUT_MIN: "15"
+    outputs:
+      bootstrapped: ${{ steps.bootstrapped.outputs.bootstrapped }}
+    steps: *bsd-leg
+
+  openbsd-amd64-retry:
+    name: e2e openbsd-amd64 (retry)
+    needs: [ack, openbsd-amd64]
+    if: ${{ !cancelled() && needs.ack.result == 'success' && needs.openbsd-amd64.outputs.bootstrapped != 'true' }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 40
+    env: *openbsd-amd64
+    outputs:
+      bootstrapped: ${{ steps.bootstrapped.outputs.bootstrapped }}
+    steps: *bsd-leg
+
+  netbsd-amd64:
+    name: e2e netbsd-amd64
+    needs: [ack]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 40
+    env: &netbsd-amd64
+      LEG_OS: netbsd
+      LEG_ARCH: amd64
+      VM_ARCH: x86_64
+      BOOT_TIMEOUT_MIN: "15"
+    outputs:
+      bootstrapped: ${{ steps.bootstrapped.outputs.bootstrapped }}
+    steps: *bsd-leg
+
+  netbsd-amd64-retry:
+    name: e2e netbsd-amd64 (retry)
+    needs: [ack, netbsd-amd64]
+    if: ${{ !cancelled() && needs.ack.result == 'success' && needs.netbsd-amd64.outputs.bootstrapped != 'true' }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 40
+    env: *netbsd-amd64
+    outputs:
+      bootstrapped: ${{ steps.bootstrapped.outputs.bootstrapped }}
+    steps: *bsd-leg
+
+  # arm64: advisory. `continue-on-error` keeps a red leg from failing the run;
+  # none of these is in report's `needs`, so none can move the verdict. No job
+  # timeout either, as before: a slow emulated leg is still a result.
+  freebsd-arm64:
+    name: e2e freebsd-arm64
+    needs: [ack]
+    runs-on: ubuntu-24.04-arm
+    continue-on-error: true
+    env:
+      LEG_OS: freebsd
+      LEG_ARCH: arm64
+      VM_ARCH: aarch64
+      BOOT_TIMEOUT_MIN: "60"
+    steps: *bsd-leg
+
+  openbsd-arm64:
+    name: e2e openbsd-arm64
+    needs: [ack]
+    runs-on: ubuntu-24.04-arm
+    continue-on-error: true
+    env:
+      LEG_OS: openbsd
+      LEG_ARCH: arm64
+      VM_ARCH: aarch64
+      BOOT_TIMEOUT_MIN: "60"
+    steps: *bsd-leg
+
+  # If vmactions ever ships no NetBSD/aarch64 image, this leg fails at
+  # bootstrap and only the amd64 report is produced -- nothing else changes.
+  netbsd-arm64:
+    name: e2e netbsd-arm64
+    needs: [ack]
+    runs-on: ubuntu-24.04-arm
+    continue-on-error: true
+    env:
+      LEG_OS: netbsd
+      LEG_ARCH: arm64
+      VM_ARCH: aarch64
+      BOOT_TIMEOUT_MIN: "60"
+    steps: *bsd-leg
 
   # --- Container legs: the same metrics are ALSO collected INSIDE Docker
   # containers (musl/glibc/scratch), so the report certifies what libprobe
@@ -344,7 +469,7 @@ jobs:
   # artifact the dispatcher downloads to regenerate the coverage plaquette.
   collect-reports:
     name: Collect metric reports
-    needs: [native, freebsd, openbsd, netbsd, containers]
+    needs: [native, freebsd-amd64, freebsd-amd64-retry, freebsd-arm64, openbsd-amd64, openbsd-amd64-retry, openbsd-arm64, netbsd-amd64, netbsd-amd64-retry, netbsd-arm64, containers]
     if: ${{ always() }}
     runs-on: ubuntu-24.04
     steps:
@@ -367,16 +492,24 @@ jobs:
           path: reports/
           if-no-files-found: warn
 
-  # --- Report: set the final source commit status. Overall = success iff every
-  # native leg (incl. macos-amd64 on macos-26-intel) passed; BSD legs are advisory.
-  # It does NOT `needs:` the BSD jobs: their verdict never affects `overall`, and
-  # waiting on the emulated arm64-BSD QEMU legs (~3-4 h) would push the status past
-  # the source repo's commit-status poll deadline. The status posts as soon as the
-  # gating native legs finish; BSD rows in the table read whatever conclusion exists
-  # at that instant (often still running) — purely informational.
+  # --- Report: set the final source commit status ------------------------------
+  # Needs exactly the gating legs: the native matrix, and the three BSD amd64
+  # legs with their retries. It never waits on arm64 (1-2 h): the source repo
+  # polls this status against a deadline, and nothing arm64 could report would
+  # change the verdict. Advisory rows show whatever conclusion exists when the
+  # report runs -- for arm64, usually "not finished".
+  #
+  # Two sources, each used for what it can be trusted with:
+  #   * `needs` for the BSD amd64 verdicts. None of those jobs uses
+  #     continue-on-error, so their `result` is the real one, and `needs` carries
+  #     the `bootstrapped` output that picks attempt 1 or the retry.
+  #   * the jobs API for rows inside a matrix (`needs.native` is one aggregate)
+  #     and for the advisory legs, which are deliberately not in `needs` at all.
+  # The native matrix is read both ways: every leg `success` in the jobs API AND
+  # `needs.native.result == success`.
   report:
     name: Report → source status
-    needs: [ack, native]
+    needs: [ack, native, freebsd-amd64, freebsd-amd64-retry, openbsd-amd64, openbsd-amd64-retry, netbsd-amd64, netbsd-amd64-retry]
     if: ${{ always() }}
     runs-on: ubuntu-24.04
     permissions:
@@ -387,33 +520,61 @@ jobs:
         env:
           GH_TOKEN: ${{ secrets.LIBPROBE_REPO_TOKEN }}
           RT_TOKEN: ${{ github.token }}
+          NEEDS_JSON: ${{ toJSON(needs) }}
         run: |
           set -euo pipefail
-          native="linux-amd64 linux-arm64 windows-amd64 windows-arm64 macos-amd64 macos-arm64"
-          # Read this run's job conclusions (own repo → RT_TOKEN / github.token).
-          jobs=$(GH_TOKEN="$RT_TOKEN" gh api "repos/${{ github.repository }}/actions/runs/${{ github.run_id }}/jobs?per_page=100" \
-                  --jq '.jobs[] | select(.name|startswith("e2e ")) | "\(.name|ltrimstr("e2e "))|\(.conclusion)"')
-          table=""; fails=0
-          # native (gating)
-          for p in $native; do
-            c=$(printf '%s\n' "$jobs" | awk -F'|' -v p="$p" '$1==p{print $2; exit}')
-            [ -z "$c" ] && c="missing"
-            table="${table}| ${p} | ${c} | gating |\n"
-            [ "$c" = "success" ] || fails=$((fails+1))
+          # This run's job conclusions (own repo -> RT_TOKEN / github.token).
+          jobs=$(GH_TOKEN="$RT_TOKEN" gh api --paginate \
+                   "repos/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}/jobs?filter=latest&per_page=100" \
+                   --jq '.jobs[] | select(.name|startswith("e2e ")) | "\(.name|ltrimstr("e2e "))|\(.conclusion)"')
+          conclusion() {
+            c=$(printf '%s\n' "$jobs" | awk -F'|' -v p="$1" '$1==p{print $2; exit}')
+            case "$c" in ""|null) echo "not finished" ;; *) echo "$c" ;; esac
+          }
+          result()       { jq -r --arg j "$1" '.[$j].result // "missing"' <<<"$NEEDS_JSON"; }
+          bootstrapped() { jq -r --arg j "$1" '.[$j].outputs.bootstrapped // ""' <<<"$NEEDS_JSON"; }
+
+          table=""; gating=0; fails=0
+          row() { table="${table}| $1 | $2 | $3 |"$'\n'; }
+
+          for leg in linux-amd64 linux-arm64 windows-amd64 windows-arm64 macos-amd64 macos-arm64; do
+            c=$(conclusion "$leg"); gating=$((gating+1))
+            row "$leg" "$c" "gating"
+            [ "$c" = success ] || fails=$((fails+1))
           done
-          # advisory (BSD QEMU legs, amd64 + arm64 — reported, never gating)
-          for p in freebsd-amd64 freebsd-arm64 openbsd-amd64 openbsd-arm64 netbsd-amd64 netbsd-arm64; do
-            c=$(printf '%s\n' "$jobs" | awk -F'|' -v p="$p" '$1==p{print $2; exit}')
-            [ -z "$c" ] && c="missing"
-            table="${table}| ${p} | ${c} | advisory |\n"
+          native=$(result native)
+
+          for leg in freebsd-amd64 openbsd-amd64 netbsd-amd64; do
+            gating=$((gating+1))
+            if [ "$(bootstrapped "$leg")" = true ]; then
+              c=$(result "$leg"); how="gating"
+            else
+              c=$(result "$leg-retry"); how="gating, retried: attempt 1 ($(result "$leg")) never had a ready guest"
+            fi
+            row "$leg" "$c" "$how"
+            [ "$c" = success ] || fails=$((fails+1))
           done
-          if [ "$fails" -eq 0 ]; then overall=success; else overall=failure; fi
-          printf '%b\n' "native: ${overall} (${fails} failing) — ${SOURCE_REPO}@${SOURCE_SHA}\n${table}"
+
+          for leg in freebsd-arm64 openbsd-arm64 netbsd-arm64 container-ubuntu container-alpine container-scratch; do
+            row "$leg" "$(conclusion "$leg")" "advisory"
+          done
+
+          if [ "$fails" -eq 0 ] && [ "$native" = success ]; then overall=success; else overall=failure; fi
+          summary="e2e: ${overall} -- ${fails} of ${gating} gating legs failing (native matrix: ${native})"
+          {
+            echo "## ${summary}"
+            echo
+            echo "${SOURCE_REPO}@${SOURCE_SHA}"
+            echo
+            echo "| leg | conclusion | role |"
+            echo "|---|---|---|"
+            printf '%s' "$table"
+          } | tee -a "$GITHUB_STEP_SUMMARY"
           # Commit Status API: a fine-grained PAT can set statuses (Commit
           # statuses: write); it can NOT create check-runs.
           gh api -X POST "repos/${SOURCE_REPO}/statuses/${SOURCE_SHA}" \
             -f state="${overall}" \
             -f context="${CHECK_NAME}" \
-            -f description="native e2e: ${overall} (${fails} failing)" \
-            -f target_url="https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }}" >/dev/null
+            -f description="${summary}" \
+            -f target_url="https://github.com/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}" >/dev/null
           echo "status set: ${overall}"
