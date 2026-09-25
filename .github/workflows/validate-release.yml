@@ -160,11 +160,14 @@ jobs:
 
       # Second, independent check: the files against the manifest FILE, pinned by
       # asset_manifest_digest -- the exact command anyone can re-run on a release.
+      # tr -d '\r': Python on the Windows legs ends its lines with CRLF, and a
+      # digest with a trailing CR is a digest that never matches (a proof run's
+      # windows-amd64 leg refused its own, correct, manifest that way).
       - name: Re-hash every file against the manifest
         shell: bash
         run: |
           set -euo pipefail
-          read -r manifest_file digest < <("$PY" -c 'import json; c = json.load(open("dispatch.json"))["client_payload"]["candidate"]; print(c["manifest_file"], c["asset_manifest_digest"])')
+          read -r manifest_file digest < <("$PY" -c 'import json; c = json.load(open("dispatch.json"))["client_payload"]["candidate"]; print(c["manifest_file"], c["asset_manifest_digest"])' | tr -d '\r')
           $RC manifest verify-files --manifest "candidate/$manifest_file" --expect-digest "$digest" --dir candidate
 
       - name: Scenario
