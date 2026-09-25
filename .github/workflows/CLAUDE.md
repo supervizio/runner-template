@@ -19,6 +19,8 @@ of it is what anyone works on.
 | `external-e2e.yml` | `repository_dispatch[run-external-e2e]`, `workflow_dispatch` | **libprobe's** lane. Rebuilds from source on the dispatched SHA; posts `e2e-public/<run>-<attempt>`, green iff the 6 native legs AND the 3 BSD **amd64** legs pass. BSD arm64 (no KVM, 1-2 h a leg) and the containers are advisory: shown in the table, never in the verdict. A BSD amd64 leg whose guest never became ready is retried once on a fresh runner; a leg that reached its tests never is. The BSD steps are written once (`&bsd-leg`) and aliased by all nine BSD jobs. |
 | `cleanup-external-e2e.yml` | `workflow_run` on both of the above | Deletes each dispatched run once it finishes, so no public trace of a private-source run remains. `repository_dispatch` runs only — a `workflow_dispatch` is someone debugging on purpose. |
 | `release-contract.yml` | PR and push on `release-contract/**` | Tests the release contract's validator on Linux, macOS, Windows and Python 3.9, and re-derives the manifest test vector with coreutils alone. See "The release contract" below. |
+| `validate-release.yml` | `repository_dispatch[validate-release]`, `workflow_dispatch` | The **release** lane: validates a candidate's exact bytes, pulled by digest from the private repository's GHCR package. See "The release contract" below. |
+| `validate-release-doorbell.yml` | `workflow_run` on `validate-release` | Posts a commit status on the validated private commit so the private side wakes and builds the receipt. Holds the lane's only secret. |
 | `release-contract-proof.yml` | push to `main` on its own path, `workflow_dispatch` | Measures, on real GitHub objects, the behaviours the release contract relies on, and fails if one of them changes. Never runs on a branch push: its jobs hold `contents: write`. |
 | `qemu-vm-selftest.yml` | push on its own paths | Exercises `.github/actions/qemu-vm` against the upstream cloud images the Linux legs use, before those legs depend on it. |
 | `openbsd-abi-proof.yml` | push on its own path | Runs the OpenBSD link shape across releases and link modes, to answer which OpenBSD binary runs where by executing it. |
@@ -51,7 +53,6 @@ code there.
   so the package-manager and init dimensions are proven together, seam
   included. Honest delta: a container covers install, start and supervision,
   not boot ordering or clean shutdown.
-
 - **BSD legs** run under QEMU through `vmactions/*-vm`, pinned to a release; arm64
   guests are emulated (TCG) and slow.
 
@@ -93,12 +94,28 @@ the script; they do not re-implement a rule.
   after an asset is replaced or the tag is re-pointed; a check run holds 65535
   characters of text; a 268-character run-name is kept whole. It runs on `main`
   when its file changes, or by `workflow_dispatch`.
-- **`validate-release.yml` does not exist yet.** The contract fixes what it must be
-  (README section 4): no secret referenced anywhere; an `admit` job with
-  `contents: write` and nothing else, never executing candidate bytes; one
-  `leg/<id>` job per required leg, with `permissions: {}`; a `run-name` binding the
-  run to one candidate. Its runs are the evidence a promotion reads, so
-  `cleanup-external-e2e.yml` must not delete them.
+- **`validate-release.yml`** is the release lane (README D3 and section 4). The
+  candidate is an OCI artifact in the private repository's own GHCR package
+  (`policy.json` `bridge_package`), named by digest in the dispatch: nothing
+  binary is ever stored here. `admit` checks the artifact against the manifest
+  without downloading it; each `leg/<id>` pulls by digest with `packages: read`,
+  re-hashes, then runs its scenario with no token in its env; `verdict` says what
+  the legs imply. No secret is referenced. Its runs are the evidence a promotion
+  reads, so `cleanup-external-e2e.yml` must not delete them. Every production leg
+  is `scenario: null` today and fails: no agent or libprobe candidate can pass
+  until its scenarios are wired (README section 10).
+- **`validate-release-doorbell.yml`** posts `release-validation/<tag>/g<N>` on the
+  private commit when a `repository_dispatch` run on `main` completes, with the
+  merge lanes' status tokens. It is the lane's only secret, kept out of the
+  workflow that runs candidate bytes. The private side never believes it: it
+  rebuilds the receipt from the run.
+- To try the lane by hand: `workflow_dispatch` with the whole dispatch body and
+  `policy: tests/proof-policy.json` (three integrity-only legs, the bridge probe
+  package). Such a run can never become a receipt: `evidence` accepts only a
+  `repository_dispatch` run on `main`. A workflow that is not on `main` yet can be
+  dispatched only once registered: push it once on a branch it triggers on.
+- Each `*-release-candidates` package must grant this repository Read, in the
+  package's settings (Manage Actions access). That is a UI step, once per package.
 
 When changing the contract: README, `release_contract.py` and the tests move
 together; a new or changed receipt field is a new schema version; a new required

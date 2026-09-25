@@ -753,17 +753,17 @@ def results_from_jobs(jobs: List[Dict[str, Any]], required: List[str]) -> Dict[s
 
 
 def check_run_binding(run: Dict[str, Any], pending: Dict[str, Any], policy: Dict[str, Any]) -> List[str]:
-    staging = policy["validation"]
+    validation = policy["validation"]
     problems = []
     repo = (run.get("repository") or {}).get("full_name")
-    if repo != staging["repository"]:
-        problems.append(f"run belongs to {repo!r}, not {staging['repository']!r}")
-    if run.get("path") != staging["workflow_path"]:
-        problems.append(f"run is {run.get('path')!r}, not {staging['workflow_path']!r}")
+    if repo != validation["repository"]:
+        problems.append(f"run belongs to {repo!r}, not {validation['repository']!r}")
+    if run.get("path") != validation["workflow_path"]:
+        problems.append(f"run is {run.get('path')!r}, not {validation['workflow_path']!r}")
     if run.get("event") != "repository_dispatch":
         problems.append(f"run was triggered by {run.get('event')!r}, not repository_dispatch")
-    if run.get("head_branch") != staging["default_branch"]:
-        problems.append(f"run executed {run.get('head_branch')!r}, not the default branch {staging['default_branch']!r}")
+    if run.get("head_branch") != validation["default_branch"]:
+        problems.append(f"run executed {run.get('head_branch')!r}, not the default branch {validation['default_branch']!r}")
     if run.get("status") != "completed":
         problems.append(f"run is {run.get('status')!r}, not completed")
     expected = expected_run_name(pending)

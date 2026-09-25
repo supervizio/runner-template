@@ -38,6 +38,11 @@ right before a draft is published.
   the bytes' sha256, the validator against a real draft), and fails if any of it
   stops being true. It runs on `main` or by `workflow_dispatch`, never on a branch
   push, because its jobs hold `contents: write`.
+- `.github/workflows/validate-release.yml` is the release lane: it validates a
+  candidate pulled BY DIGEST from the private repository's own GHCR package
+  (`ghcr.io/supervizio/{agent,libprobe}-release-candidates`, each granting this
+  repository Read in its settings). `validate-release-doorbell.yml` wakes the
+  private side afterwards; the private side builds the receipt from the run.
 - Test locally: `python3 -m unittest discover -s release-contract/tests`.
 
 ## Rules specific to this repository
@@ -45,8 +50,11 @@ right before a draft is published.
 - It is **public**. Nothing private goes in it: no private branch names, no internal
   lab addresses or paths, no secrets, no content of the private repositories'
   releases.
-- `validate-release.yml`, when it is written, references no secret; the contract's
-  README section 4 says why and what it must do instead.
+- No binary is ever stored here, not even transiently as a release or an
+  artifact: candidates stay in the private packages.
+- `validate-release.yml` references no secret and never runs on `pull_request`;
+  the doorbell is the lane's only secret-holder and executes nothing. README D3
+  and section 4 say why.
 
 ---
 

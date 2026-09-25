@@ -6,8 +6,8 @@
 #     permission at all, and a request with no token must NOT be able to list,
 #     read or download a draft release -- each probe fails if one can. The same
 #     probe run with a push-access token must see all of it: a denial proves
-#     nothing if the probe cannot detect visibility. The contract's staging
-#     bridge is built on this (README, "The bridge").
+#     nothing if the probe cannot detect visibility. It is why the private
+#     draft cannot be the bridge to the public legs (README, D3).
 #  2. DIGESTS. Is GitHub's per-asset `digest` the sha256 of the bytes uploaded,
 #     and is a canonical manifest file's digest the asset_manifest_digest? The
 #     pre-promotion check trusts those digests instead of downloading a release.
