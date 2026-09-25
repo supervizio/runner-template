@@ -43,6 +43,9 @@ right before a draft is published.
   (`ghcr.io/supervizio/{agent,libprobe}-release-candidates`, each granting this
   repository Read in its settings). `validate-release-doorbell.yml` wakes the
   private side afterwards; the private side builds the receipt from the run.
+- `release-contract/harness/libprobe/` is the libprobe ABI consumer (`consumer.c`,
+  only the published `probe.h` and `libprobe.a`) and its POSIX `run.sh`; the `abi`
+  scenario stages and judges it (README section 5).
 - Test locally: `python3 -m unittest discover -s release-contract/tests`.
 
 ## Rules specific to this repository

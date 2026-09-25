@@ -101,17 +101,22 @@ the script; they do not re-implement a rule.
   without downloading it; each `leg/<id>` pulls by digest with `packages: read`,
   re-hashes, then runs its scenario with no token in its env; `verdict` says what
   the legs imply. No secret is referenced. Its runs are the evidence a promotion
-  reads, so `cleanup-external-e2e.yml` must not delete them. Every production leg
-  is `scenario: null` today and fails: no agent or libprobe candidate can pass
-  until its scenarios are wired (README section 10).
+  reads, so `cleanup-external-e2e.yml` must not delete them. Every agent leg is
+  `scenario: null` today and fails: no agent candidate can pass until its
+  scenarios are wired (README section 10). Every libprobe leg runs the `abi`
+  scenario: `scenario --stage prepare`, then the harness
+  (`release-contract/harness/libprobe/run.sh`) on the runner, in a `vmactions`
+  guest or in a container per `matrix.leg.host`, then `scenario --stage check`
+  (README section 5).
 - **`validate-release-doorbell.yml`** posts `release-validation/<tag>/g<N>` on the
   private commit when a `repository_dispatch` run on `main` completes, with the
   merge lanes' status tokens. It is the lane's only secret, kept out of the
   workflow that runs candidate bytes. The private side never believes it: it
   rebuilds the receipt from the run.
 - To try the lane by hand: `workflow_dispatch` with the whole dispatch body and
-  `policy: tests/proof-policy.json` (three integrity-only legs, the bridge probe
-  package). Such a run can never become a receipt: `evidence` accepts only a
+  `policy: tests/proof-policy.json` (for agent, three integrity-only legs; for
+  libprobe, the production legs with their `abi` scenario; both on the bridge
+  probe package). Such a run can never become a receipt: `evidence` accepts only a
   `repository_dispatch` run on `main`. A workflow that is not on `main` yet can be
   dispatched only once registered: push it once on a branch it triggers on.
 - Each `*-release-candidates` package must grant this repository Read, in the
