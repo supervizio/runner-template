@@ -1,0 +1,92 @@
+# release-contract — the release contract's validator, tested where it will run.
+#
+# release-contract/release_contract.py is called from three places: the private
+# repositories' release jobs (self-hosted Linux), this repository's release
+# validation lane (hosted Linux, macOS, Windows), and a maintainer's laptop. So it
+# is tested on the three hosted OS families with the Python they ship, plus the
+# oldest Python it claims to support, in a container because setup-python's
+# supply of end-of-life interpreters is not something to depend on.
+#
+# The manifest test vector is also re-derived with coreutils alone, without the
+# validator: an implementation that only agrees with itself proves nothing about
+# the format another tool (sha256sum -c, a Go or Rust reader) will produce.
+name: release-contract
+
+on:
+  pull_request:
+    paths:
+      - "release-contract/**"
+      - ".github/workflows/release-contract.yml"
+  push:
+    branches: [main]
+    paths:
+      - "release-contract/**"
+      - ".github/workflows/release-contract.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: release-contract-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  unit:
+    name: unit (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 10
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-24.04, macos-15, windows-2025]
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Run the validator's tests
+        shell: bash
+        run: |
+          set -euo pipefail
+          PY="$(command -v python3 || command -v python)"
+          "$PY" --version
+          # ResourceWarning as an error: a leaked socket or file handle is a bug in a
+          # tool that will run inside long-lived release jobs.
+          "$PY" -W error::ResourceWarning -m unittest discover -s release-contract/tests -v
+
+  oldest-python:
+    name: unit (python 3.9)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Run the tests on the oldest supported interpreter
+        run: |
+          docker run --rm -v "$PWD:/w:ro" -w /w python:3.9-slim \
+            python -W error::ResourceWarning -m unittest discover -s release-contract/tests
+
+  vector:
+    name: manifest vector (coreutils only)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Re-derive the canonical manifest and its digest without the validator
+        working-directory: release-contract/tests/vectors/manifest-v1
+        run: |
+          set -euo pipefail
+          # The contract, in shell: sha256sum text-mode lines, sorted by name in BYTE
+          # order. LC_ALL=C is the whole point -- under en_US.UTF-8 the same files
+          # sort differently and the digest changes.
+          ( cd files && find . -maxdepth 1 -type f -printf '%f\n' | LC_ALL=C sort \
+              | while IFS= read -r f; do sha256sum -- "$f"; done ) > /tmp/SHA256SUMS
+          cmp /tmp/SHA256SUMS SHA256SUMS
+          echo "sha256:$(sha256sum SHA256SUMS | cut -d' ' -f1)" | cmp - DIGEST
+          # And the property a published release relies on: the manifest verifies
+          # the files with nothing but sha256sum.
+          ( cd files && sha256sum -c ../SHA256SUMS )
+          echo "vector OK: $(cat DIGEST)"

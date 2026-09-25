@@ -1,0 +1,75 @@
+name: validate-release-doorbell
+
+# =============================================================================
+# Wakes the private release job once a validate-release run has completed, by
+# posting a commit status on the private commit the run validated:
+#
+#   context      release-validation/<tag>/g<generation>
+#   state        success | failure  (the run's conclusion, for humans)
+#   target_url   the run
+#
+# A DOORBELL, NOTHING MORE. The private side listens with `on: status`, reads
+# the run id from target_url, and builds the receipt itself from the public
+# run and its jobs (`release_contract.py evidence`), which checks that the run
+# is a repository_dispatch run of validate-release.yml on main, titled for
+# exactly that candidate. A forged or stale status can wake it; it cannot
+# promote anything.
+#
+# This is the only place a secret is referenced for the release lane, and it
+# is kept out of validate-release.yml on purpose: no job that downloads or
+# executes candidate bytes runs in a workflow that holds a credential. The
+# tokens are the ones e2e.yml / external-e2e.yml already hold (commit statuses
+# write on their own repository); nothing here checks out or runs any code.
+# =============================================================================
+
+on:
+  workflow_run:
+    workflows: [validate-release]
+    types: [completed]
+
+permissions: {}
+
+jobs:
+  doorbell:
+    name: doorbell
+    # Only runs that can become evidence ring: a workflow_dispatch run (a proof,
+    # a maintainer's test) or a run of another branch never validates a release.
+    if: >-
+      github.event.workflow_run.event == 'repository_dispatch' &&
+      github.event.workflow_run.head_branch == 'main'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    permissions: {}
+    steps:
+      - name: Post the status on the validated commit
+        env:
+          TITLE: ${{ github.event.workflow_run.display_title }}
+          CONCLUSION: ${{ github.event.workflow_run.conclusion }}
+          RUN_URL: ${{ github.event.workflow_run.html_url }}
+          RUN_ID: ${{ github.event.workflow_run.id }}
+          RUN_ATTEMPT: ${{ github.event.workflow_run.run_attempt }}
+          AGENT_TOKEN: ${{ secrets.AGENT_REPO_TOKEN }}
+          LIBPROBE_TOKEN: ${{ secrets.LIBPROBE_REPO_TOKEN }}
+        run: |
+          set -euo pipefail
+          # The title is `validate-release <repo> <tag> g<N> <commit> <digest>`
+          # (release_contract.py expected_run_name). It came from a dispatch
+          # payload, so every field is checked before it is used anywhere.
+          read -r prefix repo tag gen commit digest rest <<<"$TITLE"
+          [ "$prefix" = validate-release ] && [ -z "${rest:-}" ] || { echo "::error::unexpected run title"; exit 1; }
+          [[ "$tag" =~ ^v[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.-]+)?$ ]] || { echo "::error::bad tag"; exit 1; }
+          [[ "$gen" =~ ^g[1-9][0-9]*$ ]] || { echo "::error::bad generation"; exit 1; }
+          [[ "$commit" =~ ^[0-9a-f]{40}$ ]] || { echo "::error::bad commit"; exit 1; }
+          [[ "$digest" =~ ^sha256:[0-9a-f]{64}$ ]] || { echo "::error::bad digest"; exit 1; }
+          case "$repo" in
+            supervizio/agent) token="$AGENT_TOKEN" ;;
+            supervizio/libprobe) token="$LIBPROBE_TOKEN" ;;
+            *) echo "::error::refusing repository '$repo'"; exit 1 ;;
+          esac
+          [ -n "$token" ] || { echo "::error::no status token for $repo: the private side will only learn of this run by timing out"; exit 1; }
+          case "$CONCLUSION" in success) state=success ;; *) state=failure ;; esac
+          body="$(jq -n --arg state "$state" --arg ctx "release-validation/$tag/$gen" \
+            --arg url "$RUN_URL" --arg desc "run $RUN_ID.$RUN_ATTEMPT $CONCLUSION; read the run, not this" \
+            '{state: $state, context: $ctx, target_url: $url, description: $desc}')"
+          GH_TOKEN="$token" gh api -X POST "repos/$repo/statuses/$commit" --input - <<<"$body" >/dev/null
+          echo "rang $repo@$commit release-validation/$tag/$gen: $state"

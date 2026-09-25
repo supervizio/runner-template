@@ -1,5 +1,64 @@
-<!-- updated: 2026-02-27T13:00:00Z -->
-# devcontainer-template
+<!-- updated: 2026-09-24T00:00:00Z -->
+# runner-template
+
+## What this repository is
+
+The **public** end-to-end runner of `supervizio/agent` and `supervizio/libprobe`
+(both private), and the home of their **release contract**. It exists because a
+public repository's GitHub-hosted minutes are free: the private repositories
+dispatch their E2E matrices here and read the verdict back. Every job runs on a
+GitHub-hosted runner; none targets the self-hosted fleet.
+
+| Where | What |
+|---|---|
+| `.github/workflows/` | the E2E lanes, the contract's CI and proofs — `.github/workflows/CLAUDE.md` says what each workflow is for |
+| `release-contract/` | the release contract (below) |
+| `.github/actions/qemu-vm/` | the QEMU guest action used by `e2e.yml`'s Linux legs and by the proof workflows |
+| everything else (`.devcontainer/`, `AGENTS.md`, the sections after this one) | the devcontainer template this repository was created from; it describes the template, not the E2E work |
+
+## The release contract — `release-contract/`
+
+The single source of truth for what a release of agent or libprobe must prove
+before it leaves draft: the canonical asset manifest and its digest, the receipt
+every release carries (`release-receipt.json`), the `validate-release` dispatch
+payload, the required matrix per repository (`policy.json`), and the checks run
+right before a draft is published.
+
+- `release-contract/README.md` is normative; `release_contract.py` (stdlib Python
+  ≥ 3.9) is its only implementation. agent's and libprobe's release workflows pin
+  the directory by commit SHA and call the script — no rule is re-implemented
+  elsewhere, in shell or otherwise.
+- `.github/workflows/release-contract.yml` runs the validator's tests on Linux,
+  macOS, Windows and Python 3.9, and re-derives the manifest test vector with
+  coreutils alone. It proves the validator refuses what it must (altered manifest,
+  re-pointed tag, missing, cancelled or timed-out leg, a verdict its results do not
+  support) wherever it will run.
+- `.github/workflows/release-contract-proof.yml` measures on live objects what the
+  design stands on (who can read a draft release, whether GitHub's asset digests are
+  the bytes' sha256, the validator against a real draft), and fails if any of it
+  stops being true. It runs on `main` or by `workflow_dispatch`, never on a branch
+  push, because its jobs hold `contents: write`.
+- `.github/workflows/validate-release.yml` is the release lane: it validates a
+  candidate pulled BY DIGEST from the private repository's own GHCR package
+  (`ghcr.io/supervizio/{agent,libprobe}-release-candidates`, each granting this
+  repository Read in its settings). `validate-release-doorbell.yml` wakes the
+  private side afterwards; the private side builds the receipt from the run.
+- Test locally: `python3 -m unittest discover -s release-contract/tests`.
+
+## Rules specific to this repository
+
+- It is **public**. Nothing private goes in it: no private branch names, no internal
+  lab addresses or paths, no secrets, no content of the private repositories'
+  releases.
+- No binary is ever stored here, not even transiently as a release or an
+  artifact: candidates stay in the private packages.
+- `validate-release.yml` references no secret and never runs on `pull_request`;
+  the doorbell is the lane's only secret-holder and executes nothing. README D3
+  and section 4 say why.
+
+---
+
+# Inherited: devcontainer-template
 
 ## Purpose
 
