@@ -1,7 +1,7 @@
 # TEMPORARY proof for PR #109, deleted before merge: does Rocky Linux 10 boot
 # under ./.github/actions/qemu-vm on a hosted runner that lands on an AMD host
 # with AVX-512 (EPYC 9V74), where vmactions/rockylinux-vm never boots it?
-# Eight identical boots, so that at least one lands on such a host; each one
+# Identical boots, so that at least one lands on such a host; each one
 # logs the host CPU (from the action) and what the guest sees.
 name: rocky-avx512-proof
 on:
@@ -18,7 +18,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        n: [1, 2, 3, 4, 5, 6, 7, 8]
+        n: [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16]
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
