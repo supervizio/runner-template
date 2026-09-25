@@ -2655,7 +2655,10 @@ jobs:
             # "directive not recognized" while still failing. pacman 7 uses
             # Landlock, which the container cannot apply, and without this the
             # sync dies with "switching to sandbox user 'alpm' failed".
-            prep: 'sed -i ''s/^\[options\]/[options]\nDisableSandbox/'' /etc/pacman.conf && pacman -Sy --noconfirm --needed systemd jq procps-ng >/dev/null'
+            # -Syu, not -Sy: the pinned image ages while the mirror moves, and
+            # a partial upgrade pulls a systemd newer than the systemd-sysvcompat
+            # already installed ("breaks dependency 'systemd=261.3'").
+            prep: 'sed -i ''s/^\[options\]/[options]\nDisableSandbox/'' /etc/pacman.conf && pacman -Syu --noconfirm --needed systemd jq procps-ng >/dev/null'
             entrypoint: /usr/lib/systemd/systemd
             args: ''
             runflags: '--cgroupns=host -v /sys/fs/cgroup:/sys/fs/cgroup:rw --tmpfs /run --tmpfs /run/lock'
