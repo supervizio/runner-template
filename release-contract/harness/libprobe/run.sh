@@ -33,6 +33,7 @@ mode="${1:-all}"
 case "$mode" in all|build|exec) ;; *) echo "run.sh: unknown mode '$mode'" >&2; exit 2 ;; esac
 W=$(cd "$(dirname "$0")" && pwd)
 cd "$W"
+# shellcheck source=/dev/null  # written by release_contract.py scenario --stage prepare
 . ./plan.env
 : "${PLATFORM:?plan.env sets no PLATFORM}"
 : "${EXPECTED_VERSION:?plan.env sets no EXPECTED_VERSION}"

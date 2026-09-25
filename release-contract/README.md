@@ -293,10 +293,16 @@ What `validate-release.yml` guarantees:
   makes it pass. Advisory legs are scheduled too and land in `results`; the verdict
   ignores them.
 - a leg whose release scenario is not wired (`policy.json` `scenario: null`) fails.
-  **Today that is every production leg**: the e2e.yml and external-e2e.yml
-  scenarios still read the private tree and rebuild from source respectively, and
-  run them on candidate bytes is the next change (section 10). Until then no agent
-  or libprobe candidate can pass — fail closed.
+  **Today that is every agent leg**: e2e.yml's scenarios still read the private
+  tree, and running them on candidate bytes is the next change (section 10). Until
+  then no agent candidate can pass — fail closed. Every libprobe leg runs the `abi`
+  scenario (section 5).
+- a scenario runs in three steps: `scenario --stage prepare` on the leg's runner
+  (checks the pulled files; for a harness, stages it in `work/`), the harness
+  where the leg's platform lives (`policy.json` `harness.host`: the runner itself,
+  a BSD guest the runner boots, or a container on it), and `scenario --stage
+  check` on the runner, which judges what the harness left there. None of the
+  three holds a token.
 - no job references a secret; permissions per job as in D3.
 - triggers are `repository_dispatch` and `workflow_dispatch` only — never
   `pull_request` or `pull_request_target`, so a fork's code never runs with a
@@ -307,7 +313,11 @@ What `validate-release.yml` guarantees:
 
 `policy.json`, per repository. Each leg has an `id`, a `state`, the `runner` label
 `validate-release.yml` schedules it on, and a `scenario` (`null` until its release
-scenario is wired, which fails the leg). States:
+scenario is wired, which fails the leg; `integrity`, proof only; `abi`, below). A
+leg whose scenario executes something names a `harness`: the `platform` whose
+published archive it runs and the `host` it runs on (`native`, `freebsd`,
+`openbsd`, `netbsd`, `container-ubuntu`, `container-alpine`, `container-scratch`).
+States:
 
 - `required` — must be in every receipt's `required_matrix`; decides the verdict.
 - `advisory` — scheduled, recorded in `results`, never waited for by the verdict.
@@ -344,10 +354,44 @@ return path of brief §4.6, and nothing requires it.
 `native/{linux,windows,macos}-{amd64,arm64}` and `bsd/{freebsd,openbsd,netbsd}-amd64`
 (gating in merge CI since #110), `container/{ubuntu,alpine,scratch}` (advisory in
 merge CI, gating for a release), `bsd/{freebsd,openbsd,netbsd}-arm64` (advisory in
-both). In
-the release lane each runs the ABI/runtime harness of brief §4.1 — a consumer that
-links the published `libprobe.a` and `probe.h`, not a rebuild — which does not
-exist yet.
+both). In the release lane each runs the **`abi` scenario**, the ABI/runtime
+harness of brief §4.1 (`harness/libprobe/`), on its own platform's published
+archive — never a rebuild:
+
+| Legs | Archive | Where the consumer is built and run |
+|---|---|---|
+| `native/linux-{amd64,arm64}` | `linux-{amd64,arm64}` | the runner, system `cc` |
+| `native/macos-{amd64,arm64}` | `darwin-{amd64,arm64}` | the runner, Apple `cc` |
+| `native/windows-amd64` | `windows-amd64` (`x86_64-pc-windows-gnu`) | the runner, MinGW `gcc` |
+| `native/windows-arm64` | `windows-arm64` (`aarch64-pc-windows-gnullvm`) | the runner, llvm-mingw (pinned release, digest-checked) |
+| `bsd/{freebsd,openbsd,netbsd}-{amd64,arm64}` | same name | a `vmactions` guest (15.0 / 7.9 / 10.1), the base system's `cc` |
+| `container/ubuntu` | `linux-amd64` | an `ubuntu:24.04` container, its own `gcc` |
+| `container/alpine` | `linux-amd64-musl` | an `alpine:3.21` container, its own `gcc`, static |
+| `container/scratch` | `linux-amd64-musl` | built static in Alpine, run in a `FROM scratch` image holding only the binary |
+
+What the scenario checks, in order. **prepare** (host, Python): the platform
+tarball `libprobe-<platform>-<tag>.tar.gz` and `probe.h` are manifest entries;
+the tarball holds exactly `libprobe.a`, `probe.h`, `metadata.json`, regular files,
+each once; its `probe.h` is byte-identical to the published one; `metadata.json`
+says `libprobe`, this tag, this platform, and the `abi_sha256` of this
+`libprobe.a`. **harness** (`run.sh`, POSIX sh, a C compiler and nothing else):
+`consumer.c` includes only `probe.h`, links only `libprobe.a` (plus the system
+libraries a Rust staticlib needs), and asks the archive: `probe_get_version()`
+equals the tag without its `v` — the check seven releases once failed;
+`probe_get_abi_fingerprint()` is not 0; for ten carriers, `sizeof` from this header
+on this target equals `probe_get_carrier_size()`, and an unknown name answers the
+documented sentinel; then `probe_init`, `probe_collect_cpu` (cores > 0),
+`probe_collect_memory` (total > 0), `probe_collect_smoke_json` (the versioned
+envelope), `probe_free_string`, `probe_shutdown`, executed for real. It writes a
+JSON report and exits non-zero on any failure. **check** (host, Python): the
+report exists, names this version twice (asked and answered), carries every
+required check, and every check is ok — so a harness that silently ran nothing
+fails here too.
+
+A link error is a leg failure, not a harness detail: a consumer would hit it.
+Advisory BSD arm64 legs run the same scenario; with nothing to compile but one C
+file they took 2 to 3 minutes each in the proof below, against one to two hours
+for the source suite that made them advisory.
 
 Legs are required per *environment*, not per asset: a published asset no leg
 consumes is still bound by the manifest, but nothing executed it (section 10).
@@ -433,19 +477,23 @@ The contract gives reconcil-release a decidable state per `(tag, release)`:
 | GHCR bridge, publisher | a private repository's `GITHUB_TOKEN` (`packages: write`) pushes a private org package and reads it back | supervizio/agent, branch `ci/ghcr-bridge-measure`, self-hosted runner |
 | GHCR bridge, reader | before the grant: `packages: read`, `permissions: {}` and no token all denied; after granting runner-template Read on that one package: `packages: read` → manifest 200, blob byte-identical | runner-template branch `measure/ghcr-bridge` |
 | Fork pull requests | `approval_policy: all_external_contributors` on the repository and the organisation: a fork's workflow does not run before a maintainer approves it | `GET /repos/supervizio/runner-template/actions/permissions/fork-pr-contributor-approval` |
+| libprobe `abi` scenario, live (2026-09-26) | the bytes of the published libprobe **v0.7.0** release re-pushed as a candidate: all 15 legs `success` (12 required, 3 advisory BSD arm64), each `probe_get_version()` = `0.7.0`, 18 consumer checks; the same `libprobe.a` repackaged as `v0.7.1` with a `metadata.json` that says so (the v0.2.1..v0.6.0 defect): every prepare check passes, all 15 legs fail on `version: archive says 0.7.0, the release is 0.7.1`, verdict `failure` | `tests/proof-policy.json`, candidates pushed from supervizio/agent to the proof package; runs and package versions deleted, output recorded in the pull request |
 | `validate-release.yml`, live (2026-09-26) | conforming candidate: verdict `success` on Linux, macOS and Windows legs; one byte changed in one file: `admit` refuses, verdict `error`; a required leg the policy cannot run: `missing`, verdict `error`; `evidence` refuses to build a receipt from any of these runs (`workflow_dispatch`, not `main`) | `tests/proof-policy.json`, candidate of random bytes pushed from supervizio/agent; runs deleted, output recorded in runner-template#107 |
 
 ## 10. Open questions (phases 3 to 5)
 
-- **Release scenarios.** Every production leg is `scenario: null` and fails.
+- **Release scenarios.** Every agent leg is `scenario: null` and fails.
   agent: `e2e.yml`'s jobs check out the private tree (`AGENT_REPO_TOKEN`) for
   `e2e/` and `setup/` and download CI artifacts by name; in the release lane those
   travel as `support` files (a test kit built privately, bound by digest) and the
   published packages, and `e2e.yml` gains a `workflow_call` mode that takes them
   from `bridge pull` instead — which needs the candidate layout agent's release job
-  will produce (phase 5). libprobe: `external-e2e.yml` rebuilds from source, which a
-  release must not do; its legs need the ABI/runtime harness of brief §4.1, which
-  does not exist yet.
+  will produce (phase 5). libprobe's legs run the `abi` scenario (section 5).
+  What it does not cover: 13 of the 26 platform archives of a libprobe release
+  (`linux-arm64-musl`, and every 32-bit and exotic Linux archive: arm, armv6, 386,
+  riscv64, ppc64le, s390x, loong64, glibc and musl) are bound by the manifest but
+  executed by no leg. QEMU user-mode legs like agent's `linux-exotic/*` would
+  cover them.
 - **Fork tokens.** No release-lane workflow runs on `pull_request`, and a fork's
   workflows need approval (section 9). Not measured: whether an *approved* fork
   pull request's read-only `GITHUB_TOKEN` can read a package granted to this
