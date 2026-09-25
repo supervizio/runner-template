@@ -51,6 +51,35 @@ inputs:
       their published checksum as-is.
     required: false
     default: ""
+  image-checksum-url:
+    description: >-
+      The third way to verify the image, for upstreams that rebuild in place and
+      keep only the newest build, where any pinned hash goes stale. URL of the
+      checksum file the distribution publishes for the image, in GNU
+      (`<sha256>  <name>`) or BSD (`SHA256 (<name>) = <sha256>`) form. Used with
+      image-signature-url, image-signing-key and image-signing-fingerprint; the
+      sha256 is taken from it only once its signature checks out. Exclusive with
+      image-sha256 and image-sha512.
+    required: false
+    default: ""
+  image-signature-url:
+    description: URL of the detached OpenPGP signature over image-checksum-url.
+    required: false
+    default: ""
+  image-signing-key:
+    description: >-
+      Path, from the workspace root, of the armored public key committed in this
+      repository (.github/keys/). A file, not a keyserver lookup: the trust
+      anchor is reviewed like any other change.
+    required: false
+    default: ""
+  image-signing-fingerprint:
+    description: >-
+      Full 40-hex fingerprint of the PRIMARY key that must have made the
+      signature. Checked against gpgv's VALIDSIG line, so a key file that ever
+      carried a second key could not widen what is accepted.
+    required: false
+    default: ""
   timeout:
     description: Seconds allowed for the guest script before it is killed
     required: false
@@ -111,6 +140,10 @@ runs:
         IMAGE_URL: ${{ inputs.image-url }}
         IMAGE_SHA256: ${{ inputs.image-sha256 }}
         IMAGE_SHA512: ${{ inputs.image-sha512 }}
+        IMAGE_CHECKSUM_URL: ${{ inputs.image-checksum-url }}
+        IMAGE_SIGNATURE_URL: ${{ inputs.image-signature-url }}
+        IMAGE_SIGNING_KEY: ${{ inputs.image-signing-key }}
+        IMAGE_SIGNING_FPR: ${{ inputs.image-signing-fingerprint }}
         MEM: ${{ inputs.memory }}
         CPUS: ${{ inputs.cpus }}
       run: |
@@ -124,6 +157,38 @@ runs:
         echo "VMDIR=$VMDIR" >> "$GITHUB_ENV"
         SSH_PORT=$(python3 -c 'import socket;s=socket.socket();s.bind(("127.0.0.1",0));print(s.getsockname()[1]);s.close()')
         echo "SSH_PORT=$SSH_PORT" >> "$GITHUB_ENV"
+
+        # Signed checksum: resolve the expected sha256 BEFORE the download, from
+        # the distribution's own checksum file, and only once its signature is
+        # proven to come from the pinned key. From here on it is checked exactly
+        # like a pinned image-sha256.
+        if [ -n "${IMAGE_CHECKSUM_URL:-}" ]; then
+          [ -z "${IMAGE_SHA256:-}${IMAGE_SHA512:-}" ] || {
+            echo "::error::give a pinned image-sha256/512 OR image-checksum-url, not both" >&2; exit 1; }
+          [ -n "${IMAGE_SIGNATURE_URL:-}" ] && [ -n "${IMAGE_SIGNING_KEY:-}" ] && [ -n "${IMAGE_SIGNING_FPR:-}" ] || {
+            echo "::error::image-checksum-url needs image-signature-url, image-signing-key and image-signing-fingerprint" >&2; exit 1; }
+          [ -f "$GITHUB_WORKSPACE/$IMAGE_SIGNING_KEY" ] || {
+            echo "::error::image-signing-key '$IMAGE_SIGNING_KEY' is not a file in the workspace" >&2; exit 1; }
+          curl -fsSL --retry 5 --retry-all-errors --max-time 120 -o image.checksum "$IMAGE_CHECKSUM_URL"
+          curl -fsSL --retry 5 --retry-all-errors --max-time 120 -o image.checksum.sig "$IMAGE_SIGNATURE_URL"
+          gpg --batch --dearmor < "$GITHUB_WORKSPACE/$IMAGE_SIGNING_KEY" > keyring.gpg
+          # gpgv exits 0 on a good signature from ANY key in the keyring, so the
+          # signer is asserted separately: the last field of VALIDSIG is the
+          # fingerprint of the primary key that made it.
+          status=$(gpgv --status-fd 1 --keyring ./keyring.gpg image.checksum.sig image.checksum 2>gpgv.err) || {
+            cat gpgv.err >&2
+            echo "::error::the checksum file does not carry a valid signature from $IMAGE_SIGNING_KEY" >&2; exit 1; }
+          signer=$(printf '%s\n' "$status" | awk '$2 == "VALIDSIG" { print $NF; exit }')
+          [ "$signer" = "$IMAGE_SIGNING_FPR" ] || {
+            echo "::error::checksum signed by '${signer:-nobody}', expected $IMAGE_SIGNING_FPR" >&2; exit 1; }
+          name=$(basename "${IMAGE_URL%%\?*}")
+          IMAGE_SHA256=$(awk -v n="$name" '
+            $1 == "SHA256" && $2 == "(" n ")" && $3 == "=" { print $4; exit }
+            NF == 2 && ($2 == n || $2 == "*" n)              { print $1; exit }' image.checksum)
+          [[ "$IMAGE_SHA256" =~ ^[0-9a-f]{64}$ ]] || {
+            echo "::error::no sha256 for '$name' in the signed checksum file:" >&2; cat image.checksum >&2; exit 1; }
+          echo "image $name: sha256 $IMAGE_SHA256, from a checksum signed by $signer"
+        fi
 
         # --retry: hosted apt/mirror flakiness is a known failure source, and a
         # bare curl turns one transient 5xx into a red leg.
