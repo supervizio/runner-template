@@ -38,9 +38,10 @@ inputs:
     default: "2"
   image-sha256:
     description: >-
-      sha256 of the image at image-url. Give this or image-sha512: without one
-      the action boots an unverified multi-hundred-MB blob from whatever mirror
-      the URL redirects to, and hands it a root shell.
+      sha256 of the image at image-url. One of image-sha256, image-sha512 or
+      image-checksum-url is REQUIRED: without one the action refuses to boot,
+      rather than hand a root shell to a multi-hundred-MB blob from whatever
+      mirror the URL redirects to.
     required: false
     default: ""
   image-sha512:
@@ -49,6 +50,35 @@ inputs:
       Alpine both do, so pinning their images by sha256 would mean carrying a
       hand-derived value and re-deriving it on every image bump -- this takes
       their published checksum as-is.
+    required: false
+    default: ""
+  image-checksum-url:
+    description: >-
+      The third way to verify the image, for upstreams that rebuild in place and
+      keep only the newest build, where any pinned hash goes stale. URL of the
+      checksum file the distribution publishes for the image, in GNU
+      (`<sha256>  <name>`) or BSD (`SHA256 (<name>) = <sha256>`) form. Used with
+      image-signature-url, image-signing-key and image-signing-fingerprint; the
+      sha256 is taken from it only once its signature checks out. Exclusive with
+      image-sha256 and image-sha512.
+    required: false
+    default: ""
+  image-signature-url:
+    description: URL of the detached OpenPGP signature over image-checksum-url.
+    required: false
+    default: ""
+  image-signing-key:
+    description: >-
+      Path, from the workspace root, of the armored public key committed in this
+      repository (.github/keys/). A file, not a keyserver lookup: the trust
+      anchor is reviewed like any other change.
+    required: false
+    default: ""
+  image-signing-fingerprint:
+    description: >-
+      Full 40-hex fingerprint of the PRIMARY key that must have made the
+      signature. Checked against gpgv's VALIDSIG line, so a key file that ever
+      carried a second key could not widen what is accepted.
     required: false
     default: ""
   timeout:
@@ -111,6 +141,10 @@ runs:
         IMAGE_URL: ${{ inputs.image-url }}
         IMAGE_SHA256: ${{ inputs.image-sha256 }}
         IMAGE_SHA512: ${{ inputs.image-sha512 }}
+        IMAGE_CHECKSUM_URL: ${{ inputs.image-checksum-url }}
+        IMAGE_SIGNATURE_URL: ${{ inputs.image-signature-url }}
+        IMAGE_SIGNING_KEY: ${{ inputs.image-signing-key }}
+        IMAGE_SIGNING_FPR: ${{ inputs.image-signing-fingerprint }}
         MEM: ${{ inputs.memory }}
         CPUS: ${{ inputs.cpus }}
       run: |
@@ -125,16 +159,86 @@ runs:
         SSH_PORT=$(python3 -c 'import socket;s=socket.socket();s.bind(("127.0.0.1",0));print(s.getsockname()[1]);s.close()')
         echo "SSH_PORT=$SSH_PORT" >> "$GITHUB_ENV"
 
-        # --retry: hosted apt/mirror flakiness is a known failure source, and a
-        # bare curl turns one transient 5xx into a red leg.
-        curl -fsSL --retry 5 --retry-all-errors --max-time 900 -o base.qcow2 "$IMAGE_URL"
+        # Verification is not optional. A signing input given without
+        # image-checksum-url is a caller whose checksum URL came out empty (an
+        # unset step output, say); falling through would boot an image that was
+        # meant to be verified, so that fails, like a call naming no
+        # verification at all.
+        if [ -z "${IMAGE_CHECKSUM_URL:-}" ] && [ -n "${IMAGE_SIGNATURE_URL:-}${IMAGE_SIGNING_KEY:-}${IMAGE_SIGNING_FPR:-}" ]; then
+          echo "::error::image-signature-url, image-signing-key or image-signing-fingerprint given without image-checksum-url - refusing to boot an image meant to be verified by signature" >&2; exit 1
+        fi
+        if [ -z "${IMAGE_SHA256:-}${IMAGE_SHA512:-}${IMAGE_CHECKSUM_URL:-}" ]; then
+          echo "::error::no image verification given (image-sha256, image-sha512 or image-checksum-url) - refusing to boot an unverified image and hand it a root shell" >&2; exit 1
+        fi
+
+        # Signed checksum: resolve the expected sha256 BEFORE the download, from
+        # the distribution's own checksum file, and only once its signature is
+        # proven to come from the pinned key. From here on it is checked exactly
+        # like a pinned image-sha256.
+        if [ -n "${IMAGE_CHECKSUM_URL:-}" ]; then
+          [ -z "${IMAGE_SHA256:-}${IMAGE_SHA512:-}" ] || {
+            echo "::error::give a pinned image-sha256/512 OR image-checksum-url, not both" >&2; exit 1; }
+          [ -n "${IMAGE_SIGNATURE_URL:-}" ] && [ -n "${IMAGE_SIGNING_KEY:-}" ] && [ -n "${IMAGE_SIGNING_FPR:-}" ] || {
+            echo "::error::image-checksum-url needs image-signature-url, image-signing-key and image-signing-fingerprint" >&2; exit 1; }
+          [ -f "$GITHUB_WORKSPACE/$IMAGE_SIGNING_KEY" ] || {
+            echo "::error::image-signing-key '$IMAGE_SIGNING_KEY' is not a file in the workspace" >&2; exit 1; }
+          curl -fsSL --retry 5 --retry-all-errors --max-time 120 -o image.checksum "$IMAGE_CHECKSUM_URL"
+          curl -fsSL --retry 5 --retry-all-errors --max-time 120 -o image.checksum.sig "$IMAGE_SIGNATURE_URL"
+          gpg --batch --dearmor < "$GITHUB_WORKSPACE/$IMAGE_SIGNING_KEY" > keyring.gpg
+          # gpgv exits 0 on a good signature from ANY key in the keyring, so the
+          # signer is asserted separately: the last field of VALIDSIG is the
+          # fingerprint of the primary key that made it.
+          status=$(gpgv --status-fd 1 --keyring ./keyring.gpg image.checksum.sig image.checksum 2>gpgv.err) || {
+            cat gpgv.err >&2
+            echo "::error::the checksum file does not carry a valid signature from $IMAGE_SIGNING_KEY" >&2; exit 1; }
+          signer=$(printf '%s\n' "$status" | awk '$2 == "VALIDSIG" { print $NF; exit }')
+          [ "$signer" = "$IMAGE_SIGNING_FPR" ] || {
+            echo "::error::checksum signed by '${signer:-nobody}', expected $IMAGE_SIGNING_FPR" >&2; exit 1; }
+          name=$(basename "${IMAGE_URL%%\?*}")
+          IMAGE_SHA256=$(awk -v n="$name" '
+            $1 == "SHA256" && $2 == "(" n ")" && $3 == "=" { print $4; exit }
+            NF == 2 && ($2 == n || $2 == "*" n)              { print $1; exit }' image.checksum)
+          [[ "$IMAGE_SHA256" =~ ^[0-9a-f]{64}$ ]] || {
+            echo "::error::no sha256 for '$name' in the signed checksum file:" >&2; cat image.checksum >&2; exit 1; }
+          echo "image $name: sha256 $IMAGE_SHA256, from a checksum signed by $signer"
+        fi
+
+        # Retried, because hosted mirror flakiness is a known failure source and a
+        # bare curl turns one transient 5xx into a red leg. And RESUMED, because
+        # the other failure is a stall: 5 of 16 concurrent Rocky downloads sat
+        # at ~98% until --max-time (run 36081738669), and curl's own --retry
+        # throws a failed attempt's bytes away and starts over from zero --
+        # measured, it never gets past the first attempt's size. So each attempt
+        # is a fresh curl that continues from what is on disk (-C -), and one
+        # that moves under 256 KiB/s for 60 s is abandoned rather than waited
+        # out. The checksum below judges the assembled file either way.
+        attempts=10; downloaded=0
+        for attempt in $(seq 1 "$attempts"); do
+          rc=0
+          curl -fsSL -C - --speed-limit 262144 --speed-time 60 --max-time 900 \
+            -o base.qcow2 "$IMAGE_URL" || rc=$?
+          if [ "$rc" -eq 0 ]; then downloaded=1; break; fi
+          # 33: the server refused the range, so what is on disk cannot be
+          # continued -- start that file over.
+          [ "$rc" -ne 33 ] || rm -f base.qcow2
+          echo "::warning::image download attempt $attempt/$attempts stopped (curl exit $rc) at $(stat -c %s base.qcow2 2>/dev/null || echo 0) bytes; resuming"
+          sleep $((attempt * 3))
+        done
+        [ "$downloaded" -eq 1 ] || echo "::warning::the image download never completed cleanly; the checksum below decides"
         if [ -n "${IMAGE_SHA256:-}" ]; then
           echo "${IMAGE_SHA256}  base.qcow2" | sha256sum -c -
         elif [ -n "${IMAGE_SHA512:-}" ]; then
           echo "${IMAGE_SHA512}  base.qcow2" | sha512sum -c -
         else
-          echo "::warning::no image checksum given - booting an unverified image and handing it a root shell"
+          echo "::error::no checksum to check the image against" >&2; exit 1
         fi
+        # Which host this landed on, printed because hosted runners are not all
+        # alike and a guest can depend on it: vmactions strips AVX-512 on the
+        # AMD hosts that have it, and Rocky 10 then never boots. -cpu host below
+        # passes the host's features through, so this line says what the guest
+        # was given.
+        echo "host CPU: $(awk -F': ' '/^model name/ { print $2; exit }' /proc/cpuinfo)" \
+             "(avx512f: $(grep -qw avx512f /proc/cpuinfo && echo yes || echo no))"
         # Copy-on-write overlay: the base stays pristine and the guest's writes
         # cost tens of MiB, not the image size.
         qemu-img create -f qcow2 -F qcow2 -b base.qcow2 disk.qcow2 10G >/dev/null

@@ -27,45 +27,42 @@ that half, which is how the workflows that matter went undocumented.
 
 ## Where the work runs, and why it matters
 
-Almost everything is on GitHub-hosted runners. Two jobs are not:
+**Every job here runs on a GitHub-hosted runner.** None reaches the labs bench
+(Proxmox guests 200-215) or the CI host's self-hosted `supervizio-runner`; check
+it with `grep -n 'runs-on' .github/workflows/*.yml`. This repository is public,
+so pointing a job at a self-hosted runner would let a fork's pull request run
+code there.
 
-- `e2e-vm` (2 legs: `artix-dinit`, `debian-sysvinit`) and `vm-cleanup` run on
-  `supervizio-runner`, the ARC pod, and acquire Proxmox guests 208 and 205.
+- **Real kernels, real PID 1**, under QEMU+KVM on the hosted runner:
+  `vmactions/*-vm` for the Alpine (openrc, runit, s6), Debian-systemd and BSD
+  legs; `./.github/actions/qemu-vm` for Rocky, openSUSE and Arch.
+  Rocky is on qemu-vm because vmactions strips AVX-512 from `-cpu host` on the
+  AMD hosts that have it (EPYC 9V74), and Rocky 10 then never boots: its
+  fallback, `qemu64`, lacks the x86-64-v3 that Rocky 10 requires. qemu-vm passes
+  `-cpu host` through untouched.
+- **Containers** for `debian-sysvinit` and `artix-dinit`, measured in
+  `bench-leg-substrates-proof.yml`. `debian:trixie` ships no init at all, so
+  sysvinit is INSTALLED into it rather than converted from systemd, and none of
+  the blockers `init-swap-proof.yml` recorded for a cloud image applies (PID 1
+  comm=init, runlevel N 2, cron reparented to PID 1, no `--privileged`). The
+  official `artixlinux/artixlinux:base-dinit` image carries pacman AND dinit,
+  so the package-manager and init dimensions are proven together, seam
+  included. Honest delta: a container covers install, start and supervision,
+  not boot ordering or clean shutdown.
 
-  **Neither leg still needs a VM.** Both were measured green on hosted runners in
-  `bench-leg-substrates-proof.yml`; what remains is wiring, not research.
+## Upstream images: pinned hash or signature
 
-  `debian-sysvinit` was called irreplaceable in this file, and that was wrong.
-  The reasoning was sound about `init-swap-proof.yml` — four runs failed to
-  convert a systemd-built Debian CLOUD IMAGE, and its conclusion that the bench
-  guest was INSTALLED with sysvinit rather than converted is exactly right. What
-  nobody noticed is that a Docker base image is *also* a system sysvinit gets
-  INSTALLED into. `debian:trixie` ships no init at all — no systemd-sysv, no
-  /sbin/init, no /etc/inittab — so there is nothing to remove and none of the
-  four blockers applies. Measured: PID 1 comm=init, runlevel N 2, inittab 2348
-  bytes, cron reparented to PID 1, no --privileged.
-
-  Devuan still publishes no disk image (`virtual/`, `qemu/`, `cloud/` all 404,
-  checked 2026-09-19) — that part of the old note is accurate. It simply stopped
-  being the question.
-
-  `artix-dinit` is replaced by the official Artix Docker image
-  `artixlinux/artixlinux:base-dinit`, which carries pacman AND dinit — so the
-  leg's two dimensions stay together. The earlier Chimera finding
-  (`dinit-container-proof.yml`) remains true and is kept, but it is no longer
-  the better answer: splitting across Chimera (dinit, apk) and Arch (pacman,
-  systemd) would prove "pacman installs" and "dinit starts" without ever proving
-  the seam between them, which is where packaging regressions live. Measured: a
-  .pkg.tar.zst installs, `pacman -Qo` reports it owns the service file, and
-  dinit as PID 1 takes it to STARTED.
-
-  Honest delta for both: containers cover install, start and supervision. They
-  do not cover boot ordering or clean shutdown — `dinit --container` disables
-  system management by design, and a sysvinit container never reaches runlevel
-  0. Whether that delta is worth two Proxmox guests is a judgement.
-
-Everything else — the seven Linux legs, five BSD legs, both Windows, both
-macOS, six Docker legs — is hosted and free.
+A VM leg boots an upstream cloud image and gives it a root shell, so the image
+is always verified. Alpine, Debian, Fedora and Arch publish each build under its
+own name and keep it: those are pinned by sha256/sha512. openSUSE rebuilds in
+place and keeps only the newest build, and Rocky moves each build out of `pub/`
+at the next point release, so any pin goes stale (openSUSE's did on 2026-09-24:
+`e2e/vm/opensuse-zypper` went red on every agent PR, the agent not involved).
+Those two legs resolve the current build with
+`.github/actions/qemu-vm/resolve-image.sh`, and qemu-vm takes its sha256 from
+the checksum file the distribution signs, after `gpgv` proves the signer is the
+key in `.github/keys/` whose fingerprint the workflow pins. See
+`.github/keys/CLAUDE.md`.
 
 ## Two things that have cost real time here
 
