@@ -190,9 +190,28 @@ runs:
           echo "image $name: sha256 $IMAGE_SHA256, from a checksum signed by $signer"
         fi
 
-        # --retry: hosted apt/mirror flakiness is a known failure source, and a
-        # bare curl turns one transient 5xx into a red leg.
-        curl -fsSL --retry 5 --retry-all-errors --max-time 900 -o base.qcow2 "$IMAGE_URL"
+        # Retried, because hosted mirror flakiness is a known failure source and a
+        # bare curl turns one transient 5xx into a red leg. And RESUMED, because
+        # the other failure is a stall: 5 of 16 concurrent Rocky downloads sat
+        # at ~98% until --max-time (run 36081738669), and curl's own --retry
+        # throws a failed attempt's bytes away and starts over from zero --
+        # measured, it never gets past the first attempt's size. So each attempt
+        # is a fresh curl that continues from what is on disk (-C -), and one
+        # that moves under 256 KiB/s for 60 s is abandoned rather than waited
+        # out. The checksum below judges the assembled file either way.
+        attempts=10; downloaded=0
+        for attempt in $(seq 1 "$attempts"); do
+          rc=0
+          curl -fsSL -C - --speed-limit 262144 --speed-time 60 --max-time 900 \
+            -o base.qcow2 "$IMAGE_URL" || rc=$?
+          if [ "$rc" -eq 0 ]; then downloaded=1; break; fi
+          # 33: the server refused the range, so what is on disk cannot be
+          # continued -- start that file over.
+          [ "$rc" -ne 33 ] || rm -f base.qcow2
+          echo "::warning::image download attempt $attempt/$attempts stopped (curl exit $rc) at $(stat -c %s base.qcow2 2>/dev/null || echo 0) bytes; resuming"
+          sleep $((attempt * 3))
+        done
+        [ "$downloaded" -eq 1 ] || echo "::warning::the image download never completed cleanly; the checksum below decides"
         if [ -n "${IMAGE_SHA256:-}" ]; then
           echo "${IMAGE_SHA256}  base.qcow2" | sha256sum -c -
         elif [ -n "${IMAGE_SHA512:-}" ]; then
