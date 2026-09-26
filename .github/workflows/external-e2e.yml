@@ -234,13 +234,13 @@ jobs:
       # default, which moves without notice -- netbsd already drifted to 11.0
       # while the bench and expected-matrix.json still said 10.1. A guest that
       # changes under you turns a red leg into a mystery.
-      - name: Boot FreeBSD 15.0 ${{ env.LEG_ARCH }}, install rust, fetch crates
+      - name: Boot FreeBSD 15.1 ${{ env.LEG_ARCH }}, install rust, fetch crates
         id: boot-freebsd
         if: ${{ env.LEG_OS == 'freebsd' }}
         timeout-minutes: ${{ fromJSON(env.BOOT_TIMEOUT_MIN) }}
         uses: vmactions/freebsd-vm@4469451fe39bee80be4066836c5170362e9349f3 # v1.5.7
         with:
-          release: '15.0'
+          release: '15.1'
           arch: ${{ env.VM_ARCH }}
           custom-shell-name: bsdvm
           prepare: pkg install -y rust

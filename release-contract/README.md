@@ -355,7 +355,7 @@ Inventory taken from `main` at `3b0f5b7` (#101, #102 and #110 merged).
 | `windows/amd64` (Windows Server), `windows/arm64` (Windows 11) | 2 | `windows-2025`, `windows-11-arm` |
 | `linux/amd64/{artix-dinit,debian-sysvinit,alpine-openrc,debian-systemd,rocky-systemd,opensuse-zypper,arch-pacman,alpine-runit,alpine-s6}` | 9 | `ubuntu-24.04` |
 | `linux/arm64/{alpine-openrc,alpine-runit,alpine-s6,alpine-dinit,debian-systemd,debian-sysvinit,rocky-systemd,opensuse-zypper,arch-pacman}` | 9 | `ubuntu-24.04-arm` |
-| `freebsd/{amd64,arm64}` (15.0), `netbsd/{amd64,arm64}` (10.1) | 4 | `ubuntu-24.04` (QEMU) |
+| `freebsd/{amd64,arm64}` (15.1), `netbsd/{amd64,arm64}` (10.1) | 4 | `ubuntu-24.04` (QEMU) |
 | `openbsd/amd64/{7.3,7.4,7.5,7.6,7.7,7.8,7.9}`, `openbsd/arm64/{7.8,7.9}` | 9 | `ubuntu-24.04` (QEMU) |
 | `linux-exotic/{386,armv7,riscv64,ppc64le,s390x}-{glibc,musl}`, `linux-exotic/armv6-musl`, `linux-exotic/loong64` | 12 | `ubuntu-24.04` (QEMU) |
 
@@ -378,7 +378,7 @@ archive — never a rebuild:
 | `native/macos-{amd64,arm64}` | `darwin-{amd64,arm64}` | the runner, Apple `cc` |
 | `native/windows-amd64` | `windows-amd64` (`x86_64-pc-windows-gnu`) | the runner, MinGW `gcc` |
 | `native/windows-arm64` | `windows-arm64` (`aarch64-pc-windows-gnullvm`) | the runner, llvm-mingw (pinned release, digest-checked) |
-| `bsd/{freebsd,openbsd,netbsd}-{amd64,arm64}` | same name | a `vmactions` guest (15.0 / 7.9 / 10.1), the base system's `cc` |
+| `bsd/{freebsd,openbsd,netbsd}-{amd64,arm64}` | same name | a `vmactions` guest (15.1 / 7.9 / 10.1), the base system's `cc` |
 | `container/ubuntu` | `linux-amd64` | an `ubuntu:24.04` container, its own `gcc` |
 | `container/alpine` | `linux-amd64-musl` | an `alpine:3.21` container, its own `gcc`, static |
 | `container/scratch` | `linux-amd64-musl` | built static in Alpine, run in a `FROM scratch` image holding only the binary |
