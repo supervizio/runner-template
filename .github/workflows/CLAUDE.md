@@ -139,8 +139,9 @@ the called workflow, and nothing in release mode needs one:
 - Each leg skips `Checkout agent code` and its `actions/download-artifact`
   step(s), and instead checks this repository out to `.release-lane` and runs
   `.github/actions/release-candidate`: `bridge pull` of the leg's assets, the
-  manifest file and `e2e-kit.tar.gz` (by digest), `manifest verify-files` on
-  the assets, the kit extracted where the agent checkout would have been (`.`
+  manifest file and `e2e-kit.tar.gz` (by digest; a published asset of the
+  release, or a support file for older candidates), `manifest verify-files` on
+  the assets (and on the kit when it is an asset), the kit extracted where the agent checkout would have been (`.`
   or `agent/`), each asset copied to the directory the download used (`bin/`,
   `pkg/`, `dl/`). Every step after that is the merge lane's.
 - The asset is the RELEASE's, under its release name. The normalise steps

@@ -14,7 +14,7 @@ description: >-
 #   * the published assets it installs, under their RELEASE names, each pulled
 #     BY DIGEST and re-hashed against the manifest file pinned by
 #     asset_manifest_digest -- the bytes a user downloads, not a CI artifact;
-#   * the support file e2e-kit.tar.gz: e2e/, setup/, go.work and .dockerignore
+#   * e2e-kit.tar.gz: e2e/, setup/, go.work and .dockerignore
 #     of the private tree AT THE TAGGED COMMIT, built by agent's release job and
 #     bound by its sha256 in the dispatch like everything else.
 #
@@ -36,7 +36,11 @@ inputs:
     required: false
     default: "."
   kit:
-    description: The support file holding the kit
+    description: >-
+      The file holding the kit: a published asset of the release (agent
+      releases carry it from the release that made it one, so a published
+      release can be revalidated on its own assets), or a support file
+      (candidates built before that)
     required: false
     default: e2e-kit.tar.gz
   lane-dir:
@@ -81,15 +85,19 @@ runs:
         printf '%s' "$DISPATCH" > "$work/dispatch.json"
         "${RC[@]}" dispatch check "$work/dispatch.json"
 
-        # manifest_file and asset_manifest_digest, and whether the kit is a
-        # support file at all. tr -d '\r': Python on Windows ends lines with CRLF.
+        # manifest_file and asset_manifest_digest, and where the kit is: a
+        # published asset (`manifest`, re-hashed against the manifest file
+        # below like any asset) or a support file (bound by the dispatch).
+        # tr -d '\r': Python on Windows ends lines with CRLF.
         "$PY" -c 'import json, sys
         payload = json.load(open(sys.argv[1]))["client_payload"]
         c = payload["candidate"]
-        print(c["manifest_file"], c["asset_manifest_digest"], "yes" if sys.argv[2] in payload["support"] else "no")' \
+        kit = sys.argv[2]
+        where = "manifest" if kit in payload["manifest"] else "support" if kit in payload["support"] else "none"
+        print(c["manifest_file"], c["asset_manifest_digest"], where)' \
           "$work/dispatch.json" "$KIT" | tr -d '\r' > "$work/candidate.txt"
-        read -r manifest_file digest kit_ok < "$work/candidate.txt"
-        [ "$kit_ok" = yes ] || { echo "::error::the candidate carries no support file $KIT: no kit, nothing to run the scenario with"; exit 1; }
+        read -r manifest_file digest kit_where < "$work/candidate.txt"
+        [ "$kit_where" != none ] || { echo "::error::the candidate carries no $KIT, as an asset or a support file: nothing to run the scenario with"; exit 1; }
 
         assets=()
         dests=()
@@ -103,6 +111,7 @@ runs:
 
         only=(--only "$manifest_file" --only "$KIT")
         verify=()
+        [ "$kit_where" = manifest ] && verify+=(--only "$KIT")
         for a in "${assets[@]}"; do only+=(--only "$a"); verify+=(--only "$a"); done
         # bridge pull re-admits the artifact against the dispatch and refuses any
         # blob that does not hash to its layer digest; verify-files then checks

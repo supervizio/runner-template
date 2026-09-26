@@ -136,9 +136,9 @@ per-job `GITHUB_TOKEN`s GitHub mints with each job's own permissions.
   `secrets:`**, under the same two permissions. Each of its jobs is a leg,
   reported as `e2e / leg/<id>`; instead of checking out the private tree and
   downloading CI artifacts it runs `.github/actions/release-candidate`, which
-  pulls only the assets that leg installs plus the support file
-  `e2e-kit.tar.gz` (agent's `e2e/`, `setup/`, `go.work`, `.dockerignore` at the
-  tagged commit), by digest, re-hashes the assets against the manifest file,
+  pulls only the assets that leg installs plus `e2e-kit.tar.gz` (agent's
+  `e2e/`, `setup/`, `go.work`, `.dockerignore` at the tagged commit), by
+  digest, re-hashes the assets against the manifest file,
   and lays them out where the merge lane would have. The scenario that follows
   is the merge lane's, byte for byte, on the release's own assets.
 - `verdict` — `contents: read`, `actions: read`. What the leg jobs imply
@@ -498,7 +498,10 @@ The contract gives reconcil-release a decidable state per `(tag, release)`:
 ## 10. Open questions (phases 3 to 5)
 
 - **Release scenarios.** agent: `e2e.yml` in release mode (section 4), fed by
-  the support file `e2e-kit.tar.gz` and the published assets. libprobe's legs
+  the published assets and `e2e-kit.tar.gz`. The kit is a published asset of
+  agent releases (in the manifest, re-hashed like any asset), so a published
+  release can be revalidated on its own assets alone; candidates built before
+  that carried it as a support file, and the action accepts either. libprobe's legs
   run the `abi` scenario (section 5).
   What it does not cover: 13 of the 26 platform archives of a libprobe release
   (`linux-arm64-musl`, and every 32-bit and exotic Linux archive: arm, armv6, 386,
