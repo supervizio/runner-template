@@ -3929,6 +3929,128 @@ jobs:
             "https://api.github.com/repos/${{ needs.resolve.outputs.source_repo }}/statuses/${{ needs.resolve.outputs.sha }}" \
             -d "{\"state\":\"$STATE\",\"context\":\"e2e/bsd/freebsd-amd64\",\"description\":\"$DESC\",\"target_url\":\"${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}\"}"
 
+  # THE FLOOR OF THE FREEBSD 14 BRANCH, AS A GUEST. agent links its FreeBSD
+  # binary against the oldest 14.x sysroot the mirror still serves (agent's
+  # build-bsd-cross, sysroot_sha256), and a binary carries its sysroot's
+  # expectations: the leg above proves forward onto 15.x, nothing proved the
+  # 14.x the sysroot claims. This one does.
+  #
+  # MERGE LANE ONLY, AND ADVISORY. It is not a release-contract leg: its name
+  # is not `leg/<id>`, policy.json does not list it, and release mode skips it,
+  # so the contract's leg IDs (`leg/freebsd/amd64`) stay exactly what they
+  # were. It is not in `report`'s needs either, so it neither delays nor
+  # colours the aggregate verdict; it posts its own status,
+  # e2e/bsd/freebsd-14-amd64, which nothing requires. Promote it to gating by
+  # adding it to `report` (needs AND LEGS) and to the policy -- not by
+  # dropping continue-on-error alone.
+  #
+  # validate-detection.sh is not run, same as the 15.x amd64 leg:
+  # expected-matrix.json's freebsd-amd64 row expects "FreeBSD 15".
+  e2e-bsd-freebsd-14-amd64:
+    name: E2E BSD freebsd 14 amd64 (advisory)
+    needs: [resolve]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    if: ${{ inputs.mode != 'release' && github.event.inputs.arm_only != 'true' }}
+    continue-on-error: true
+    steps:
+      - name: Report status (pending)
+        if: needs.resolve.outputs.sha != ''
+        continue-on-error: true
+        env:
+          GH_TOKEN: ${{ secrets.AGENT_REPO_TOKEN }}
+        run: |
+          [ -z "$GH_TOKEN" ] && exit 0
+          curl -sf -X POST -H "Authorization: Bearer $GH_TOKEN" -H "Accept: application/vnd.github+json" \
+            "https://api.github.com/repos/${{ needs.resolve.outputs.source_repo }}/statuses/${{ needs.resolve.outputs.sha }}" \
+            -d '{"state":"pending","context":"e2e/bsd/freebsd-14-amd64","description":"Running...","target_url":"${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"}'
+
+      - name: Checkout agent code
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: ${{ needs.resolve.outputs.source_repo }}
+          ref: ${{ needs.resolve.outputs.ref }}
+          token: ${{ secrets.AGENT_REPO_TOKEN }}
+          persist-credentials: false
+
+      # The bench pulled this from zot; the hosted runner takes the same bytes
+      # from the GitHub artifact agent's CI mirrors. Downloaded on the HOST and
+      # synced into the guest by vmactions -- the token never enters the VM.
+      - name: Download binary from the agent run (cross-repo)
+        uses: actions/download-artifact@70fc10c6e5e1ce46ad2ea6f2b72d43f7d47b13c3 # v8.0.0
+        with:
+          name: supervizio-freebsd-amd64
+          path: bin
+          repository: ${{ needs.resolve.outputs.source_repo }}
+          run-id: ${{ needs.resolve.outputs.run_id }}
+          github-token: ${{ secrets.AGENT_REPO_TOKEN }}
+
+      - name: Verify the binary arrived
+        run: |
+          set -euo pipefail
+          ls -la bin/
+          [ -s "bin/supervizio-freebsd-amd64" ] || {
+            echo "::error::supervizio-freebsd-amd64 missing or empty — did agent's CI publish it? (E2E_BRIDGE_PLATFORMS)" >&2
+            exit 1
+          }
+          mv "bin/supervizio-freebsd-amd64" bin/supervizio
+
+      - name: Install, validate and uninstall in a FreeBSD 14 guest
+        uses: vmactions/freebsd-vm@4469451fe39bee80be4066836c5170362e9349f3 # v1.5.7
+        with:
+          usesh: true
+          # Pinned to the 14.x agent's FreeBSD sysroot is linked against, and
+          # moved with it: the sysroot is the oldest 14.x the mirror serves
+          # (14.4, EoL 2026-12-31), so this guest is too. v1.5.7 ships
+          # conf/14.4.conf and 14.5.conf.
+          release: '14.4'
+          copyback: false
+          prepare: pkg install -y jq
+          run: |
+            set -e
+            WS="$(pwd)"
+            echo "=== Platform ==="; uname -a
+            export SUPERVIZIO_LOCAL_BIN="$WS/bin/supervizio"
+            chmod +x "$SUPERVIZIO_LOCAL_BIN"
+
+            echo "=== Install ==="
+            sh "$WS/setup/install.sh" || { echo "::error::install.sh failed"; exit 1; }
+
+            echo "=== Verify install ==="
+            [ -x /usr/local/bin/supervizio ] || { echo "binary not installed"; exit 1; }
+            /usr/local/bin/supervizio --version
+
+            echo "=== Validate probe ==="
+            sh "$WS/e2e/validate-probe.sh" /usr/local/bin/supervizio \
+              || { echo "::error::validate-probe.sh failed"; exit 1; }
+
+            echo "=== Supervision scenarios ==="
+            sh "$WS/e2e/scenario-battery.sh" /usr/local/bin/supervizio \
+              || { echo "::error::scenario-battery.sh failed"; exit 1; }
+
+            echo "=== Uninstall ==="
+            # uninstall.sh PROMPTS before removing the config dir unless this is
+            # set, and there is no tty here: the read either takes EOF and trips
+            # `set -e`, or blocks until the job timeout. The bench leg this
+            # replaces sets it; the BSDs need it most, because install.sh puts
+            # their config under /usr/local/etc where the prompt actually fires.
+            SUPERVIZIO_NON_INTERACTIVE=true; export SUPERVIZIO_NON_INTERACTIVE
+            sh "$WS/setup/uninstall.sh"
+            [ -x /usr/local/bin/supervizio ] && echo "::warning::binary still present after uninstall" || true
+
+      - name: Report status (result)
+        if: always() && needs.resolve.outputs.sha != ''
+        continue-on-error: true
+        env:
+          GH_TOKEN: ${{ secrets.AGENT_REPO_TOKEN }}
+        run: |
+          [ -z "$GH_TOKEN" ] && exit 0
+          STATE="success"; DESC="Passed"
+          if [ "${{ job.status }}" != "success" ]; then STATE="failure"; DESC="Failed"; fi
+          curl -sf -X POST -H "Authorization: Bearer $GH_TOKEN" -H "Accept: application/vnd.github+json" \
+            "https://api.github.com/repos/${{ needs.resolve.outputs.source_repo }}/statuses/${{ needs.resolve.outputs.sha }}" \
+            -d "{\"state\":\"$STATE\",\"context\":\"e2e/bsd/freebsd-14-amd64\",\"description\":\"$DESC\",\"target_url\":\"${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}\"}"
+
   e2e-bsd-netbsd-amd64:
     name: ${{ inputs.mode == 'release' && 'leg/netbsd/amd64' || 'E2E BSD netbsd amd64' }}
     needs: [resolve]
