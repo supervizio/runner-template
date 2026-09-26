@@ -4039,7 +4039,10 @@ jobs:
             [ -x /usr/local/bin/supervizio ] && echo "::warning::binary still present after uninstall" || true
 
       - name: Report status (result)
-        if: always() && needs.resolve.outputs.sha != ''
+        # !cancelled(), as in `report`'s final status: a run superseded by
+        # cancel-in-progress would otherwise post `failure` for a SHA its
+        # replacement is still testing.
+        if: ${{ !cancelled() && needs.resolve.outputs.sha != '' }}
         continue-on-error: true
         env:
           GH_TOKEN: ${{ secrets.AGENT_REPO_TOKEN }}
