@@ -1,9 +1,7 @@
 {
   "schema": "supervizio.release-policy/v1",
   "inventory": {
-    "taken_on": "2026-09-25",
-    "e2e_yml": "supervizio/runner-template@3b0f5b79f154ef32e1c9db6e82b488847f2b8dd0:.github/workflows/e2e.yml",
-    "external_e2e_yml": "supervizio/runner-template@3b0f5b79f154ef32e1c9db6e82b488847f2b8dd0:.github/workflows/external-e2e.yml",
+    "purpose": "validate-release.yml run by hand (workflow_dispatch) on a TEST candidate of supervizio/agent (a v0.0.0-test.N tag that exists nowhere in git, built by agent's release.yml with the `candidate_tag` input). Exactly the production agent legs of policy.json -- e2e.yml in release mode -- except the bridge package: the candidate is pushed to the measurement package this repository already reads, so no production package is created or granted for a test. Never selected by repository_dispatch, and evidence refuses every workflow_dispatch run, so no receipt can come out of it. tests/test_release_contract.py holds it equal to policy.json everywhere else.",
     "pending_prs": {}
   },
   "validation": {
@@ -16,7 +14,7 @@
   "repositories": {
     "supervizio/agent": {
       "manifest_file": "checksums.txt",
-      "bridge_package": "supervizio/agent-release-candidates",
+      "bridge_package": "supervizio/release-contract-bridge-probe",
       "legs": [
         {
           "id": "docker/amd64/debian-glibc",
@@ -441,192 +439,6 @@
           "from": "e2e.yml e2e-linux-exotic[loong64]",
           "runner": "ubuntu-24.04",
           "scenario": "e2e"
-        }
-      ]
-    },
-    "supervizio/libprobe": {
-      "manifest_file": "SHA256SUMS",
-      "bridge_package": "supervizio/libprobe-release-candidates",
-      "legs": [
-        {
-          "id": "native/linux-amd64",
-          "state": "required",
-          "merge_ci": "gating",
-          "from": "external-e2e.yml native[linux-amd64]",
-          "runner": "ubuntu-24.04",
-          "scenario": "abi",
-          "harness": {
-            "platform": "linux-amd64",
-            "host": "native"
-          }
-        },
-        {
-          "id": "native/linux-arm64",
-          "state": "required",
-          "merge_ci": "gating",
-          "from": "external-e2e.yml native[linux-arm64]",
-          "runner": "ubuntu-24.04-arm",
-          "scenario": "abi",
-          "harness": {
-            "platform": "linux-arm64",
-            "host": "native"
-          }
-        },
-        {
-          "id": "native/windows-amd64",
-          "state": "required",
-          "merge_ci": "gating",
-          "from": "external-e2e.yml native[windows-amd64]",
-          "runner": "windows-latest",
-          "scenario": "abi",
-          "harness": {
-            "platform": "windows-amd64",
-            "host": "native"
-          }
-        },
-        {
-          "id": "native/windows-arm64",
-          "state": "required",
-          "merge_ci": "gating",
-          "from": "external-e2e.yml native[windows-arm64]",
-          "runner": "windows-11-arm",
-          "scenario": "abi",
-          "harness": {
-            "platform": "windows-arm64",
-            "host": "native"
-          }
-        },
-        {
-          "id": "native/macos-amd64",
-          "state": "required",
-          "merge_ci": "gating",
-          "from": "external-e2e.yml native[macos-amd64]",
-          "runner": "macos-26-intel",
-          "scenario": "abi",
-          "harness": {
-            "platform": "darwin-amd64",
-            "host": "native"
-          }
-        },
-        {
-          "id": "native/macos-arm64",
-          "state": "required",
-          "merge_ci": "gating",
-          "from": "external-e2e.yml native[macos-arm64]",
-          "runner": "macos-26",
-          "scenario": "abi",
-          "harness": {
-            "platform": "darwin-arm64",
-            "host": "native"
-          }
-        },
-        {
-          "id": "bsd/freebsd-amd64",
-          "state": "required",
-          "merge_ci": "gating",
-          "from": "external-e2e.yml freebsd[amd64] (FreeBSD 15.0)",
-          "runner": "ubuntu-24.04",
-          "scenario": "abi",
-          "harness": {
-            "platform": "freebsd-amd64",
-            "host": "freebsd"
-          }
-        },
-        {
-          "id": "bsd/freebsd-arm64",
-          "state": "advisory",
-          "merge_ci": "advisory",
-          "from": "external-e2e.yml freebsd[arm64] (FreeBSD 15.0)",
-          "runner": "ubuntu-24.04-arm",
-          "scenario": "abi",
-          "harness": {
-            "platform": "freebsd-arm64",
-            "host": "freebsd"
-          }
-        },
-        {
-          "id": "bsd/openbsd-amd64",
-          "state": "required",
-          "merge_ci": "gating",
-          "from": "external-e2e.yml openbsd[amd64] (OpenBSD 7.9)",
-          "runner": "ubuntu-24.04",
-          "scenario": "abi",
-          "harness": {
-            "platform": "openbsd-amd64",
-            "host": "openbsd"
-          }
-        },
-        {
-          "id": "bsd/openbsd-arm64",
-          "state": "advisory",
-          "merge_ci": "advisory",
-          "from": "external-e2e.yml openbsd[arm64] (OpenBSD 7.9)",
-          "runner": "ubuntu-24.04-arm",
-          "scenario": "abi",
-          "harness": {
-            "platform": "openbsd-arm64",
-            "host": "openbsd"
-          }
-        },
-        {
-          "id": "bsd/netbsd-amd64",
-          "state": "required",
-          "merge_ci": "gating",
-          "from": "external-e2e.yml netbsd[amd64] (NetBSD 10.1)",
-          "runner": "ubuntu-24.04",
-          "scenario": "abi",
-          "harness": {
-            "platform": "netbsd-amd64",
-            "host": "netbsd"
-          }
-        },
-        {
-          "id": "bsd/netbsd-arm64",
-          "state": "advisory",
-          "merge_ci": "advisory",
-          "from": "external-e2e.yml netbsd[arm64] (NetBSD 10.1)",
-          "runner": "ubuntu-24.04-arm",
-          "scenario": "abi",
-          "harness": {
-            "platform": "netbsd-arm64",
-            "host": "netbsd"
-          }
-        },
-        {
-          "id": "container/ubuntu",
-          "state": "required",
-          "merge_ci": "advisory",
-          "from": "external-e2e.yml containers[ubuntu]",
-          "runner": "ubuntu-24.04",
-          "scenario": "abi",
-          "harness": {
-            "platform": "linux-amd64",
-            "host": "container-ubuntu"
-          }
-        },
-        {
-          "id": "container/alpine",
-          "state": "required",
-          "merge_ci": "advisory",
-          "from": "external-e2e.yml containers[alpine]",
-          "runner": "ubuntu-24.04",
-          "scenario": "abi",
-          "harness": {
-            "platform": "linux-amd64-musl",
-            "host": "container-alpine"
-          }
-        },
-        {
-          "id": "container/scratch",
-          "state": "required",
-          "merge_ci": "advisory",
-          "from": "external-e2e.yml containers[scratch]",
-          "runner": "ubuntu-24.04",
-          "scenario": "abi",
-          "harness": {
-            "platform": "linux-amd64-musl",
-            "host": "container-scratch"
-          }
         }
       ]
     }

@@ -12,6 +12,11 @@ name: validate-release
 #            schedules one leg per required leg (plus the advisory ones).
 #   leg/<id> pulls the candidate BY DIGEST, re-hashes every file on arrival and
 #            again against the manifest file, and only then runs its scenario.
+#   e2e      the legs whose scenario is `e2e` (every agent leg): e2e.yml,
+#            called in release mode. Its jobs are `e2e / leg/<id>`; each pulls
+#            only the assets it installs plus the test kit, by digest, and runs
+#            the same scenario the merge lane runs -- on the release's bytes,
+#            with no checkout of the private tree and no secret.
 #   verdict  reads this run's leg jobs and says what they imply. It is not the
 #            receipt: the private side builds that itself from the completed
 #            run (`release_contract.py evidence`), and believes nothing else.
@@ -57,6 +62,7 @@ on:
         options:
           - policy.json
           - tests/proof-policy.json
+          - tests/e2e-proof-policy.json
 
 permissions: {}
 
@@ -77,6 +83,9 @@ jobs:
       packages: read  # read the candidate's OCI manifest -- never its blobs
     outputs:
       legs: ${{ steps.admit.outputs.legs }}
+      e2e: ${{ steps.admit.outputs.e2e }}
+      dispatch: ${{ steps.admit.outputs.dispatch }}
+      policy: ${{ steps.admit.outputs.policy }}
     steps:
       - &checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -102,7 +111,7 @@ jobs:
             repository_dispatch) policy=policy.json ;;
             workflow_dispatch)
               case "$INPUT_POLICY" in
-                policy.json|tests/proof-policy.json) policy="$INPUT_POLICY" ;;
+                policy.json|tests/proof-policy.json|tests/e2e-proof-policy.json) policy="$INPUT_POLICY" ;;
                 *) echo "::error::unknown policy '$INPUT_POLICY'"; exit 1 ;;
               esac ;;
             *) echo "::error::validate-release does not run on $EVENT_NAME"; exit 1 ;;
@@ -118,6 +127,7 @@ jobs:
           PYEOF
           {
             echo "PY=$PY"
+            echo "POLICY=$policy"
             echo "RC=$PY release-contract/release_contract.py --policy release-contract/$policy"
           } >> "$GITHUB_ENV"
 
@@ -129,12 +139,23 @@ jobs:
         run: |
           set -euo pipefail
           $RC dispatch check dispatch.json
-          $RC bridge admit --dispatch dispatch.json --run-id "$RUN_ID" --legs-output legs.json
-          echo "legs=$(cat legs.json)" >> "$GITHUB_OUTPUT"
+          $RC bridge admit --dispatch dispatch.json --run-id "$RUN_ID" --legs-output legs.json --e2e-output e2e.txt
+          {
+            echo "legs=$(cat legs.json)"
+            echo "e2e=$(cat e2e.txt)"
+            echo "policy=$POLICY"
+            # The body e2e.yml re-reads, compact and on one line. It re-checks
+            # it itself (dispatch check, then the pull re-admits the artifact):
+            # admit's word is not what a leg runs on.
+            echo "dispatch=$("$PY" -c 'import json; print(json.dumps(json.load(open("dispatch.json")), separators=(",", ":")))')"
+          } >> "$GITHUB_OUTPUT"
 
   leg:
     name: leg/${{ matrix.leg.id }}
     needs: [admit]
+    # An empty matrix is an error, not a no-op: an agent candidate schedules
+    # nothing here, its legs are e2e.yml's.
+    if: needs.admit.outputs.legs != '[]'
     runs-on: ${{ matrix.leg.runner }}
     # A BSD guest on an arm64 runner has no KVM: QEMU emulates every instruction
     # and the boot alone can take most of an hour (external-e2e.yml measured
@@ -282,9 +303,25 @@ jobs:
           set -euo pipefail
           $RC scenario --dispatch dispatch.json --leg "$LEG" --dir candidate --work work --stage check
 
+  # The agent legs: e2e.yml's jobs, in release mode. No `secrets:` -- not
+  # inherit, not one: the called workflow sees every secret empty, which is
+  # what lets it execute candidate bytes. Its permissions cannot exceed these.
+  e2e:
+    name: e2e
+    needs: [admit]
+    if: needs.admit.outputs.e2e == 'true'
+    permissions:
+      contents: read
+      packages: read
+    uses: ./.github/workflows/e2e.yml
+    with:
+      mode: release
+      dispatch: ${{ needs.admit.outputs.dispatch }}
+      policy: ${{ needs.admit.outputs.policy }}
+
   verdict:
     name: verdict
-    needs: [admit, leg]
+    needs: [admit, leg, e2e]
     if: always()
     runs-on: ubuntu-24.04
     timeout-minutes: 10

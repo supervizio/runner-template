@@ -131,6 +131,16 @@ per-job `GITHUB_TOKEN`s GitHub mints with each job's own permissions.
   then `manifest verify-files` re-hashes everything against the manifest file
   pinned by `asset_manifest_digest`; only then does the scenario run, with no
   token in its environment.
+- `e2e` — the legs whose scenario is `e2e` (every agent leg): `e2e.yml` called
+  as a reusable workflow with `mode: release`, the dispatch body, and **no
+  `secrets:`**, under the same two permissions. Each of its jobs is a leg,
+  reported as `e2e / leg/<id>`; instead of checking out the private tree and
+  downloading CI artifacts it runs `.github/actions/release-candidate`, which
+  pulls only the assets that leg installs plus the support file
+  `e2e-kit.tar.gz` (agent's `e2e/`, `setup/`, `go.work`, `.dockerignore` at the
+  tagged commit), by digest, re-hashes the assets against the manifest file,
+  and lays them out where the merge lane would have. The scenario that follows
+  is the merge lane's, byte for byte, on the release's own assets.
 - `verdict` — `contents: read`, `actions: read`. What the leg jobs imply
   (`judge`); red unless `success`. It is a signal for humans, never a receipt.
 
@@ -287,15 +297,16 @@ What `validate-release.yml` guarantees:
   `admit` checks it. The runs API returns it as `display_title`; the dispatch
   payload itself is not retrievable afterwards, so this is what binds a run to one
   candidate.
-- one job per scheduled leg, named exactly `leg/<leg id>`; its conclusion is the
-  leg's result. A leg of `required_matrix` this revision's policy cannot run is not
-  scheduled, so it reads `missing` and the verdict is `error`: naming a leg never
+- one job per scheduled leg, named exactly `leg/<leg id>` — or
+  `e2e / leg/<leg id>` for a leg `e2e.yml` runs for the `e2e` job — that caller
+  only, one level, nothing else counts; its conclusion is the leg's result. A leg of `required_matrix`
+  this revision's policy cannot run is not scheduled, so it reads `missing` and the verdict is `error`: naming a leg never
   makes it pass. Advisory legs are scheduled too and land in `results`; the verdict
   ignores them.
 - a leg whose release scenario is not wired (`policy.json` `scenario: null`) fails.
-  **Today that is every agent leg**: e2e.yml's scenarios still read the private
-  tree, and running them on candidate bytes is the next change (section 10). Until
-  then no agent candidate can pass — fail closed. Every libprobe leg runs the `abi`
+  **Today that is no production leg.** Every agent leg is `scenario: "e2e"`:
+  `e2e.yml` runs it in release mode (above), and a required agent leg `e2e.yml`
+  does not produce a job for reads `missing`. Every libprobe leg runs the `abi`
   scenario (section 5).
 - a scenario runs in three steps: `scenario --stage prepare` on the leg's runner
   (checks the pulled files; for a harness, stages it in `work/`), the harness
@@ -307,13 +318,16 @@ What `validate-release.yml` guarantees:
 - triggers are `repository_dispatch` and `workflow_dispatch` only — never
   `pull_request` or `pull_request_target`, so a fork's code never runs with a
   token that can read a candidate package. `workflow_dispatch` may select
-  `tests/proof-policy.json`; `repository_dispatch` always uses `policy.json`.
+  `tests/proof-policy.json` or `tests/e2e-proof-policy.json` (the production
+  agent legs, on the measurement package, for a test candidate);
+  `repository_dispatch` always uses `policy.json`.
 
 ## 5. The required matrix
 
 `policy.json`, per repository. Each leg has an `id`, a `state`, the `runner` label
 `validate-release.yml` schedules it on, and a `scenario` (`null` until its release
-scenario is wired, which fails the leg; `integrity`, proof only; `abi`, below). A
+scenario is wired, which fails the leg; `integrity`, proof only; `abi`, below; `e2e`, run by `e2e.yml` in release mode rather
+than by the generic `leg` job, whose `runner` is then documentation). A
 leg whose scenario executes something names a `harness`: the `platform` whose
 published archive it runs and the `host` it runs on (`native`, `freebsd`,
 `openbsd`, `netbsd`, `container-ubuntu`, `container-alpine`, `container-scratch`).
@@ -483,13 +497,9 @@ The contract gives reconcil-release a decidable state per `(tag, release)`:
 
 ## 10. Open questions (phases 3 to 5)
 
-- **Release scenarios.** Every agent leg is `scenario: null` and fails.
-  agent: `e2e.yml`'s jobs check out the private tree (`AGENT_REPO_TOKEN`) for
-  `e2e/` and `setup/` and download CI artifacts by name; in the release lane those
-  travel as `support` files (a test kit built privately, bound by digest) and the
-  published packages, and `e2e.yml` gains a `workflow_call` mode that takes them
-  from `bridge pull` instead — which needs the candidate layout agent's release job
-  will produce (phase 5). libprobe's legs run the `abi` scenario (section 5).
+- **Release scenarios.** agent: `e2e.yml` in release mode (section 4), fed by
+  the support file `e2e-kit.tar.gz` and the published assets. libprobe's legs
+  run the `abi` scenario (section 5).
   What it does not cover: 13 of the 26 platform archives of a libprobe release
   (`linux-arm64-musl`, and every 32-bit and exotic Linux archive: arm, armv6, 386,
   riscv64, ppc64le, s390x, loong64, glibc and musl) are bound by the manifest but
@@ -503,7 +513,14 @@ The contract gives reconcil-release a decidable state per `(tag, release)`:
   adds or changes as able to try.
 - **Coverage per asset.** Both repositories publish assets that no leg of the
   matrix executes. Say which must be exercised, or record them in the receipt as
-  unexercised.
+  unexercised. agent, today: the legs install the amd64 and arm64 `.deb`,
+  `.rpm`, `.apk`, `.pkg.tar.zst`, the eleven exotic-arch packages, both OpenBSD
+  `.tgz`, and run the raw Linux amd64/arm64 (glibc and musl), loong64, macOS,
+  Windows `.exe`, FreeBSD and NetBSD binaries. Nothing executes the macOS
+  `.pkg`, the Windows `.zip` and `.nupkg`, the FreeBSD `.pkg`, the NetBSD
+  `.tgz`, the `.rpm`/`.pkg.tar.zst` of the other arches, or the remaining raw
+  Linux binaries (agent's release job does prove the raw OpenBSD binaries are
+  the bytes inside the tested `.tgz`).
 - **Private side changes** (not made here): `create-release` builds the manifest
   file (`manifest build --repository …`), `bridge push`es the candidate, attaches
   the pending receipt and dispatches; a promotion workflow `on: status` (context
