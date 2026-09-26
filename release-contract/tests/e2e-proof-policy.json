@@ -244,7 +244,7 @@
           "id": "freebsd/amd64",
           "state": "required",
           "merge_ci": "gating",
-          "from": "e2e.yml e2e-bsd-freebsd-amd64 (FreeBSD 15.0)",
+          "from": "e2e.yml e2e-bsd-freebsd-amd64 (FreeBSD 15.1)",
           "runner": "ubuntu-24.04",
           "scenario": "e2e"
         },
@@ -252,7 +252,7 @@
           "id": "freebsd/arm64",
           "state": "required",
           "merge_ci": "gating",
-          "from": "e2e.yml e2e-bsd-freebsd-arm64 (FreeBSD 15.0)",
+          "from": "e2e.yml e2e-bsd-freebsd-arm64 (FreeBSD 15.1)",
           "runner": "ubuntu-24.04",
           "scenario": "e2e"
         },

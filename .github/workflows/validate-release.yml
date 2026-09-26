@@ -243,11 +243,11 @@ jobs:
 
       # Releases pinned, as in external-e2e.yml. The base system's cc is the
       # consumer's compiler; nothing is installed in the guest.
-      - name: Harness -- boot FreeBSD 15.0
+      - name: Harness -- boot FreeBSD 15.1
         if: ${{ matrix.leg.scenario == 'abi' && matrix.leg.host == 'freebsd' }}
         uses: vmactions/freebsd-vm@4469451fe39bee80be4066836c5170362e9349f3 # v1.5.7
         with:
-          release: '15.0'
+          release: '15.1'
           arch: ${{ runner.arch == 'ARM64' && 'aarch64' || 'x86_64' }}
           custom-shell-name: bsdvm
       - name: Harness -- boot OpenBSD 7.9

@@ -3875,9 +3875,13 @@ jobs:
           usesh: true
           # Pinned, for the same reason the Windows leg pins its image: an
           # unpinned guest floats with the action's default and moves coverage
-          # with no diff. agent/e2e/expected-matrix.json expects "FreeBSD 15"; the bench builds 15.0-RELEASE.
-          # The action's default here is 15.1.
-          release: '15.0'
+          # with no diff. agent/e2e/expected-matrix.json expects "FreeBSD 15".
+          # 15.1, not 15.0: 15.0 reaches end-of-life on 2026-09-30, and a guest
+          # past its EoL tests a system nobody should be running. 15.1 is
+          # supported until 2027-03-31 (freebsd.org/security); move it with
+          # that window. It happens to equal the action's default today --
+          # pinned anyway, so the default moving does not move this leg.
+          release: '15.1'
           copyback: false
           prepare: pkg install -y jq
           run: |
@@ -4516,9 +4520,13 @@ jobs:
           arch: aarch64
           # Pinned, for the same reason the Windows leg pins its image: an
           # unpinned guest floats with the action's default and moves coverage
-          # with no diff. agent/e2e/expected-matrix.json expects "FreeBSD 15"; the bench builds 15.0-RELEASE.
-          # The action's default here is 15.1.
-          release: '15.0'
+          # with no diff. agent/e2e/expected-matrix.json expects "FreeBSD 15".
+          # 15.1, not 15.0: 15.0 reaches end-of-life on 2026-09-30, and a guest
+          # past its EoL tests a system nobody should be running. 15.1 is
+          # supported until 2027-03-31 (freebsd.org/security); move it with
+          # that window. It happens to equal the action's default today --
+          # pinned anyway, so the default moving does not move this leg.
+          release: '15.1'
           copyback: false
           prepare: pkg install -y jq
           run: |
