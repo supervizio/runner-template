@@ -183,11 +183,13 @@ jobs:
           # Advisory, not fatal. The openbsd leg reports its own red, which is
           # the honest place for it -- failing the whole dispatch here would
           # take twenty-five other legs down with one missing package.
-          if ! printf '%s\n' "$names" | grep -qx 'supervizio-amd64.xbps'; then
-            echo "::warning::no supervizio-amd64.xbps in run $SRC_RUN - both void-xbps legs will fail. Its producer is agent's packages-xbps job."
-          fi
           if ! printf '%s\n' "$names" | grep -qx 'supervizio-openbsd-amd64-pkg'; then
             echo "::warning::no supervizio-openbsd-amd64-pkg in run $SRC_RUN - e2e-bsd-openbsd-amd64 will fail. Its producer is agent's package-openbsd job, which calls bsd-package.yml for both OpenBSD arches."
+          fi
+          # Advisory for the same reason: the two void-xbps legs report their
+          # own red.
+          if ! printf '%s\n' "$names" | grep -qx 'supervizio-amd64.xbps'; then
+            echo "::warning::no supervizio-amd64.xbps in run $SRC_RUN - both void-xbps legs will fail. Its producer is agent's packages-xbps job."
           fi
 
       - name: Display resolved parameters
@@ -1771,13 +1773,13 @@ jobs:
           ls -l "pkg/supervizio-amd64.deb"
 
       # Debian's own pacman (pacman-package-manager) is installed beside apt
-      # before anything else. The owner's rule: the agent must not stop at
-      # os-release and apt on a Debian -- a second package manager present is
-      # a case to prove, like Alpine's apk. So this leg asserts both sides of
-      # it: install.sh still installs the .deb (dpkg owns this system), and
-      # the agent's inventory reports pacman available while apt stays the
-      # one primary (validate-detection.sh against agent's expected-matrix,
-      # whose debian-vm-amd64 column lists pkg_available: apt, pacman).
+      # before anything else. On a Debian the agent must not stop at
+      # os-release and apt: a second package manager present is a case to
+      # prove, as Alpine's apk is. So this leg asserts both sides of it:
+      # install.sh still installs the .deb (dpkg owns this system), and the
+      # agent's inventory reports pacman available while apt stays the one
+      # primary (validate-detection.sh against agent's expected-matrix, whose
+      # debian-vm-amd64 column lists pkg_available: apt, pacman).
       - name: Install, graft, validate and uninstall in a debian guest
         uses: vmactions/debian-vm@389ba1da28ff5b440cba52db8e03fc2e08e2affa # v1.0.0
         with:
