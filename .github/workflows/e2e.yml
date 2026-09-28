@@ -3330,7 +3330,8 @@ jobs:
   e2e-linux-exotic:
     name: ${{ inputs.mode == 'release' && format('leg/linux-exotic/{0}', matrix.name) || format('E2E Linux exotic {0}', matrix.name) }}
     needs: [resolve]
-    runs-on: ubuntu-26.04
+    # One leg carries its own `runner`, below; every other one runs here.
+    runs-on: ${{ matrix.runner || 'ubuntu-26.04' }}
     timeout-minutes: 45
     if: ${{ github.event.inputs.arm_only != 'true' }}
     strategy:
@@ -3359,6 +3360,8 @@ jobs:
         #         input for the artifact, install.sh's vocabulary for the
         #         release -- arm7 is `arm`, arm6 is `armhf`. Release mode pulls
         #         this one; the leg renames it to `artifact` either way.
+        # runner  only where a leg cannot run on the job's default image, with
+        #         the reason and the condition for dropping it beside it.
         include:
           - name: 386-glibc
             target: linux-386
@@ -3370,6 +3373,18 @@ jobs:
             artifact: supervizio-386.deb
             release_asset: supervizio-386.deb
             prep: "apt-get update -qq && DEBIAN_FRONTEND=noninteractive apt-get install -y -qq jq procps"
+            # ubuntu-24.04, not 26.04: an i386 glibc container has no network
+            # on 26.04. Its Docker 29.4.2 vendors a seccomp profile that denies
+            # socketcall(2) (moby/profiles seccomp v0.2.2), which i386 glibc
+            # makes its socket calls through, so `apt-get update` cannot
+            # resolve deb.debian.org -- measured on ubuntu-26.04 image
+            # 20260920.143, run 36392064661, the one red leg of that run.
+            # 386-musl passed in the same run. Docker 29.4.3 ships the reverted
+            # profile: move this leg back once the 26.04 image carries it
+            # (actions/runner-images#14790). Unconfined seccomp would also get
+            # it through, but the battery would then run under a filter no
+            # other leg has.
+            runner: ubuntu-24.04
           - name: 386-musl
             target: linux-386-musl
             platform: linux/386

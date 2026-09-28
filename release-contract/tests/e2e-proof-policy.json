@@ -349,7 +349,7 @@
           "state": "required",
           "merge_ci": "gating",
           "from": "e2e.yml e2e-linux-exotic[386-glibc]",
-          "runner": "ubuntu-26.04",
+          "runner": "ubuntu-24.04",
           "scenario": "e2e"
         },
         {
