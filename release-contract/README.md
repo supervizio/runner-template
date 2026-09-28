@@ -350,14 +350,14 @@ Inventory taken from `main` at `3b0f5b7` (#101, #102 and #110 merged).
 
 | Legs | Count | Runner |
 |---|---|---|
-| `docker/{amd64,arm64}/{debian-glibc,alpine-musl,scratch}` | 6 | `ubuntu-24.04`, `ubuntu-24.04-arm` |
+| `docker/{amd64,arm64}/{debian-glibc,alpine-musl,scratch}` | 6 | `ubuntu-26.04`, `ubuntu-26.04-arm` |
 | `macos/amd64`, `macos/arm64` | 2 | `macos-15-intel`, `macos-15` |
 | `windows/amd64` (Windows Server), `windows/arm64` (Windows 11) | 2 | `windows-2025`, `windows-11-arm` |
-| `linux/amd64/{artix-dinit,debian-sysvinit,alpine-openrc,debian-systemd,rocky-systemd,opensuse-zypper,arch-pacman,alpine-runit,alpine-s6}` | 9 | `ubuntu-24.04` |
-| `linux/arm64/{alpine-openrc,alpine-runit,alpine-s6,alpine-dinit,debian-systemd,debian-sysvinit,rocky-systemd,opensuse-zypper,arch-pacman}` | 9 | `ubuntu-24.04-arm` |
-| `freebsd/{amd64,arm64}` (15.1), `netbsd/{amd64,arm64}` (10.1) | 4 | `ubuntu-24.04` (QEMU) |
-| `openbsd/amd64/{7.3,7.4,7.5,7.6,7.7,7.8,7.9}`, `openbsd/arm64/{7.8,7.9}` | 9 | `ubuntu-24.04` (QEMU) |
-| `linux-exotic/{386,armv7,riscv64,ppc64le,s390x}-{glibc,musl}`, `linux-exotic/armv6-musl`, `linux-exotic/loong64` | 12 | `ubuntu-24.04` (QEMU) |
+| `linux/amd64/{artix-dinit,debian-sysvinit,alpine-openrc,debian-systemd,rocky-systemd,opensuse-zypper,arch-pacman,alpine-runit,alpine-s6}` | 9 | `ubuntu-26.04` |
+| `linux/arm64/{alpine-openrc,alpine-runit,alpine-s6,alpine-dinit,debian-systemd,debian-sysvinit,rocky-systemd,opensuse-zypper,arch-pacman}` | 9 | `ubuntu-26.04-arm` |
+| `freebsd/{amd64,arm64}` (15.1), `netbsd/{amd64,arm64}` (10.1) | 4 | `ubuntu-26.04` (QEMU) |
+| `openbsd/amd64/{7.3,7.4,7.5,7.6,7.7,7.8,7.9}`, `openbsd/arm64/{7.8,7.9}` | 9 | `ubuntu-26.04` (QEMU) |
+| `linux-exotic/{386,armv7,riscv64,ppc64le,s390x}-{glibc,musl}`, `linux-exotic/armv6-musl`, `linux-exotic/loong64` | 12 | `ubuntu-26.04` (QEMU); `386-glibc` on `ubuntu-24.04` until 26.04's Docker lets i386 glibc open a socket (`e2e.yml`, actions/runner-images#14790) |
 
 `arm64-packages` gates the merge lane but is not a leg: it *builds* arm64 packages
 on a public runner. A release carries its own arm64 packages, built privately, and

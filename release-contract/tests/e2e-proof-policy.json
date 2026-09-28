@@ -21,7 +21,7 @@
           "state": "required",
           "merge_ci": "gating",
           "from": "e2e.yml e2e-docker-amd64[debian-glibc]",
-          "runner": "ubuntu-24.04",
+          "runner": "ubuntu-26.04",
           "scenario": "e2e"
         },
         {
@@ -29,7 +29,7 @@
           "state": "required",
           "merge_ci": "gating",
           "from": "e2e.yml e2e-docker-amd64[alpine-musl]",
-          "runner": "ubuntu-24.04",
+          "runner": "ubuntu-26.04",
           "scenario": "e2e"
         },
         {
@@ -37,7 +37,7 @@
           "state": "required",
           "merge_ci": "gating",
           "from": "e2e.yml e2e-docker-amd64[scratch]",
-          "runner": "ubuntu-24.04",
+          "runner": "ubuntu-26.04",
           "scenario": "e2e"
         },
         {
@@ -45,7 +45,7 @@
           "state": "required",
           "merge_ci": "gating",
           "from": "e2e.yml e2e-docker-arm64[debian-glibc]",
-          "runner": "ubuntu-24.04-arm",
+          "runner": "ubuntu-26.04-arm",
           "scenario": "e2e"
         },
         {
@@ -53,7 +53,7 @@
           "state": "required",
           "merge_ci": "gating",
           "from": "e2e.yml e2e-docker-arm64[alpine-musl]",
-          "runner": "ubuntu-24.04-arm",
+          "runner": "ubuntu-26.04-arm",
           "scenario": "e2e"
         },
         {
@@ -61,7 +61,7 @@
           "state": "required",
           "merge_ci": "gating",
           "from": "e2e.yml e2e-docker-arm64[scratch]",
-          "runner": "ubuntu-24.04-arm",
+          "runner": "ubuntu-26.04-arm",
           "scenario": "e2e"
         },
         {
@@ -101,7 +101,7 @@
           "state": "required",
           "merge_ci": "gating",
           "from": "e2e.yml e2e-linux-artix-dinit",
-          "runner": "ubuntu-24.04",
+          "runner": "ubuntu-26.04",
           "scenario": "e2e"
         },
         {
@@ -109,7 +109,7 @@
           "state": "required",
           "merge_ci": "gating",
           "from": "e2e.yml e2e-linux-debian-sysvinit",
-          "runner": "ubuntu-24.04",
+          "runner": "ubuntu-26.04",
           "scenario": "e2e"
         },
         {
@@ -117,7 +117,7 @@
           "state": "required",
           "merge_ci": "gating",
           "from": "e2e.yml e2e-linux-alpine-openrc",
-          "runner": "ubuntu-24.04",
+          "runner": "ubuntu-26.04",
           "scenario": "e2e"
         },
         {
@@ -125,7 +125,7 @@
           "state": "required",
           "merge_ci": "gating",
           "from": "e2e.yml e2e-linux-debian-systemd",
-          "runner": "ubuntu-24.04",
+          "runner": "ubuntu-26.04",
           "scenario": "e2e"
         },
         {
@@ -133,7 +133,7 @@
           "state": "required",
           "merge_ci": "gating",
           "from": "e2e.yml e2e-linux-rocky-systemd",
-          "runner": "ubuntu-24.04",
+          "runner": "ubuntu-26.04",
           "scenario": "e2e"
         },
         {
@@ -141,7 +141,7 @@
           "state": "required",
           "merge_ci": "gating",
           "from": "e2e.yml e2e-linux-opensuse-zypper",
-          "runner": "ubuntu-24.04",
+          "runner": "ubuntu-26.04",
           "scenario": "e2e"
         },
         {
@@ -149,7 +149,7 @@
           "state": "required",
           "merge_ci": "gating",
           "from": "e2e.yml e2e-linux-arch-pacman",
-          "runner": "ubuntu-24.04",
+          "runner": "ubuntu-26.04",
           "scenario": "e2e"
         },
         {
@@ -157,7 +157,7 @@
           "state": "required",
           "merge_ci": "gating",
           "from": "e2e.yml e2e-linux-alpine-runit",
-          "runner": "ubuntu-24.04",
+          "runner": "ubuntu-26.04",
           "scenario": "e2e"
         },
         {
@@ -165,7 +165,7 @@
           "state": "required",
           "merge_ci": "gating",
           "from": "e2e.yml e2e-linux-alpine-s6",
-          "runner": "ubuntu-24.04",
+          "runner": "ubuntu-26.04",
           "scenario": "e2e"
         },
         {
@@ -173,7 +173,7 @@
           "state": "required",
           "merge_ci": "gating",
           "from": "e2e.yml e2e-linux-arm64[alpine-openrc]",
-          "runner": "ubuntu-24.04-arm",
+          "runner": "ubuntu-26.04-arm",
           "scenario": "e2e"
         },
         {
@@ -181,7 +181,7 @@
           "state": "required",
           "merge_ci": "gating",
           "from": "e2e.yml e2e-linux-arm64[alpine-runit]",
-          "runner": "ubuntu-24.04-arm",
+          "runner": "ubuntu-26.04-arm",
           "scenario": "e2e"
         },
         {
@@ -189,7 +189,7 @@
           "state": "required",
           "merge_ci": "gating",
           "from": "e2e.yml e2e-linux-arm64[alpine-s6]",
-          "runner": "ubuntu-24.04-arm",
+          "runner": "ubuntu-26.04-arm",
           "scenario": "e2e"
         },
         {
@@ -197,7 +197,7 @@
           "state": "required",
           "merge_ci": "gating",
           "from": "e2e.yml e2e-linux-arm64[alpine-dinit]",
-          "runner": "ubuntu-24.04-arm",
+          "runner": "ubuntu-26.04-arm",
           "scenario": "e2e"
         },
         {
@@ -205,7 +205,7 @@
           "state": "required",
           "merge_ci": "gating",
           "from": "e2e.yml e2e-linux-arm64[debian-systemd]",
-          "runner": "ubuntu-24.04-arm",
+          "runner": "ubuntu-26.04-arm",
           "scenario": "e2e"
         },
         {
@@ -213,7 +213,7 @@
           "state": "required",
           "merge_ci": "gating",
           "from": "e2e.yml e2e-linux-arm64[debian-sysvinit]",
-          "runner": "ubuntu-24.04-arm",
+          "runner": "ubuntu-26.04-arm",
           "scenario": "e2e"
         },
         {
@@ -221,7 +221,7 @@
           "state": "required",
           "merge_ci": "gating",
           "from": "e2e.yml e2e-linux-arm64[rocky-systemd]",
-          "runner": "ubuntu-24.04-arm",
+          "runner": "ubuntu-26.04-arm",
           "scenario": "e2e"
         },
         {
@@ -229,7 +229,7 @@
           "state": "required",
           "merge_ci": "gating",
           "from": "e2e.yml e2e-linux-arm64[opensuse-zypper]",
-          "runner": "ubuntu-24.04-arm",
+          "runner": "ubuntu-26.04-arm",
           "scenario": "e2e"
         },
         {
@@ -237,7 +237,7 @@
           "state": "required",
           "merge_ci": "gating",
           "from": "e2e.yml e2e-linux-arm64[arch-pacman]",
-          "runner": "ubuntu-24.04-arm",
+          "runner": "ubuntu-26.04-arm",
           "scenario": "e2e"
         },
         {
@@ -245,7 +245,7 @@
           "state": "required",
           "merge_ci": "gating",
           "from": "e2e.yml e2e-bsd-freebsd-amd64 (FreeBSD 15.1)",
-          "runner": "ubuntu-24.04",
+          "runner": "ubuntu-26.04",
           "scenario": "e2e"
         },
         {
@@ -253,7 +253,7 @@
           "state": "required",
           "merge_ci": "gating",
           "from": "e2e.yml e2e-bsd-freebsd-arm64 (FreeBSD 15.1)",
-          "runner": "ubuntu-24.04",
+          "runner": "ubuntu-26.04",
           "scenario": "e2e"
         },
         {
@@ -261,7 +261,7 @@
           "state": "required",
           "merge_ci": "gating",
           "from": "e2e.yml e2e-bsd-netbsd-amd64 (NetBSD 10.1)",
-          "runner": "ubuntu-24.04",
+          "runner": "ubuntu-26.04",
           "scenario": "e2e"
         },
         {
@@ -269,7 +269,7 @@
           "state": "required",
           "merge_ci": "gating",
           "from": "e2e.yml e2e-bsd-netbsd-arm64 (NetBSD 10.1)",
-          "runner": "ubuntu-24.04",
+          "runner": "ubuntu-26.04",
           "scenario": "e2e"
         },
         {
@@ -277,7 +277,7 @@
           "state": "required",
           "merge_ci": "gating",
           "from": "e2e.yml e2e-bsd-openbsd-amd64[7.3]",
-          "runner": "ubuntu-24.04",
+          "runner": "ubuntu-26.04",
           "scenario": "e2e"
         },
         {
@@ -285,7 +285,7 @@
           "state": "required",
           "merge_ci": "gating",
           "from": "e2e.yml e2e-bsd-openbsd-amd64[7.4]",
-          "runner": "ubuntu-24.04",
+          "runner": "ubuntu-26.04",
           "scenario": "e2e"
         },
         {
@@ -293,7 +293,7 @@
           "state": "required",
           "merge_ci": "gating",
           "from": "e2e.yml e2e-bsd-openbsd-amd64[7.5]",
-          "runner": "ubuntu-24.04",
+          "runner": "ubuntu-26.04",
           "scenario": "e2e"
         },
         {
@@ -301,7 +301,7 @@
           "state": "required",
           "merge_ci": "gating",
           "from": "e2e.yml e2e-bsd-openbsd-amd64[7.6]",
-          "runner": "ubuntu-24.04",
+          "runner": "ubuntu-26.04",
           "scenario": "e2e"
         },
         {
@@ -309,7 +309,7 @@
           "state": "required",
           "merge_ci": "gating",
           "from": "e2e.yml e2e-bsd-openbsd-amd64[7.7]",
-          "runner": "ubuntu-24.04",
+          "runner": "ubuntu-26.04",
           "scenario": "e2e"
         },
         {
@@ -317,7 +317,7 @@
           "state": "required",
           "merge_ci": "gating",
           "from": "e2e.yml e2e-bsd-openbsd-amd64[7.8]",
-          "runner": "ubuntu-24.04",
+          "runner": "ubuntu-26.04",
           "scenario": "e2e"
         },
         {
@@ -325,7 +325,7 @@
           "state": "required",
           "merge_ci": "gating",
           "from": "e2e.yml e2e-bsd-openbsd-amd64[7.9]",
-          "runner": "ubuntu-24.04",
+          "runner": "ubuntu-26.04",
           "scenario": "e2e"
         },
         {
@@ -333,7 +333,7 @@
           "state": "required",
           "merge_ci": "gating",
           "from": "e2e.yml e2e-bsd-openbsd-arm64[7.8]",
-          "runner": "ubuntu-24.04",
+          "runner": "ubuntu-26.04",
           "scenario": "e2e"
         },
         {
@@ -341,7 +341,7 @@
           "state": "required",
           "merge_ci": "gating",
           "from": "e2e.yml e2e-bsd-openbsd-arm64[7.9]",
-          "runner": "ubuntu-24.04",
+          "runner": "ubuntu-26.04",
           "scenario": "e2e"
         },
         {
@@ -357,7 +357,7 @@
           "state": "required",
           "merge_ci": "gating",
           "from": "e2e.yml e2e-linux-exotic[386-musl]",
-          "runner": "ubuntu-24.04",
+          "runner": "ubuntu-26.04",
           "scenario": "e2e"
         },
         {
@@ -365,7 +365,7 @@
           "state": "required",
           "merge_ci": "gating",
           "from": "e2e.yml e2e-linux-exotic[armv7-glibc]",
-          "runner": "ubuntu-24.04",
+          "runner": "ubuntu-26.04",
           "scenario": "e2e"
         },
         {
@@ -373,7 +373,7 @@
           "state": "required",
           "merge_ci": "gating",
           "from": "e2e.yml e2e-linux-exotic[armv7-musl]",
-          "runner": "ubuntu-24.04",
+          "runner": "ubuntu-26.04",
           "scenario": "e2e"
         },
         {
@@ -381,7 +381,7 @@
           "state": "required",
           "merge_ci": "gating",
           "from": "e2e.yml e2e-linux-exotic[armv6-musl]",
-          "runner": "ubuntu-24.04",
+          "runner": "ubuntu-26.04",
           "scenario": "e2e"
         },
         {
@@ -389,7 +389,7 @@
           "state": "required",
           "merge_ci": "gating",
           "from": "e2e.yml e2e-linux-exotic[riscv64-glibc]",
-          "runner": "ubuntu-24.04",
+          "runner": "ubuntu-26.04",
           "scenario": "e2e"
         },
         {
@@ -397,7 +397,7 @@
           "state": "required",
           "merge_ci": "gating",
           "from": "e2e.yml e2e-linux-exotic[riscv64-musl]",
-          "runner": "ubuntu-24.04",
+          "runner": "ubuntu-26.04",
           "scenario": "e2e"
         },
         {
@@ -405,7 +405,7 @@
           "state": "required",
           "merge_ci": "gating",
           "from": "e2e.yml e2e-linux-exotic[ppc64le-glibc]",
-          "runner": "ubuntu-24.04",
+          "runner": "ubuntu-26.04",
           "scenario": "e2e"
         },
         {
@@ -413,7 +413,7 @@
           "state": "required",
           "merge_ci": "gating",
           "from": "e2e.yml e2e-linux-exotic[ppc64le-musl]",
-          "runner": "ubuntu-24.04",
+          "runner": "ubuntu-26.04",
           "scenario": "e2e"
         },
         {
@@ -421,7 +421,7 @@
           "state": "required",
           "merge_ci": "gating",
           "from": "e2e.yml e2e-linux-exotic[s390x-glibc]",
-          "runner": "ubuntu-24.04",
+          "runner": "ubuntu-26.04",
           "scenario": "e2e"
         },
         {
@@ -429,7 +429,7 @@
           "state": "required",
           "merge_ci": "gating",
           "from": "e2e.yml e2e-linux-exotic[s390x-musl]",
-          "runner": "ubuntu-24.04",
+          "runner": "ubuntu-26.04",
           "scenario": "e2e"
         },
         {
@@ -437,7 +437,7 @@
           "state": "required",
           "merge_ci": "gating",
           "from": "e2e.yml e2e-linux-exotic[loong64]",
-          "runner": "ubuntu-24.04",
+          "runner": "ubuntu-26.04",
           "scenario": "e2e"
         }
       ]

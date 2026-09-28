@@ -41,7 +41,7 @@ permissions:
 jobs:
   proof:
     name: dinit as PID 1 in a Chimera container
-    runs-on: ubuntu-24.04
+    runs-on: ubuntu-26.04
     timeout-minutes: 15
     env:
       # A DATED path, not a rolling one: the checksum below pins these exact

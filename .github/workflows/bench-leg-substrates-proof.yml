@@ -45,7 +45,7 @@ permissions:
 jobs:
   artix-dinit:
     name: pacman + dinit together, no VM
-    runs-on: ubuntu-24.04
+    runs-on: ubuntu-26.04
     timeout-minutes: 15
     env:
       # A TAG of artixlinux/artixlinux, not a repository. `artixlinux/base` and
@@ -130,7 +130,7 @@ jobs:
 
   debian-sysvinit:
     name: SysVinit as PID 1, no VM
-    runs-on: ubuntu-24.04
+    runs-on: ubuntu-26.04
     timeout-minutes: 15
     steps:
       - name: The base image ships no init at all

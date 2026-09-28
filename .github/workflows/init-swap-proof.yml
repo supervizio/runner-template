@@ -114,7 +114,7 @@ jobs:
   # ---------------------------------------------------------------------------
   baseline-alpine:
     name: 1a baseline alpine (expect openrc)
-    runs-on: ubuntu-24.04
+    runs-on: ubuntu-26.04
     continue-on-error: true
     timeout-minutes: 25
     steps:
@@ -137,7 +137,7 @@ jobs:
 
   baseline-debian:
     name: 1b baseline debian (expect systemd)
-    runs-on: ubuntu-24.04
+    runs-on: ubuntu-26.04
     continue-on-error: true
     timeout-minutes: 25
     steps:
@@ -162,7 +162,7 @@ jobs:
   # ---------------------------------------------------------------------------
   debian-sysvinit:
     name: 2 debian + sysvinit-core + ifupdown (expect PID1=init)
-    runs-on: ubuntu-24.04
+    runs-on: ubuntu-26.04
     continue-on-error: true
     timeout-minutes: 25
     steps:
@@ -289,7 +289,7 @@ jobs:
   # ---------------------------------------------------------------------------
   alpine-cmdline:
     name: 3 alpine + harmless cmdline marker (expect it to survive the reboot)
-    runs-on: ubuntu-24.04
+    runs-on: ubuntu-26.04
     continue-on-error: true
     # A guest that never comes back leaves the action waiting on SSH, and the
     # job default is 360 minutes. The first attempt at this experiment did
@@ -358,7 +358,7 @@ jobs:
     name: Evidence table
     needs: [baseline-alpine, baseline-debian, debian-sysvinit, alpine-cmdline]
     if: always()
-    runs-on: ubuntu-24.04
+    runs-on: ubuntu-26.04
     steps:
       - name: Summarise
         run: |

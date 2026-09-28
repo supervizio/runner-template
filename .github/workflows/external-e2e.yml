@@ -89,7 +89,7 @@ jobs:
   # collect job knows the dispatch was received (even if the matrix later dies).
   ack:
     name: Ack (pending status)
-    runs-on: ubuntu-24.04
+    runs-on: ubuntu-26.04
     steps:
       # Gate the whole workflow on source_repo, BEFORE anything reads it.
       #
@@ -142,8 +142,8 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - { platform: linux-amd64,   runner: ubuntu-24.04 }
-          - { platform: linux-arm64,   runner: ubuntu-24.04-arm }
+          - { platform: linux-amd64,   runner: ubuntu-26.04 }
+          - { platform: linux-arm64,   runner: ubuntu-26.04-arm }
           - { platform: windows-amd64, runner: windows-latest }
           - { platform: windows-arm64, runner: windows-11-arm }
           - { platform: macos-amd64,   runner: macos-26-intel }
@@ -172,8 +172,8 @@ jobs:
 
   # --- BSD legs via QEMU (vmactions): one job per (os, arch) -------------------
   #
-  # amd64 GATES, arm64 does not. The amd64 guests get /dev/kvm on ubuntu-24.04
-  # and a whole leg takes 4-7 min. The arm64 runner exposes no KVM, so QEMU
+  # amd64 GATES, arm64 does not. The amd64 guests get /dev/kvm on the x86_64
+  # runner and a whole leg takes 4-7 min. The arm64 runner exposes no KVM, so QEMU
   # emulates every instruction and a leg takes 64-122 min: gating on it would
   # hold every libprobe merge for hours. arm64 stays advisory -- red when it
   # fails, shown in the report table, outside the verdict.
@@ -212,7 +212,7 @@ jobs:
   freebsd-amd64:
     name: e2e freebsd-amd64
     needs: [ack]
-    runs-on: ubuntu-24.04
+    runs-on: ubuntu-26.04
     timeout-minutes: 40
     env: &freebsd-amd64
       LEG_OS: freebsd
@@ -238,7 +238,7 @@ jobs:
         id: boot-freebsd
         if: ${{ env.LEG_OS == 'freebsd' }}
         timeout-minutes: ${{ fromJSON(env.BOOT_TIMEOUT_MIN) }}
-        uses: vmactions/freebsd-vm@4469451fe39bee80be4066836c5170362e9349f3 # v1.5.7
+        uses: vmactions/freebsd-vm@a2f9a41fa97f6848b8c3b791087dfcdaa5b473ff # v1.5.8
         with:
           release: '15.1'
           arch: ${{ env.VM_ARCH }}
@@ -309,7 +309,7 @@ jobs:
     name: e2e freebsd-amd64 (retry)
     needs: [ack, freebsd-amd64]
     if: ${{ !cancelled() && needs.ack.result == 'success' && needs.freebsd-amd64.outputs.bootstrapped != 'true' }}
-    runs-on: ubuntu-24.04
+    runs-on: ubuntu-26.04
     timeout-minutes: 40
     env: *freebsd-amd64
     outputs:
@@ -319,7 +319,7 @@ jobs:
   openbsd-amd64:
     name: e2e openbsd-amd64
     needs: [ack]
-    runs-on: ubuntu-24.04
+    runs-on: ubuntu-26.04
     timeout-minutes: 40
     env: &openbsd-amd64
       LEG_OS: openbsd
@@ -334,7 +334,7 @@ jobs:
     name: e2e openbsd-amd64 (retry)
     needs: [ack, openbsd-amd64]
     if: ${{ !cancelled() && needs.ack.result == 'success' && needs.openbsd-amd64.outputs.bootstrapped != 'true' }}
-    runs-on: ubuntu-24.04
+    runs-on: ubuntu-26.04
     timeout-minutes: 40
     env: *openbsd-amd64
     outputs:
@@ -344,7 +344,7 @@ jobs:
   netbsd-amd64:
     name: e2e netbsd-amd64
     needs: [ack]
-    runs-on: ubuntu-24.04
+    runs-on: ubuntu-26.04
     timeout-minutes: 40
     env: &netbsd-amd64
       LEG_OS: netbsd
@@ -359,7 +359,7 @@ jobs:
     name: e2e netbsd-amd64 (retry)
     needs: [ack, netbsd-amd64]
     if: ${{ !cancelled() && needs.ack.result == 'success' && needs.netbsd-amd64.outputs.bootstrapped != 'true' }}
-    runs-on: ubuntu-24.04
+    runs-on: ubuntu-26.04
     timeout-minutes: 40
     env: *netbsd-amd64
     outputs:
@@ -372,7 +372,7 @@ jobs:
   freebsd-arm64:
     name: e2e freebsd-arm64
     needs: [ack]
-    runs-on: ubuntu-24.04-arm
+    runs-on: ubuntu-26.04-arm
     continue-on-error: true
     env:
       LEG_OS: freebsd
@@ -384,7 +384,7 @@ jobs:
   openbsd-arm64:
     name: e2e openbsd-arm64
     needs: [ack]
-    runs-on: ubuntu-24.04-arm
+    runs-on: ubuntu-26.04-arm
     continue-on-error: true
     env:
       LEG_OS: openbsd
@@ -398,7 +398,7 @@ jobs:
   netbsd-arm64:
     name: e2e netbsd-arm64
     needs: [ack]
-    runs-on: ubuntu-24.04-arm
+    runs-on: ubuntu-26.04-arm
     continue-on-error: true
     env:
       LEG_OS: netbsd
@@ -414,7 +414,7 @@ jobs:
   containers:
     name: e2e container-${{ matrix.distro }}
     needs: [ack]
-    runs-on: ubuntu-24.04
+    runs-on: ubuntu-26.04
     continue-on-error: true
     strategy:
       fail-fast: false
@@ -471,7 +471,7 @@ jobs:
     name: Collect metric reports
     needs: [native, freebsd-amd64, freebsd-amd64-retry, freebsd-arm64, openbsd-amd64, openbsd-amd64-retry, openbsd-arm64, netbsd-amd64, netbsd-amd64-retry, netbsd-arm64, containers]
     if: ${{ always() }}
-    runs-on: ubuntu-24.04
+    runs-on: ubuntu-26.04
     steps:
       - name: Download all per-leg reports
         uses: actions/download-artifact@70fc10c6e5e1ce46ad2ea6f2b72d43f7d47b13c3 # v8.0.0
@@ -511,7 +511,7 @@ jobs:
     name: Report → source status
     needs: [ack, native, freebsd-amd64, freebsd-amd64-retry, openbsd-amd64, openbsd-amd64-retry, netbsd-amd64, netbsd-amd64-retry]
     if: ${{ always() }}
-    runs-on: ubuntu-24.04
+    runs-on: ubuntu-26.04
     permissions:
       contents: read
       actions: read

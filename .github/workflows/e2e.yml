@@ -62,7 +62,7 @@ jobs:
 
   resolve:
     name: Resolve Inputs
-    runs-on: ubuntu-24.04
+    runs-on: ubuntu-26.04
     outputs:
       ref: ${{ steps.resolve.outputs.ref }}
       run_id: ${{ steps.resolve.outputs.run_id }}
@@ -202,7 +202,7 @@ jobs:
     name: ${{ inputs.mode == 'release' && format('leg/docker/amd64/{0}', matrix.name) || format('E2E Docker amd64 {0}', matrix.name) }}
     needs: [resolve]
     if: ${{ github.event.inputs.arm_only != 'true' }}
-    runs-on: ubuntu-24.04
+    runs-on: ubuntu-26.04
     timeout-minutes: 10
     strategy:
       fail-fast: false
@@ -439,7 +439,7 @@ jobs:
     # GitHub-hosted native arm64 runner: real Docker (no DinD sidecar, no QEMU)
     # and a native aarch64 toolchain. The binary is built natively here rather
     # than pulled from the lab zot store (unreachable from a hosted runner).
-    runs-on: ubuntu-24.04-arm
+    runs-on: ubuntu-26.04-arm
     timeout-minutes: 30
     strategy:
       fail-fast: false
@@ -1247,7 +1247,7 @@ jobs:
   e2e-linux-artix-dinit:
     name: ${{ inputs.mode == 'release' && 'leg/linux/amd64/artix-dinit' || 'E2E Linux artix-dinit' }}
     needs: [resolve]
-    runs-on: ubuntu-24.04
+    runs-on: ubuntu-26.04
     timeout-minutes: 30
     if: ${{ github.event.inputs.arm_only != 'true' }}
     env:
@@ -1394,7 +1394,7 @@ jobs:
   e2e-linux-debian-sysvinit:
     name: ${{ inputs.mode == 'release' && 'leg/linux/amd64/debian-sysvinit' || 'E2E Linux debian-sysvinit' }}
     needs: [resolve]
-    runs-on: ubuntu-24.04
+    runs-on: ubuntu-26.04
     timeout-minutes: 30
     if: ${{ github.event.inputs.arm_only != 'true' }}
     steps:
@@ -1543,7 +1543,7 @@ jobs:
   e2e-linux-alpine-openrc:
     name: ${{ inputs.mode == 'release' && 'leg/linux/amd64/alpine-openrc' || 'E2E Linux alpine-openrc' }}
     needs: [resolve]
-    runs-on: ubuntu-24.04
+    runs-on: ubuntu-26.04
     timeout-minutes: 30
     if: ${{ github.event.inputs.arm_only != 'true' }}
     steps:
@@ -1690,7 +1690,7 @@ jobs:
   e2e-linux-debian-systemd:
     name: ${{ inputs.mode == 'release' && 'leg/linux/amd64/debian-systemd' || 'E2E Linux debian-systemd' }}
     needs: [resolve]
-    runs-on: ubuntu-24.04
+    runs-on: ubuntu-26.04
     timeout-minutes: 30
     if: ${{ github.event.inputs.arm_only != 'true' }}
     steps:
@@ -1827,7 +1827,7 @@ jobs:
   e2e-linux-rocky-systemd:
     name: ${{ inputs.mode == 'release' && 'leg/linux/amd64/rocky-systemd' || 'E2E Linux rocky-systemd' }}
     needs: [resolve]
-    runs-on: ubuntu-24.04
+    runs-on: ubuntu-26.04
     timeout-minutes: 30
     if: ${{ github.event.inputs.arm_only != 'true' }}
     steps:
@@ -2020,7 +2020,7 @@ jobs:
   e2e-linux-opensuse-zypper:
     name: ${{ inputs.mode == 'release' && 'leg/linux/amd64/opensuse-zypper' || 'E2E Linux opensuse-zypper' }}
     needs: [resolve]
-    runs-on: ubuntu-24.04
+    runs-on: ubuntu-26.04
     timeout-minutes: 30
     if: ${{ github.event.inputs.arm_only != 'true' }}
     steps:
@@ -2210,7 +2210,7 @@ jobs:
   e2e-linux-arch-pacman:
     name: ${{ inputs.mode == 'release' && 'leg/linux/amd64/arch-pacman' || 'E2E Linux arch-pacman' }}
     needs: [resolve]
-    runs-on: ubuntu-24.04
+    runs-on: ubuntu-26.04
     timeout-minutes: 30
     if: ${{ github.event.inputs.arm_only != 'true' }}
     steps:
@@ -2384,7 +2384,7 @@ jobs:
   e2e-linux-alpine-runit:
     name: ${{ inputs.mode == 'release' && 'leg/linux/amd64/alpine-runit' || 'E2E Linux alpine-runit' }}
     needs: [resolve]
-    runs-on: ubuntu-24.04
+    runs-on: ubuntu-26.04
     timeout-minutes: 30
     if: ${{ github.event.inputs.arm_only != 'true' }}
     steps:
@@ -2559,7 +2559,7 @@ jobs:
   e2e-linux-alpine-s6:
     name: ${{ inputs.mode == 'release' && 'leg/linux/amd64/alpine-s6' || 'E2E Linux alpine-s6' }}
     needs: [resolve]
-    runs-on: ubuntu-24.04
+    runs-on: ubuntu-26.04
     timeout-minutes: 30
     if: ${{ github.event.inputs.arm_only != 'true' }}
     steps:
@@ -2723,9 +2723,10 @@ jobs:
   # E2E LINUX arm64 — the same nine init systems, on a real aarch64 machine
   # ===========================================================================
   #
-  # ubuntu-24.04-arm is a GitHub-hosted arm64 runner, free on a public repo,
-  # and the docker-arm64 legs above have run on it since #77. Native: `uname
-  # -m` says aarch64 because the machine is, no QEMU and no binfmt.
+  # ubuntu-26.04-arm is a GitHub-hosted arm64 runner, free on a public repo,
+  # and the docker-arm64 legs above have run on GitHub's arm64 runners since
+  # #77 (ubuntu-24.04-arm until the move to 26.04). Native: `uname -m` says
+  # aarch64 because the machine is, no QEMU and no binfmt.
   #
   # Containers rather than VMs, and that is forced rather than preferred:
   # every VM substrate the amd64 legs use is x86-only. vmactions/* ship
@@ -2795,7 +2796,7 @@ jobs:
     # bytes nobody downloads.
     if: inputs.mode != 'release'
     needs: [resolve]
-    runs-on: ubuntu-24.04-arm
+    runs-on: ubuntu-26.04-arm
     timeout-minutes: 20
     steps:
       - name: Checkout agent code
@@ -2906,7 +2907,7 @@ jobs:
     # job by default. Spelled out, the merge lane is exactly what it was: run
     # only when both needs succeeded and nothing was cancelled.
     if: ${{ !cancelled() && needs.resolve.result == 'success' && (inputs.mode == 'release' || needs.arm64-packages.result == 'success') }}
-    runs-on: ubuntu-24.04-arm
+    runs-on: ubuntu-26.04-arm
     timeout-minutes: 30
     strategy:
       fail-fast: false
@@ -3177,8 +3178,9 @@ jobs:
           # .cpu.frequency_mhz, and why this one field is exempted here.
           #
           # The probe does not fail to read a clock on this host, it declares
-          # there is none. Measured on run 35507794810, all nine legs, word for
-          # word the same:
+          # there is none. Measured on ubuntu-24.04-arm, run 35507794810, all
+          # nine legs, word for word the same (and again on ubuntu-26.04-arm,
+          # run 36392064661):
           #
           #   "brand": {"value": "ARM"}
           #   "frequency_mhz": {"value": null, "reason": "NOT_PRESENT",
@@ -3194,7 +3196,7 @@ jobs:
           #
           # validate-probe.sh has exactly one knob for this field,
           # SVZ_EMULATED_CPU, named after the first case that reached it -- the
-          # TCG-emulated BSD arm64 legs. ubuntu-24.04-arm is NOT emulated; it
+          # TCG-emulated BSD arm64 legs. The arm64 runner is NOT emulated; it
           # is native aarch64 hardware that exposes no clock. The knob is the
           # right one, its name is one case too narrow. (Worth renaming in
           # agent, e.g. SVZ_NO_CPU_CLOCK; not this repo's file.)
@@ -3267,7 +3269,7 @@ jobs:
   # (qemu-system would, and that is what agent's G3 still asks for, once, for
   # s390x). It runs the REAL artifact -- the same .deb/.apk a user installs,
   # or for loong64 the bridged binary -- not a rebuild.
-  # (armv7/armv6 might run natively on ubuntu-24.04-arm if its cores keep
+  # (armv7/armv6 might run natively on the arm64 runner if its cores keep
   # AArch32 at EL0. Not measured; here they run under qemu-arm.)
   #
   # WHAT A GREEN LEG PROVES depends on `runtime`, and for ten of the twelve it
@@ -3329,7 +3331,8 @@ jobs:
   e2e-linux-exotic:
     name: ${{ inputs.mode == 'release' && format('leg/linux-exotic/{0}', matrix.name) || format('E2E Linux exotic {0}', matrix.name) }}
     needs: [resolve]
-    runs-on: ubuntu-24.04
+    # One leg carries its own `runner`, below; every other one runs here.
+    runs-on: ${{ matrix.runner || 'ubuntu-26.04' }}
     timeout-minutes: 45
     if: ${{ github.event.inputs.arm_only != 'true' }}
     strategy:
@@ -3358,6 +3361,8 @@ jobs:
         #         input for the artifact, install.sh's vocabulary for the
         #         release -- arm7 is `arm`, arm6 is `armhf`. Release mode pulls
         #         this one; the leg renames it to `artifact` either way.
+        # runner  only where a leg cannot run on the job's default image, with
+        #         the reason and the condition for dropping it beside it.
         include:
           - name: 386-glibc
             target: linux-386
@@ -3369,6 +3374,18 @@ jobs:
             artifact: supervizio-386.deb
             release_asset: supervizio-386.deb
             prep: "apt-get update -qq && DEBIAN_FRONTEND=noninteractive apt-get install -y -qq jq procps"
+            # ubuntu-24.04, not 26.04: an i386 glibc container has no network
+            # on 26.04. Its Docker 29.4.2 vendors a seccomp profile that denies
+            # socketcall(2) (moby/profiles seccomp v0.2.2), which i386 glibc
+            # makes its socket calls through, so `apt-get update` cannot
+            # resolve deb.debian.org -- measured on ubuntu-26.04 image
+            # 20260920.143, run 36392064661, the one red leg of that run.
+            # 386-musl passed in the same run. Docker 29.4.3 ships the reverted
+            # profile: move this leg back once the 26.04 image carries it
+            # (actions/runner-images#14790). Unconfined seccomp would also get
+            # it through, but the battery would then run under a filter no
+            # other leg has.
+            runner: ubuntu-24.04
           - name: 386-musl
             target: linux-386-musl
             platform: linux/386
@@ -3577,9 +3594,11 @@ jobs:
           ls -l "payload/${ARTIFACT}"
           sha256sum "payload/${ARTIFACT}"
 
-      # ubuntu-24.04 registers NO qemu emulator of its own -- measured on
-      # run 35571941548, where /proc/sys/fs/binfmt_misc held only llvm and
-      # python entries before this step. Without it every emulated leg below
+      # The hosted image registers NO qemu emulator of its own -- measured on
+      # ubuntu-24.04, run 35571941548, where /proc/sys/fs/binfmt_misc held only
+      # llvm and python entries before this step; ubuntu-26.04 ships no
+      # qemu-user-static either (actions/runner-images#14737, a request to add
+      # it, still open). Without it every emulated leg below
       # would try to exec a foreign ELF and get "exec format error". (The 386
       # legs do not need it: an x86_64 kernel runs i386 natively, and
       # `--install all` registers no i386 emulator on such a host.)
@@ -3802,7 +3821,7 @@ jobs:
   e2e-bsd-freebsd-amd64:
     name: ${{ inputs.mode == 'release' && 'leg/freebsd/amd64' || 'E2E BSD freebsd amd64' }}
     needs: [resolve]
-    runs-on: ubuntu-24.04
+    runs-on: ubuntu-26.04
     timeout-minutes: 30
     if: ${{ github.event.inputs.arm_only != 'true' }}
     steps:
@@ -3870,7 +3889,7 @@ jobs:
           mv "bin/supervizio-freebsd-amd64" bin/supervizio
 
       - name: Install, validate and uninstall in a freebsd guest
-        uses: vmactions/freebsd-vm@4469451fe39bee80be4066836c5170362e9349f3 # v1.5.7
+        uses: vmactions/freebsd-vm@a2f9a41fa97f6848b8c3b791087dfcdaa5b473ff # v1.5.8
         with:
           usesh: true
           # Pinned, for the same reason the Windows leg pins its image: an
@@ -3949,7 +3968,7 @@ jobs:
   e2e-bsd-freebsd-14-amd64:
     name: E2E BSD freebsd 14 amd64 (advisory)
     needs: [resolve]
-    runs-on: ubuntu-24.04
+    runs-on: ubuntu-26.04
     timeout-minutes: 30
     if: ${{ inputs.mode != 'release' && github.event.inputs.arm_only != 'true' }}
     continue-on-error: true
@@ -3996,7 +4015,7 @@ jobs:
           mv "bin/supervizio-freebsd-amd64" bin/supervizio
 
       - name: Install, validate and uninstall in a FreeBSD 14 guest
-        uses: vmactions/freebsd-vm@4469451fe39bee80be4066836c5170362e9349f3 # v1.5.7
+        uses: vmactions/freebsd-vm@a2f9a41fa97f6848b8c3b791087dfcdaa5b473ff # v1.5.8
         with:
           usesh: true
           # Pinned to the 14.x agent's FreeBSD sysroot is linked against, and
@@ -4057,7 +4076,7 @@ jobs:
   e2e-bsd-netbsd-amd64:
     name: ${{ inputs.mode == 'release' && 'leg/netbsd/amd64' || 'E2E BSD netbsd amd64' }}
     needs: [resolve]
-    runs-on: ubuntu-24.04
+    runs-on: ubuntu-26.04
     timeout-minutes: 30
     if: ${{ github.event.inputs.arm_only != 'true' }}
     steps:
@@ -4183,7 +4202,7 @@ jobs:
   e2e-bsd-openbsd-amd64:
     name: ${{ inputs.mode == 'release' && format('leg/openbsd/amd64/{0}', matrix.release) || format('E2E BSD openbsd amd64 ({0})', matrix.release) }}
     needs: [resolve]
-    runs-on: ubuntu-24.04
+    runs-on: ubuntu-26.04
     timeout-minutes: 30
     if: ${{ github.event.inputs.arm_only != 'true' }}
     strategy:
@@ -4563,7 +4582,7 @@ jobs:
   e2e-bsd-freebsd-arm64:
     name: ${{ inputs.mode == 'release' && 'leg/freebsd/arm64' || 'E2E BSD freebsd arm64' }}
     needs: [resolve]
-    runs-on: ubuntu-24.04
+    runs-on: ubuntu-26.04
     timeout-minutes: 180
     if: ${{ github.event.inputs.arm_only != 'true' }}
     steps:
@@ -4631,7 +4650,7 @@ jobs:
           mv "bin/supervizio-freebsd-arm64" bin/supervizio
 
       - name: Install, validate and uninstall in a freebsd guest
-        uses: vmactions/freebsd-vm@4469451fe39bee80be4066836c5170362e9349f3 # v1.5.7
+        uses: vmactions/freebsd-vm@a2f9a41fa97f6848b8c3b791087dfcdaa5b473ff # v1.5.8
         with:
           usesh: true
           # aarch64 guest on an x86_64 HOST. The action's own README is explicit:
@@ -4729,7 +4748,7 @@ jobs:
   e2e-bsd-netbsd-arm64:
     name: ${{ inputs.mode == 'release' && 'leg/netbsd/arm64' || 'E2E BSD netbsd arm64' }}
     needs: [resolve]
-    runs-on: ubuntu-24.04
+    runs-on: ubuntu-26.04
     timeout-minutes: 180
     if: ${{ github.event.inputs.arm_only != 'true' }}
     steps:
@@ -4917,7 +4936,7 @@ jobs:
   e2e-bsd-openbsd-arm64:
     name: ${{ inputs.mode == 'release' && format('leg/openbsd/arm64/{0}', matrix.release) || format('E2E BSD openbsd arm64 ({0})', matrix.release) }}
     needs: [resolve]
-    runs-on: ubuntu-24.04
+    runs-on: ubuntu-26.04
     # 180, like the freebsd-arm64 and netbsd-arm64 legs: the guest is TCG, and
     # this one additionally installs a package and runs the eight supervision
     # scenarios inside it.
@@ -5076,7 +5095,7 @@ jobs:
           # aarch64 guest on an x86_64 HOST, for the reason the freebsd-arm64
           # leg records from the action's own README: there is no nested KVM on
           # GitHub's arm64 fleet either, so the guest is TCG whichever host you
-          # pick, and ubuntu-24.04-arm is measurably slower.
+          # pick, and the arm64 runner is measurably slower.
           arch: aarch64
           # Driven by the matrix above, which is the support window. The full
           # argument lives there; the short version is that pinning matters (an
@@ -5212,7 +5231,7 @@ jobs:
     # Release mode reports nothing: validate-release.yml's verdict reads the
     # leg jobs themselves, and this workflow holds no token to post with.
     if: always() && inputs.mode != 'release'
-    runs-on: ubuntu-24.04
+    runs-on: ubuntu-26.04
     steps:
       # One verdict, computed once. The three consumers below (commit status,
       # dispatch callback, fail-the-job) used to each carry their own copy of
