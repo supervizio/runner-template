@@ -450,9 +450,9 @@ class Dispatch(unittest.TestCase):
         self.assertEqual(pending, pending_receipt())
 
     def test_realistic_agent_payload_is_far_below_the_limit(self):
-        # 62 assets (the size of a real agent release) with long names, and every
+        # 64 assets (the size of a real agent release) with long names, and every
         # leg the policy knows about including the pending ones.
-        manifest = {f"supervizio-0.0.0-some-long-platform-name-{i:03d}.pkg.tar.zst": h(str(i)) for i in range(62)}
+        manifest = {f"supervizio-0.0.0-some-long-platform-name-{i:03d}.pkg.tar.zst": h(str(i)) for i in range(64)}
         legs = [leg["id"] for leg in POLICY["repositories"][AGENT]["legs"]]
         r = pending_receipt(manifest=manifest)
         body = dispatch_body(
@@ -980,7 +980,7 @@ class LegMatrix(unittest.TestCase):
         for leg in policy["repositories"][AGENT]["legs"]:
             leg["scenario"] = None
         legs, _ = rc.leg_matrix(dispatch_body()["client_payload"], policy)
-        self.assertEqual(len(legs), 58)
+        self.assertEqual(len(legs), 60)
         self.assertIn(
             {"id": "windows/arm64", "runner": "windows-11-arm", "required": True, "scenario": None, "host": "native", "platform": ""},
             legs,
@@ -1523,8 +1523,8 @@ class Cli(unittest.TestCase):
 class ShippedPolicy(unittest.TestCase):
     def test_policy_is_valid_and_sized_as_inventoried(self):
         rc.validate_policy(POLICY)
-        self.assertEqual(len(rc.required_legs(POLICY, AGENT)), 58)
-        self.assertEqual(len(POLICY["repositories"][AGENT]["legs"]), 58)
+        self.assertEqual(len(rc.required_legs(POLICY, AGENT)), 60)
+        self.assertEqual(len(POLICY["repositories"][AGENT]["legs"]), 60)
         self.assertEqual(len(rc.required_legs(POLICY, LIBPROBE)), 12)
         self.assertEqual(rc.advisory_legs(POLICY, LIBPROBE), ["bsd/freebsd-arm64", "bsd/openbsd-arm64", "bsd/netbsd-arm64"])
         # Nothing may be promoted before a leg's release scenario exists: every
