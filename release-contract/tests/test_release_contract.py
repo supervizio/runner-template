@@ -992,7 +992,7 @@ class LegMatrix(unittest.TestCase):
         by_id = {leg["id"]: leg for leg in legs}
         self.assertEqual(
             by_id["bsd/openbsd-amd64"],
-            {"id": "bsd/openbsd-amd64", "runner": "ubuntu-24.04", "required": True, "scenario": "abi", "host": "openbsd", "platform": "openbsd-amd64"},
+            {"id": "bsd/openbsd-amd64", "runner": "ubuntu-26.04", "required": True, "scenario": "abi", "host": "openbsd", "platform": "openbsd-amd64"},
         )
         self.assertEqual((by_id["container/scratch"]["host"], by_id["container/scratch"]["platform"]), ("container-scratch", "linux-amd64-musl"))
 

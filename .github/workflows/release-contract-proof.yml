@@ -55,7 +55,7 @@ env:
 jobs:
   stage:
     name: stage a draft release
-    runs-on: ubuntu-24.04
+    runs-on: ubuntu-26.04
     timeout-minutes: 10
     permissions:
       contents: write
@@ -143,7 +143,7 @@ jobs:
   probe-contents-read:
     name: draft visibility (contents:read)
     needs: stage
-    runs-on: ubuntu-24.04
+    runs-on: ubuntu-26.04
     timeout-minutes: 5
     permissions:
       contents: read
@@ -193,7 +193,7 @@ jobs:
   probe-no-permission:
     name: draft visibility (permissions:{})
     needs: stage
-    runs-on: ubuntu-24.04
+    runs-on: ubuntu-26.04
     timeout-minutes: 5
     permissions: {}
     outputs:
@@ -213,7 +213,7 @@ jobs:
   probe-anonymous:
     name: draft visibility (no token)
     needs: stage
-    runs-on: ubuntu-24.04
+    runs-on: ubuntu-26.04
     timeout-minutes: 5
     permissions: {}
     outputs:
@@ -234,7 +234,7 @@ jobs:
     name: validator against the live draft
     # After the probes, so they observed the draft untouched.
     needs: [stage, probe-contents-read, probe-no-permission, probe-anonymous]
-    runs-on: ubuntu-24.04
+    runs-on: ubuntu-26.04
     timeout-minutes: 10
     permissions:
       contents: write
@@ -307,7 +307,7 @@ jobs:
 
   checks:
     name: check-run output limit
-    runs-on: ubuntu-24.04
+    runs-on: ubuntu-26.04
     timeout-minutes: 5
     permissions:
       checks: write
@@ -353,7 +353,7 @@ jobs:
         verify-live,
         checks,
       ]
-    runs-on: ubuntu-24.04
+    runs-on: ubuntu-26.04
     timeout-minutes: 5
     permissions:
       contents: write

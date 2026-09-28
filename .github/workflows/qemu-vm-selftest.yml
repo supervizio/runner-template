@@ -37,18 +37,19 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        # BOTH host images, on purpose. ubuntu-latest migrates to 26.04 between
-        # 19 Oct and 19 Nov 2026, so this repo moves either way -- the only
-        # choice is whether it moves on evidence or on GitHub's calendar.
+        # The host image every leg that uses this action runs on. Until this
+        # repository moved to ubuntu-26.04 the matrix carried ubuntu-24.04 beside
+        # it, so that the move was made on evidence rather than on GitHub's
+        # calendar (ubuntu-latest becomes 26.04 between 19 Oct and 19 Nov 2026):
+        # run 36085397532 booted all five guests green on both images. One host
+        # now -- a second would keep re-proving an image nothing here runs on.
         #
-        # 26.04 had exactly one real blocker: it enforces a disk quota on /tmp,
-        # and the vmactions actions cached their guest image there (EDQUOT,
-        # vmactions/freebsd-vm#148). The pins in e2e.yml are now past that fix,
-        # so the blocker is gone. KVM itself is present and usable on 26.04
-        # x86_64, and this action writes to $RUNNER_TEMP rather than /tmp, so it
-        # should be unaffected -- "should" being exactly what this matrix is
-        # here to replace with a result.
-        host: [ubuntu-24.04, ubuntu-26.04]
+        # What 26.04 changes for this action, and why it is unaffected: /tmp is a
+        # RAM-backed tmpfs with a per-user quota there (actions/runner-images
+        # #14777 -- the EDQUOT that broke vmactions, vmactions/freebsd-vm#148),
+        # and this action writes to $RUNNER_TEMP, never to /tmp. KVM is present
+        # and usable on 26.04 x86_64, behind the same `chmod 666 /dev/kvm`.
+        host: [ubuntu-26.04]
         # `guest` must be a real dimension. With only `host` as a dimension and
         # the guests supplied purely through `include`, GitHub merges EVERY
         # include entry into EVERY existing combination, so each one overwrites

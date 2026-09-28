@@ -59,7 +59,7 @@ jobs:
   # ---------------------------------------------------------------------------
   fixture:
     name: Fixture source
-    runs-on: ubuntu-24.04
+    runs-on: ubuntu-26.04
     timeout-minutes: 5
     steps:
       - name: Write the fixture
@@ -154,7 +154,7 @@ jobs:
   build-native-79:
     name: Build on OpenBSD 7.9 (native, as agent does)
     needs: [fixture]
-    runs-on: ubuntu-24.04
+    runs-on: ubuntu-26.04
     timeout-minutes: 45
     steps:
       - name: Fetch the fixture
@@ -282,7 +282,7 @@ jobs:
   build-cross:
     name: Cross ${{ matrix.goarch }} / sysroot ${{ matrix.sysroot }}
     needs: [fixture]
-    runs-on: ubuntu-24.04
+    runs-on: ubuntu-26.04
     timeout-minutes: 45
     strategy:
       fail-fast: false
@@ -526,7 +526,7 @@ jobs:
   build-native-arm64:
     name: Build on OpenBSD 7.9 (arm64, native in an emulated guest)
     needs: [fixture]
-    runs-on: ubuntu-24.04
+    runs-on: ubuntu-26.04
     timeout-minutes: 180
     steps:
       - name: Fetch the fixture
@@ -598,7 +598,7 @@ jobs:
     name: Run on OpenBSD ${{ matrix.release }} (amd64)
     needs: [build-native-79, build-cross]
     if: ${{ always() && needs.build-native-79.result == 'success' }}
-    runs-on: ubuntu-24.04
+    runs-on: ubuntu-26.04
     timeout-minutes: 45
     strategy:
       fail-fast: false
@@ -709,7 +709,7 @@ jobs:
     # x86_64 host with an aarch64 guest, as e2e.yml's BSD arm64 legs already do:
     # there is no nested KVM on GitHub's arm64 fleet, so the guest is TCG either
     # way and the action's README calls ubuntu-24.04-arm the slower of the two.
-    runs-on: ubuntu-24.04
+    runs-on: ubuntu-26.04
     timeout-minutes: 180
     steps:
       - name: Collect every binary produced
@@ -783,7 +783,7 @@ jobs:
     name: The table
     needs: [run-amd64, run-arm64]
     if: ${{ always() }}
-    runs-on: ubuntu-24.04
+    runs-on: ubuntu-26.04
     timeout-minutes: 10
     steps:
       - uses: actions/download-artifact@70fc10c6e5e1ce46ad2ea6f2b72d43f7d47b13c3 # v8.0.0

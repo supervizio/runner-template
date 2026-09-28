@@ -117,7 +117,7 @@ runs:
       run: |
         set -euo pipefail
         # Not preinstalled on the runner images (checked against the ubuntu24
-        # readme: no qemu/kvm entry). ~93MB for the x86-only stack.
+        # and ubuntu26 readmes: no qemu/kvm entry). ~93MB for the x86-only stack.
         sudo apt-get update -qq
         sudo apt-get install -y -qq --no-install-recommends \
           qemu-system-x86 qemu-utils cloud-image-utils >/dev/null
