@@ -41,6 +41,9 @@ on:
     branches: [main]
     paths:
       - ".github/workflows/release-contract-proof.yml"
+      # The documents the proof stages are built there: a change to them is a
+      # change to the proof.
+      - "release-contract/tests/live_proof.py"
   workflow_dispatch:
 
 permissions: {}
@@ -96,32 +99,15 @@ jobs:
               -H "Content-Type: application/octet-stream" --input "$f" >/dev/null
           done
 
-          # The proof's own policy: the shipped one plus this repository, one leg.
-          python3 - "$REPO" "$SHA" "$release_id" <<'EOF'
-          import json, sys, datetime
-          sys.path.insert(0, "release-contract")
-          import release_contract as rc
-          repo, sha, release_id = sys.argv[1], sys.argv[2], int(sys.argv[3])
-          policy = rc.load_policy()
-          policy["repositories"][repo] = {"manifest_file": "SHA256SUMS", "legs": [{"id": "proof/leg", "state": "required", "from": "release-contract-proof.yml"}]}
-          rc.validate_policy(policy)
-          manifest = rc.parse_manifest(open("rel/SHA256SUMS", "rb").read())
-          import os
-          receipt = {
-              "schema": rc.RECEIPT_SCHEMA, "repository": repo, "tag": os.environ["PROOF_TAG"],
-              "resolved_commit": sha, "release_id": release_id, "candidate_generation": 1,
-              "manifest_file": "SHA256SUMS", "asset_manifest_digest": rc.manifest_digest(manifest),
-              "manifest": manifest, "support_manifest_digest": None, "support": {},
-              "required_matrix": ["proof/leg"], "test_suite_revision": sha,
-              "e2e_run_id": int(os.environ["GITHUB_RUN_ID"]), "e2e_attempt": int(os.environ["GITHUB_RUN_ATTEMPT"]),
-              "results": {"proof/leg": "success"}, "verdict": "success",
-              "recorded_at": datetime.datetime.now(datetime.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
-              "restored_from": None,
-          }
-          rc.validate_receipt(receipt, policy)
-          json.dump(policy, open("proof/policy.json", "w"), indent=2)
-          json.dump(receipt, open("proof/release-receipt.json", "w"), indent=2, sort_keys=True)
-          EOF
+          # The proof's own policy (the shipped one plus this repository, one leg)
+          # and the receipt the draft carries. Built by a module, not inline:
+          # release-contract.yml runs it offline on every contract change
+          # (tests/test_live_proof.py), which an inline copy never was -- it went
+          # stale when the contract began requiring bridge_package and a leg
+          # runner, and the proof sat red from 2026-09-25 (run 36196251579).
+          python3 release-contract/tests/live_proof.py --repository "$REPO" --tag "$PROOF_TAG" \
+            --commit "$SHA" --release-id "$release_id" --manifest rel/SHA256SUMS \
+            --run-id "$GITHUB_RUN_ID" --run-attempt "$GITHUB_RUN_ATTEMPT" --out proof
           gh api -X POST "https://uploads.github.com/repos/$REPO/releases/$release_id/assets?name=release-receipt.json" \
             -H "Content-Type: application/json" --input proof/release-receipt.json >/dev/null
 

@@ -11,7 +11,7 @@ this repository's release-validation lane (`validate-release.yml`, with
 | `README.md` | the normative text (this file) |
 | `release_contract.py` | its only implementation — stdlib Python ≥ 3.9, no dependency; every workflow calls it instead of re-deriving a rule in shell |
 | `policy.json` | the required matrix per repository, and the per-repository names below |
-| `tests/` | the validator's tests, the manifest test vector any other implementation must reproduce, and `proof-policy.json` (section 9) |
+| `tests/` | the validator's tests, the manifest test vector any other implementation must reproduce, `proof-policy.json` (section 9), and `live_proof.py`, the policy and receipt `release-contract-proof.yml` stages on its live draft (tested offline by `test_live_proof.py`) |
 
 The unit of trust is **a set of bytes, not a commit**. The same commit built twice
 can yield different bytes (injected version, dependency drift, floating toolchain),
