@@ -253,7 +253,7 @@ validation.
 `POST /repos/supervizio/runner-template/dispatches`. GitHub accepts at most 10
 top-level `client_payload` properties and a payload under 64 KB
 ([REST reference](https://docs.github.com/en/rest/repos/repos#create-a-repository-dispatch-event));
-this one has 6, and a 62-asset agent release with all 53 legs stays under 16 KiB
+this one has 6, and a 62-asset agent release with all 58 legs stays under 16 KiB
 (tested). The validator enforces both limits on the whole body.
 
 ```json
@@ -344,9 +344,10 @@ BSD and container legs gate too — except libprobe's BSD **arm64** legs, adviso
 the owner's decision: no KVM on the arm64 runners, so QEMU emulates every
 instruction and a leg takes one to two hours.
 
-Inventory taken from `main` at `3b0f5b7` (#101, #102 and #110 merged).
+Inventory taken from `main` at `3b0f5b7` (#101, #102 and #110 merged), then
+OpenBSD arm64 widened to the seven releases amd64 runs.
 
-**supervizio/agent** — 53 required (source: `e2e.yml`, every leg gating in merge CI):
+**supervizio/agent** — 58 required (source: `e2e.yml`, every leg gating in merge CI):
 
 | Legs | Count | Runner |
 |---|---|---|
@@ -356,7 +357,7 @@ Inventory taken from `main` at `3b0f5b7` (#101, #102 and #110 merged).
 | `linux/amd64/{artix-dinit,debian-sysvinit,alpine-openrc,debian-systemd,rocky-systemd,opensuse-zypper,arch-pacman,alpine-runit,alpine-s6}` | 9 | `ubuntu-26.04` |
 | `linux/arm64/{alpine-openrc,alpine-runit,alpine-s6,alpine-dinit,debian-systemd,debian-sysvinit,rocky-systemd,opensuse-zypper,arch-pacman}` | 9 | `ubuntu-26.04-arm` |
 | `freebsd/{amd64,arm64}` (15.1), `netbsd/{amd64,arm64}` (10.1) | 4 | `ubuntu-26.04` (QEMU) |
-| `openbsd/amd64/{7.3,7.4,7.5,7.6,7.7,7.8,7.9}`, `openbsd/arm64/{7.8,7.9}` | 9 | `ubuntu-26.04` (QEMU) |
+| `openbsd/{amd64,arm64}/{7.3,7.4,7.5,7.6,7.7,7.8,7.9}` | 14 | `ubuntu-26.04` (QEMU) |
 | `linux-exotic/{386,armv7,riscv64,ppc64le,s390x}-{glibc,musl}`, `linux-exotic/armv6-musl`, `linux-exotic/loong64` | 12 | `ubuntu-26.04` (QEMU); `386-glibc` on `ubuntu-24.04` until 26.04's Docker lets i386 glibc open a socket (`e2e.yml`, actions/runner-images#14790) |
 
 `arm64-packages` gates the merge lane but is not a leg: it *builds* arm64 packages

@@ -329,6 +329,46 @@
           "scenario": "e2e"
         },
         {
+          "id": "openbsd/arm64/7.3",
+          "state": "required",
+          "merge_ci": "gating",
+          "from": "e2e.yml e2e-bsd-openbsd-arm64[7.3]",
+          "runner": "ubuntu-26.04",
+          "scenario": "e2e"
+        },
+        {
+          "id": "openbsd/arm64/7.4",
+          "state": "required",
+          "merge_ci": "gating",
+          "from": "e2e.yml e2e-bsd-openbsd-arm64[7.4]",
+          "runner": "ubuntu-26.04",
+          "scenario": "e2e"
+        },
+        {
+          "id": "openbsd/arm64/7.5",
+          "state": "required",
+          "merge_ci": "gating",
+          "from": "e2e.yml e2e-bsd-openbsd-arm64[7.5]",
+          "runner": "ubuntu-26.04",
+          "scenario": "e2e"
+        },
+        {
+          "id": "openbsd/arm64/7.6",
+          "state": "required",
+          "merge_ci": "gating",
+          "from": "e2e.yml e2e-bsd-openbsd-arm64[7.6]",
+          "runner": "ubuntu-26.04",
+          "scenario": "e2e"
+        },
+        {
+          "id": "openbsd/arm64/7.7",
+          "state": "required",
+          "merge_ci": "gating",
+          "from": "e2e.yml e2e-bsd-openbsd-arm64[7.7]",
+          "runner": "ubuntu-26.04",
+          "scenario": "e2e"
+        },
+        {
           "id": "openbsd/arm64/7.8",
           "state": "required",
           "merge_ci": "gating",

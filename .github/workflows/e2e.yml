@@ -4919,9 +4919,9 @@ jobs:
   # The RECIPE was the fault, not cross-compilation. agent's `P2 Build
   # openbsd-arm64` now uses a corrected one -- `-no-pie` as a DRIVER flag, an
   # `ld` shim retranslating the `-nopie` clang then emits internally, and
-  # `-static` -- and the result starts and probes on both supported releases.
-  # bsd-package.yml wraps that binary in a package inside a real aarch64
-  # OpenBSD guest and publishes `supervizio-openbsd-arm64-pkg`.
+  # `-static` -- and the result starts and probes on 7.3 through 7.9, the
+  # matrix below. bsd-package.yml wraps that binary in a package inside a real
+  # aarch64 OpenBSD guest and publishes `supervizio-openbsd-arm64-pkg`.
   #
   # Measured, agent run 35549271131: the cross build of the real cmd/agent is
   # 2 min 18 s end to end, against past 36 minutes for the same compile in an
@@ -4945,44 +4945,36 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        # THE OPENBSD SUPPORT WINDOW, AS A LIST -- the same list, and the same
-        # rule, as the amd64 leg. Not a version to tidy up.
+        # THE OPENBSD SUPPORT WINDOW, AS A LIST -- the same seven releases, and
+        # the same rule, as the amd64 leg. Not a version to tidy up.
         #
         # OpenBSD supports the two most recent releases and guarantees nothing
         # across them: not the shared-library majors, not the syscall ABI. The
         # package is therefore tested on every release it claims, and this list
-        # IS that claim.
+        # IS that claim. A leg that tests only the release the binary was BUILT
+        # on proves nothing: the amd64 leg ran 7.9 on 7.9 and was green for
+        # months while its package started on 7.9 and nowhere else.
         #
-        # Why both and not one, which is the change a future reader will want
-        # to make: a leg that tests the release it was BUILT on proves nothing.
-        # That is not a theory, it is the amd64 leg's own history -- it ran 7.9
-        # on 7.9 and was green for months while the package it installed
-        # started on 7.9 and nowhere else. agent builds on 7.8, the oldest
-        # supported release, so 7.8 alone here would re-create that blind spot
-        # one release lower and leave the forward direction -- now the only
-        # untested one -- covered by nothing.
+        # Seven releases because the binary is STATIC and linked against the
+        # 7.8 sysroot, and each cell measures that it starts, probes and
+        # supervises on its release -- on this arch, not inferred from amd64.
+        # 7.3 is the floor because it is the oldest aarch64 release the pinned
+        # vmactions/openbsd-vm boots (no 7.2-aarch64.conf): absent, not refused.
         #
-        # TWO ENTRIES HERE, SEVEN ON THE AMD64 LEG, AND THAT ASYMMETRY IS
-        # DELIBERATE. It is not that arm64 is known to be narrower -- nobody
-        # knows. The amd64 window was measured cell by cell in
-        # supervizio/agent run 35571265130 because an amd64 OpenBSD guest is
-        # KVM-accelerated and a 5x7 grid costs minutes. Every arm64 guest here
-        # is TCG-emulated and this leg's timeout is 180 minutes for two of
-        # them; the same grid would cost hours of wall clock per run, for a
-        # platform with no users yet asking for 7.3.
+        # The build sysroot is NOT the floor of this list, and must not be moved
+        # down to it. Since 7.6 the kernel aborts a static binary whose system
+        # calls no PT_OPENBSD_SYSCALLS table pins (pinsyscalls(2)), and libc.a
+        # emits that table only from 7.5 on: a 7.3 or 7.4 sysroot would die at
+        # its first system call on 7.6 through 7.9. A 7.9 sysroot fails the
+        # other way, SIGSYS on every older release (the amd64 leg's grid).
+        # agent's .github/workflows/CLAUDE.md has the whole argument.
         #
-        # So arm64 claims exactly what it measures, every run, and no more.
-        # Widening it is a measurement someone can run, not an inference
-        # anyone should draw from the amd64 table.
+        # Every guest is TCG-emulated and a cell still takes about six minutes;
+        # the seven run side by side.
         #
-        # The static link's cross-release portability was measured on AMD64
-        # (supervizio/agent#222, then the grid above). On arm64 it was
-        # inferred; this matrix is what turns that inference into a
-        # measurement, and it has to keep running for it to stay one.
-        #
-        # WHEN 8.0 SHIPS: this becomes ['7.9', '8.0'] and agent's build sysroot
-        # moves only if the FLOOR moves. They travel together.
-        release: ['7.8', '7.9']
+        # WHEN 8.0 SHIPS: append it. agent's sysroot moves only when a cell
+        # here refuses the binary.
+        release: ['7.3', '7.4', '7.5', '7.6', '7.7', '7.8', '7.9']
     steps:
       - name: Report status (pending)
         if: needs.resolve.outputs.sha != ''
@@ -5070,13 +5062,13 @@ jobs:
             exit 1
           fi
 
-          # STATIC. The static link is what lets one package run on both
-          # releases -- OpenBSD's libc majors differ per release and ld.so
-          # refuses a mismatch, which is how the amd64 package installed
-          # everywhere and started on one release only (agent#222). Assert it
-          # on the HOST, before a guest boot, and judge readelf's own failure
-          # separately: "could not inspect" and "inspected, found nothing" are
-          # different answers and only one of them is a pass.
+          # STATIC. The static link is what lets one package run on every
+          # release of the matrix -- OpenBSD's libc majors differ per release
+          # and ld.so refuses a mismatch, which is how the amd64 package
+          # installed everywhere and started on one release only (agent#222).
+          # Assert it on the HOST, before a guest boot, and judge readelf's own
+          # failure separately: "could not inspect" and "inspected, found
+          # nothing" are different answers and only one of them is a pass.
           if ! dyn="$(readelf -d usr/local/bin/supervizio 2>&1)"; then
             echo "::error::readelf could not read the packaged binary, so the static link is unverified: $dyn" >&2
             exit 1
@@ -5085,7 +5077,18 @@ jobs:
             echo "::error::the packaged openbsd-arm64 binary has NEEDED entries - the static link did not take, and it will start on its build release only" >&2
             exit 1
           fi
-          echo "aarch64, no NEEDED entries"
+          # PT_INTERP too, as on the amd64 leg: the broken cross binary had an
+          # EMPTY DT_NEEDED and carried PT_INTERP anyway, a static body handing
+          # control to the dynamic loader. A NEEDED-only check passes it.
+          if ! seg="$(readelf -l usr/local/bin/supervizio 2>&1)"; then
+            echo "::error::readelf -l could not read the packaged binary, so PT_INTERP is unverified: $seg" >&2
+            exit 1
+          fi
+          if printf '%s\n' "$seg" | grep -i INTERP; then
+            echo "::error::the packaged openbsd-arm64 binary carries PT_INTERP - this is the OLD broken shape and it SIGSEGVs in rcrt0.o before main()" >&2
+            exit 1
+          fi
+          echo "aarch64, no NEEDED, no PT_INTERP"
           rm -rf usr
 
       - name: Install, validate and uninstall in an OpenBSD arm64 guest
