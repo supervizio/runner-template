@@ -4964,10 +4964,12 @@ jobs:
         # The build sysroot is NOT the floor of this list, and must not be moved
         # down to it. Since 7.6 the kernel aborts a static binary whose system
         # calls no PT_OPENBSD_SYSCALLS table pins (pinsyscalls(2)), and libc.a
-        # emits that table only from 7.5 on: a 7.3 or 7.4 sysroot would die at
-        # its first system call on 7.6 through 7.9. A 7.9 sysroot fails the
-        # other way, SIGSYS on every older release (the amd64 leg's grid).
-        # agent's .github/workflows/CLAUDE.md has the whole argument.
+        # emits that table only from 7.5 on. Measured on aarch64 with a static
+        # cgo fixture on the same recipe (#118): linked against 7.3 or 7.4 it
+        # runs on 7.3 to 7.5 and takes SIGABRT at its first system call on 7.6
+        # through 7.9; against 7.5 or 7.8 it runs on all seven. A 7.9 sysroot
+        # fails the other way, SIGSYS on every older release (the amd64 leg's
+        # grid). agent's .github/workflows/CLAUDE.md has the whole argument.
         #
         # Every guest is TCG-emulated and a cell still takes about six minutes;
         # the seven run side by side.
