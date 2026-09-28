@@ -51,6 +51,11 @@ the 26.04 labels yet; `.github/actionlint.yaml` lists them.
   AMD hosts that have it (EPYC 9V74), and Rocky 10 then never boots: its
   fallback, `qemu64`, lacks the x86-64-v3 that Rocky 10 requires. qemu-vm passes
   `-cpu host` through untouched.
+  The Debian-systemd guest (and its arm64 container twin) also installs
+  Debian's `pacman-package-manager` before the package: install.sh must still
+  take the `.deb`, and agent's `validate-detection.sh` must see apt as the one
+  primary and pacman available (`pkg_available` in agent's
+  `e2e/expected-matrix.json`, column `debian-vm-amd64` / `debian-container-arm64`).
 - **Containers** for `debian-sysvinit` and `artix-dinit`, measured in
   `bench-leg-substrates-proof.yml`. `debian:trixie` ships no init at all, so
   sysvinit is INSTALLED into it rather than converted from systemd, and none of
@@ -58,7 +63,12 @@ the 26.04 labels yet; `.github/actionlint.yaml` lists them.
   comm=init, runlevel N 2, cron reparented to PID 1, no `--privileged`). The
   official `artixlinux/artixlinux:base-dinit` image carries pacman AND dinit,
   so the package-manager and init dimensions are proven together, seam
-  included. Honest delta: a container covers install, start and supervision,
+  included. `void-xbps` (amd64 and arm64) is a container of Void's own
+  `void-glibc-full` image, pinned by index digest, booted with `runit-init` as
+  PID 1 -- Void's real stages 1 and 2, runsvdir on
+  `/run/runit/runsvdir/current` -- and installs agent's `.xbps` through
+  install.sh; no VM image exists for Void (no cloud image, no vmactions
+  action). Honest delta: a container covers install, start and supervision,
   not boot ordering or clean shutdown.
 - **BSD legs** run under QEMU through `vmactions/*-vm`, pinned to a release; arm64
   guests are emulated (TCG) and slow.

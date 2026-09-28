@@ -186,6 +186,11 @@ jobs:
           if ! printf '%s\n' "$names" | grep -qx 'supervizio-openbsd-amd64-pkg'; then
             echo "::warning::no supervizio-openbsd-amd64-pkg in run $SRC_RUN - e2e-bsd-openbsd-amd64 will fail. Its producer is agent's package-openbsd job, which calls bsd-package.yml for both OpenBSD arches."
           fi
+          # Advisory for the same reason: the two void-xbps legs report their
+          # own red.
+          if ! printf '%s\n' "$names" | grep -qx 'supervizio-amd64.xbps'; then
+            echo "::warning::no supervizio-amd64.xbps in run $SRC_RUN - both void-xbps legs will fail. Its producer is agent's packages-xbps job."
+          fi
 
       - name: Display resolved parameters
         run: |
@@ -1767,17 +1772,27 @@ jobs:
           [ "$found" = "pkg/supervizio-amd64.deb" ] || mv "$found" "pkg/supervizio-amd64.deb"
           ls -l "pkg/supervizio-amd64.deb"
 
+      # Debian's own pacman (pacman-package-manager) is installed beside apt
+      # before anything else. On a Debian the agent must not stop at
+      # os-release and apt: a second package manager present is a case to
+      # prove, as Alpine's apk is. So this leg asserts both sides of it:
+      # install.sh still installs the .deb (dpkg owns this system), and the
+      # agent's inventory reports pacman available while apt stays the one
+      # primary (validate-detection.sh against agent's expected-matrix, whose
+      # debian-vm-amd64 column lists pkg_available: apt, pacman).
       - name: Install, graft, validate and uninstall in a debian guest
         uses: vmactions/debian-vm@389ba1da28ff5b440cba52db8e03fc2e08e2affa # v1.0.0
         with:
           release: '13'
           copyback: false
-          prepare: apt-get update -qq && apt-get install -y -qq jq
+          prepare: apt-get update -qq && apt-get install -y -qq jq pacman-package-manager
           run: |
             set -e
             WS="$(pwd)"
             echo "=== Platform ==="; uname -a; head -2 /etc/os-release
             echo "PID1=$(cat /proc/1/comm)"
+            command -v pacman >/dev/null || { echo "::error::pacman is not installed - the second package manager this leg exists for is missing"; exit 1; }
+            pacman --version | sed -n 2p
 
             # Install through the PACKAGE, not the raw binary: these legs exist
             # to prove the package postinstall grafts onto whatever service
@@ -1792,6 +1807,14 @@ jobs:
             [ -x /usr/local/bin/supervizio ] || { echo "binary not installed"; exit 1; }
             /usr/local/bin/supervizio --version
 
+            echo "=== Verify apt, not pacman, installed it ==="
+            dpkg -s supervizio 2>/dev/null | grep -qx 'Status: install ok installed' \
+              || { echo "::error::dpkg does not own supervizio - install.sh did not take the .deb path"; exit 1; }
+            if pacman -Q supervizio >/dev/null 2>&1; then
+              echo "::error::pacman claims supervizio - install.sh took the pacman path on a Debian"; exit 1
+            fi
+            echo "OK: dpkg owns supervizio, pacman does not"
+
             echo "=== Verify the service grafted onto systemd ==="
             systemctl is-enabled supervizio >/dev/null 2>&1 || { echo "::error::not enabled under systemd"; systemctl status supervizio || true; exit 1; }
             echo "OK: systemd has supervizio enabled"
@@ -1799,6 +1822,14 @@ jobs:
             echo "=== Validate probe ==="
             sh "$WS/e2e/validate-probe.sh" /usr/local/bin/supervizio \
               || { echo "::error::validate-probe.sh failed"; exit 1; }
+
+            echo "=== Detection vs expected-matrix: pacman beside apt ==="
+            /usr/local/bin/supervizio --probe > /tmp/probe.json
+            /usr/local/bin/supervizio --inventory all > /tmp/inventory.json \
+              || echo "::warning::--inventory all exited non-zero; validating the dump it wrote"
+            jq -c '.package_managers.data.managers[] | select(.available)' /tmp/inventory.json
+            sh "$WS/e2e/validate-detection.sh" debian-vm-amd64 /tmp/probe.json /tmp/inventory.json \
+              || { echo "::error::detection drifted from expected-matrix for debian-vm-amd64"; exit 1; }
 
             echo "=== Supervision scenarios ==="
             sh "$WS/e2e/scenario-battery.sh" /usr/local/bin/supervizio \
@@ -2719,6 +2750,200 @@ jobs:
             "https://api.github.com/repos/${{ needs.resolve.outputs.source_repo }}/statuses/${{ needs.resolve.outputs.sha }}" \
             -d "{\"state\":\"$STATE\",\"context\":\"e2e/vm/alpine-s6\",\"description\":\"$DESC\",\"target_url\":\"${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}\"}"
 
+  # void-xbps -- the one leg that installs the .xbps, and the one runit leg
+  # where runit is PID 1 rather than a supervisor started over another init.
+  #
+  # Void publishes no cloud image and vmactions has no Void action, so this is
+  # a container of Void's OWN image (ghcr.io/void-linux/void-glibc-full, built
+  # by the Void project; the index digest of its dated 20260901R1 tag) booted
+  # with runit-init as PID 1. That is Void's real init: stage 1 runs
+  # /etc/runit/core-services, which detect the container and skip what needs a
+  # kernel of their own, and stage 2 execs runsvdir on
+  # /run/runit/runsvdir/current, the directory /var/service points at -- the
+  # scan dir detect-init.sh then reads from runsvdir's own arguments. As for
+  # the other container legs, what this does not cover is boot ordering and
+  # clean shutdown.
+  #
+  # The package is agent's (packages-xbps: upstream's static xbps-create over
+  # the glibc binary), installed through install.sh's xbps path, which indexes
+  # it and installs it under the name its own metadata gives. Its INSTALL
+  # script grafts runit's service like every other format's postinstall.
+  # The package-manager inventory is checked too: xbps the one primary,
+  # found through xbps-install (validate-detection.sh, void-container-amd64).
+  e2e-linux-void-xbps:
+    name: ${{ inputs.mode == 'release' && 'leg/linux/amd64/void-xbps' || 'E2E Linux void-xbps' }}
+    needs: [resolve]
+    runs-on: ubuntu-26.04
+    timeout-minutes: 30
+    if: ${{ github.event.inputs.arm_only != 'true' }}
+    env:
+      # Pinned by digest: this container gets a root shell and installs our
+      # package. The same index digest the arm64 void-xbps entry pins.
+      VOID: ghcr.io/void-linux/void-glibc-full@sha256:c23266033da422c47d350ae3f7bb4fdfecf543cc7693a90d1f343960f9767c57 # void-glibc-full:20260901R1
+    steps:
+      - name: Report status (pending)
+        if: needs.resolve.outputs.sha != ''
+        continue-on-error: true
+        env:
+          GH_TOKEN: ${{ secrets.AGENT_REPO_TOKEN }}
+        run: |
+          [ -z "$GH_TOKEN" ] && exit 0
+          curl -sf -X POST -H "Authorization: Bearer $GH_TOKEN" -H "Accept: application/vnd.github+json" \
+            "https://api.github.com/repos/${{ needs.resolve.outputs.source_repo }}/statuses/${{ needs.resolve.outputs.sha }}" \
+            -d '{"state":"pending","context":"e2e/vm/void-xbps","description":"Running...","target_url":"${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"}'
+
+      - name: Checkout agent code
+        if: inputs.mode != 'release'
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: ${{ needs.resolve.outputs.source_repo }}
+          ref: ${{ needs.resolve.outputs.ref }}
+          token: ${{ secrets.AGENT_REPO_TOKEN }}
+          persist-credentials: false
+
+      # Release mode (validate-release.yml): no checkout of the private tree
+      # and no cross-repo download. The kit of the tagged commit and this
+      # leg's release assets, pulled by digest and proven against the
+      # manifest; .github/actions/release-candidate says how.
+      - name: Check out the release lane
+        if: inputs.mode == 'release'
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          path: .release-lane
+          persist-credentials: false
+
+      - name: Take the release candidate's files
+        if: inputs.mode == 'release'
+        uses: ./.release-lane/.github/actions/release-candidate
+        with:
+          dispatch: ${{ inputs.dispatch }}
+          policy: ${{ inputs.policy }}
+          kit-dir: .
+          files: supervizio-amd64.xbps pkg
+
+      - name: Download the xbps package from the agent run (cross-repo)
+        if: inputs.mode != 'release'
+        uses: actions/download-artifact@70fc10c6e5e1ce46ad2ea6f2b72d43f7d47b13c3 # v8.0.0
+        with:
+          name: supervizio-amd64.xbps
+          path: pkg
+          repository: ${{ needs.resolve.outputs.source_repo }}
+          run-id: ${{ needs.resolve.outputs.run_id }}
+          github-token: ${{ secrets.AGENT_REPO_TOKEN }}
+
+      # xbps-create names the file <pkgver>.<arch>.xbps
+      # (supervizio-0.0.0_1.x86_64.xbps); only agent's release.yml renames it
+      # to the canonical supervizio-amd64.xbps. install.sh does not care what
+      # the file is called -- it asks the index -- so this is only the one
+      # predictable path the step below copies.
+      - name: Resolve and normalise the package
+        run: |
+          set -euo pipefail
+          ls -la pkg/
+          found=$(find pkg -type f -name "*.xbps" | head -1)
+          [ -n "$found" ] && [ -s "$found" ] || {
+            echo "::error::no *.xbps in the downloaded artifact - did agent's packages-xbps publish it?" >&2
+            exit 1
+          }
+          [ "$found" = "pkg/supervizio-amd64.xbps" ] || mv "$found" "pkg/supervizio-amd64.xbps"
+          ls -l pkg/supervizio-amd64.xbps
+
+      - name: Boot Void with runit as PID 1
+        run: |
+          set -euo pipefail
+          docker pull -q "$VOID"
+          [ "$(docker run --rm "$VOID" uname -m)" = x86_64 ] || { echo "::error::$VOID is not x86_64 here"; exit 1; }
+          # Void does not support partial upgrades: xbps first, then the
+          # system, then jq (validate-probe.sh and validate-detection.sh need
+          # it). The stock agetty services go: a container has no tty for
+          # them, and runsv would respawn them for the whole leg. Empty build
+          # context: the agent checkout is in the workspace.
+          mkdir -p /tmp/ctx
+          printf '%s\n' "FROM $VOID" \
+            'RUN rm -f /etc/runit/runsvdir/default/agetty-* && xbps-install -Syu xbps >/dev/null && xbps-install -yu >/dev/null && xbps-install -y jq >/dev/null' \
+            > /tmp/ctx/Dockerfile
+          docker build -q -t svz-void /tmp/ctx >/dev/null
+          docker run -d --name svz --entrypoint /usr/bin/runit-init svz-void >/dev/null
+          sleep 6
+          [ "$(docker inspect -f '{{.State.Running}}' svz)" = "true" ] || {
+            echo "::error::runit exited (code $(docker inspect -f '{{.State.ExitCode}}' svz))"
+            docker logs svz 2>&1 || true; exit 1; }
+          pid1=$(docker exec svz cat /proc/1/comm)
+          echo "PID 1 = $pid1"
+          [ "$pid1" = runit ] || { echo "::error::PID 1 is '$pid1', expected runit"; exit 1; }
+          docker exec svz sh -c 'ps -o args= -C runsvdir' | grep -q '/run/runit/runsvdir/current' || {
+            echo "::error::stage 2 did not start runsvdir on /run/runit/runsvdir/current"; docker logs svz 2>&1 || true; exit 1; }
+          docker exec svz sh -c 'head -3 /etc/os-release; xbps-query -p pkgver xbps'
+
+      - name: Install through the package, validate, uninstall
+        run: |
+          set -euo pipefail
+          docker exec svz mkdir -p /opt/svz
+          docker cp pkg/supervizio-amd64.xbps svz:/opt/svz/supervizio-amd64.xbps
+          docker cp setup svz:/opt/svz/setup
+          docker cp e2e/validate-probe.sh svz:/opt/svz/validate-probe.sh
+          docker cp e2e/scenario-battery.sh svz:/opt/svz/scenario-battery.sh
+          docker cp e2e/validate-detection.sh svz:/opt/svz/validate-detection.sh
+          docker cp e2e/expected-matrix.json svz:/opt/svz/expected-matrix.json
+
+          echo "=== Install, as a user would ==="
+          docker exec -e SUPERVIZIO_LOCAL_PKG=/opt/svz/supervizio-amd64.xbps svz sh /opt/svz/setup/install.sh
+          docker exec svz /usr/local/bin/supervizio --version
+
+          echo "=== xbps owns it, and INSTALL grafted runit ==="
+          docker exec svz xbps-query -p pkgver,architecture supervizio || {
+            echo "::error::xbps does not know supervizio - install.sh did not take the xbps path"; exit 1; }
+          docker exec svz sh -c 'cat /usr/lib/supervizio/grafted-init; test -x /etc/sv/supervizio/run && test -L /run/runit/runsvdir/current/supervizio' || {
+            echo "::error::no runit graft: /etc/sv/supervizio linked into the running scan dir"
+            docker exec svz sh -c 'ls -la /etc/sv /run/runit/runsvdir/current/' || true
+            exit 1; }
+          # runsvdir rescans its directory every five seconds.
+          sleep 6
+          docker exec svz sv status supervizio | tee /tmp/sv-status
+          grep -q '^run: supervizio' /tmp/sv-status || { echo "::error::runsv did not start supervizio"; exit 1; }
+
+          echo "=== Validate probe ==="
+          docker exec svz sh /opt/svz/validate-probe.sh /usr/local/bin/supervizio
+
+          echo "=== Detection vs expected-matrix: void-container-amd64 ==="
+          docker exec svz sh -c '/usr/local/bin/supervizio --probe > /opt/svz/probe.json'
+          docker exec svz sh -c '/usr/local/bin/supervizio --inventory all > /opt/svz/inventory.json' \
+            || echo "::warning::--inventory all exited non-zero; validating the dump it wrote"
+          docker exec svz jq -c '.package_managers.data.managers[] | select(.available)' /opt/svz/inventory.json
+          docker exec svz sh /opt/svz/validate-detection.sh void-container-amd64 /opt/svz/probe.json /opt/svz/inventory.json
+
+          echo "=== Supervision scenarios ==="
+          docker exec svz sh /opt/svz/scenario-battery.sh /usr/local/bin/supervizio
+
+          echo "=== Uninstall ==="
+          docker exec -e SUPERVIZIO_NON_INTERACTIVE=true svz sh /opt/svz/setup/uninstall.sh
+          if docker exec svz xbps-query supervizio >/dev/null 2>&1; then
+            echo "::error::xbps still has supervizio installed after uninstall"; exit 1
+          fi
+          docker exec svz sh -c 'test ! -e /etc/sv/supervizio && test ! -e /run/runit/runsvdir/current/supervizio' || {
+            echo "::error::the runit graft outlived the package"; exit 1; }
+
+      - name: Collect the container console on failure
+        if: failure()
+        run: docker logs svz 2>&1 || true
+
+      - name: Tear down
+        if: always()
+        run: docker rm -f svz >/dev/null 2>&1 || true
+
+      - name: Report status (result)
+        if: always() && needs.resolve.outputs.sha != ''
+        continue-on-error: true
+        env:
+          GH_TOKEN: ${{ secrets.AGENT_REPO_TOKEN }}
+        run: |
+          [ -z "$GH_TOKEN" ] && exit 0
+          STATE="success"; DESC="Passed"
+          if [ "${{ job.status }}" != "success" ]; then STATE="failure"; DESC="Failed"; fi
+          curl -sf -X POST -H "Authorization: Bearer $GH_TOKEN" -H "Accept: application/vnd.github+json" \
+            "https://api.github.com/repos/${{ needs.resolve.outputs.source_repo }}/statuses/${{ needs.resolve.outputs.sha }}" \
+            -d "{\"state\":\"$STATE\",\"context\":\"e2e/vm/void-xbps\",\"description\":\"$DESC\",\"target_url\":\"${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}\"}"
+
   # ===========================================================================
   # E2E LINUX arm64 — the same nine init systems, on a real aarch64 machine
   # ===========================================================================
@@ -2763,6 +2988,10 @@ jobs:
   #                  (ID=archarm, pacman 7.1.0), pinned by digest. It is the
   #                  one base here not published by the distribution itself —
   #                  recorded, not hidden.
+  #
+  # A tenth column, void-xbps, is the amd64 e2e-linux-void-xbps leg on arm64:
+  # the same Void image (its index digest), runit-init as PID 1, and agent's
+  # own aarch64 .xbps -- carried by arm64-packages, not rebuilt there.
 
   # The packages agent does not bridge.
   #
@@ -2821,6 +3050,19 @@ jobs:
         with:
           name: supervizio-linux-arm64-musl
           path: dl-musl
+          repository: ${{ needs.resolve.outputs.source_repo }}
+          run-id: ${{ needs.resolve.outputs.run_id }}
+          github-token: ${{ secrets.AGENT_REPO_TOKEN }}
+
+      # The one arm64 package agent DOES bridge: nfpm has no xbps backend, so
+      # this job has no recipe for it, and agent's packages-xbps uploads both
+      # arches because this is their consumer. Carried into the same artifact
+      # as the four built here, so the void-xbps leg reads it like the others.
+      - name: Download the arm64 xbps package from the agent run (cross-repo)
+        uses: actions/download-artifact@70fc10c6e5e1ce46ad2ea6f2b72d43f7d47b13c3 # v8.0.0
+        with:
+          name: supervizio-arm64.xbps
+          path: dl-xbps
           repository: ${{ needs.resolve.outputs.source_repo }}
           run-id: ${{ needs.resolve.outputs.run_id }}
           github-token: ${{ secrets.AGENT_REPO_TOKEN }}
@@ -2890,7 +3132,11 @@ jobs:
             [ -n "$found" ] || { echo "::error::nfpm produced no *.${ext}"; exit 1; }
             mv "$found" "supervizio-arm64.${ext}"
           done
-          ls -l
+          cd ..
+          xbps=$(find dl-xbps -type f -name '*.xbps' | head -1)
+          [ -n "$xbps" ] && [ -s "$xbps" ] || { echo "::error::agent run ${{ needs.resolve.outputs.run_id }} bridged no arm64 .xbps (packages-xbps)"; exit 1; }
+          cp "$xbps" pkgs/supervizio-arm64.xbps
+          ls -l pkgs
 
       - name: Upload the arm64 packages for this run's legs
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
@@ -2936,6 +3182,11 @@ jobs:
         #             graft is tested against.
         #   assert    the graft this leg exists to prove, checked inside the
         #             container after install.sh returns.
+        #   detect    the expected-matrix.json column (agent's e2e/) the
+        #             inventory is checked against by validate-detection.sh,
+        #             or '' for none: set where the leg exists for the
+        #             package-manager inventory -- debian-systemd, which
+        #             installs pacman beside apt, and void-xbps.
         include:
           - name: alpine-openrc
             pkg: supervizio-arm64.apk
@@ -2950,6 +3201,7 @@ jobs:
             pid1: init
             assert: 'rc-update show | grep -q supervizio'
             precheck: 'true'
+            detect: ''
           - name: alpine-runit
             pkg: supervizio-arm64.apk
             base: alpine@sha256:85fe1e81d6758c208f3e1eed4338a1997e19d4be002d4dd32d3100c9a8c010a0 # alpine:3.23
@@ -2960,6 +3212,7 @@ jobs:
             pid1: runsvdir
             assert: 'test -L /etc/service/supervizio'
             precheck: 'true'
+            detect: ''
           - name: alpine-s6
             pkg: supervizio-arm64.apk
             base: alpine@sha256:85fe1e81d6758c208f3e1eed4338a1997e19d4be002d4dd32d3100c9a8c010a0 # alpine:3.23
@@ -2970,6 +3223,7 @@ jobs:
             pid1: s6-svscan
             assert: 'test -L /run/service/supervizio'
             precheck: 'true'
+            detect: ''
           - name: alpine-dinit
             pkg: supervizio-arm64.apk
             base: alpine@sha256:85fe1e81d6758c208f3e1eed4338a1997e19d4be002d4dd32d3100c9a8c010a0 # alpine:3.23
@@ -2986,16 +3240,22 @@ jobs:
             pid1: dinit
             assert: 'test -f /etc/dinit.d/supervizio'
             precheck: 'true'
+            detect: ''
           - name: debian-systemd
             pkg: supervizio-arm64.deb
             base: debian@sha256:9cc080028c43b27d2074d63a5f9caf7166d731494965616c1a6d2827a004585c # debian:trixie
-            prep: 'apt-get update -qq && DEBIAN_FRONTEND=noninteractive apt-get install -y -qq systemd systemd-sysv jq procps >/dev/null'
+            # pacman-package-manager: Debian's pacman, beside apt, as on the
+            # amd64 leg. apt must still install the .deb (the assert: dpkg
+            # owns it, pacman does not), and the inventory must report pacman
+            # available with apt the one primary (detect).
+            prep: 'apt-get update -qq && DEBIAN_FRONTEND=noninteractive apt-get install -y -qq systemd systemd-sysv jq procps pacman-package-manager >/dev/null'
             entrypoint: /sbin/init
             args: ''
             runflags: '--cgroupns=host -v /sys/fs/cgroup:/sys/fs/cgroup:rw --tmpfs /run --tmpfs /run/lock'
             pid1: systemd
-            assert: 'systemctl is-enabled supervizio'
+            assert: 'systemctl is-enabled supervizio && dpkg -s supervizio | grep -qx "Status: install ok installed" && ! pacman -Q supervizio 2>/dev/null'
             precheck: 'true'
+            detect: 'debian-container-arm64'
           - name: debian-sysvinit
             pkg: supervizio-arm64.deb
             base: debian@sha256:9cc080028c43b27d2074d63a5f9caf7166d731494965616c1a6d2827a004585c # debian:trixie
@@ -3010,6 +3270,7 @@ jobs:
             # If a future base starts shipping one this must go red rather
             # than quietly become the conversion that failed four times.
             precheck: 'test "$(dpkg -l 2>/dev/null | grep -cE "^ii  (systemd-sysv|init) " || true)" = 0 && test ! -e /sbin/init'
+            detect: ''
           - name: rocky-systemd
             pkg: supervizio-arm64.rpm
             base: rockylinux/rockylinux@sha256:827d37bc128288ccf160ee318bb3cb92d591164cb217e92f8bc61e3982ae1834 # rockylinux/rockylinux:10
@@ -3020,6 +3281,7 @@ jobs:
             pid1: systemd
             assert: 'systemctl is-enabled supervizio'
             precheck: 'true'
+            detect: ''
           - name: opensuse-zypper
             # Leap 16.0, the same release the amd64 leg boots as a cloud image.
             pkg: supervizio-arm64.rpm
@@ -3031,6 +3293,7 @@ jobs:
             pid1: systemd
             assert: 'systemctl is-enabled supervizio && rpm -q supervizio'
             precheck: 'true'
+            detect: ''
           - name: arch-pacman
             pkg: supervizio-arm64.pkg.tar.zst
             base: menci/archlinuxarm@sha256:bdff28eb12cdcd8799b8fa94465e0cbdead7c6aaea1f621c034ea8a0437dde99 # menci/archlinuxarm:base
@@ -3052,6 +3315,28 @@ jobs:
             # path is populated by a real supervizio install.
             assert: 'systemctl is-enabled supervizio && pacman -Q supervizio && ls -d /var/lib/pacman/local/supervizio-*'
             precheck: 'true'
+            detect: ''
+          - name: void-xbps
+            pkg: supervizio-arm64.xbps
+            # Void's own image, built and published by the Void project; the
+            # index digest, so the same pin serves the amd64 leg.
+            base: ghcr.io/void-linux/void-glibc-full@sha256:c23266033da422c47d350ae3f7bb4fdfecf543cc7693a90d1f343960f9767c57 # void-glibc-full:20260901R1
+            # Void does not support partial upgrades: xbps first, then the
+            # system, then jq. The stock agetty services go: a container has
+            # no tty for them, and runsv would respawn them for the whole leg.
+            prep: 'rm -f /etc/runit/runsvdir/default/agetty-* && xbps-install -Syu xbps >/dev/null && xbps-install -yu >/dev/null && xbps-install -y jq >/dev/null'
+            # Void's real runit: stage 1 (core-services skip what needs a
+            # kernel of its own), then stage 2's runsvdir on
+            # /run/runit/runsvdir/current, which /var/service points at.
+            entrypoint: /usr/bin/runit-init
+            args: ''
+            runflags: ''
+            pid1: runit
+            # xbps owns the package, INSTALL grafted runit's service and linked
+            # it into the scan dir runsvdir is running on, and runsv started it.
+            assert: 'xbps-query supervizio >/dev/null && test -x /etc/sv/supervizio/run && test -L /run/runit/runsvdir/current/supervizio && sleep 6 && sv status supervizio | grep -q "^run: supervizio"'
+            precheck: 'true'
+            detect: void-container-arm64
     steps:
       - name: Report status (pending)
         if: needs.resolve.outputs.sha != ''
@@ -3145,6 +3430,7 @@ jobs:
         env:
           PKG: ${{ matrix.pkg }}
           ASSERT: ${{ matrix.assert }}
+          DETECT: ${{ matrix.detect }}
         run: |
           set -euo pipefail
           [ -s "pkg/$PKG" ] || { echo "::error::pkg/$PKG missing from the arm64-packages artifact"; exit 1; }
@@ -3223,6 +3509,16 @@ jobs:
             echo "::notice::.cpu.frequency_mhz exempted on this host: $(docker exec svz jq -r '.cpu.frequency_mhz.detail' /opt/svz/probe.json)"
           fi
           docker exec -e SVZ_EMULATED_CPU="$EMU" svz sh /opt/svz/validate-probe.sh /usr/local/bin/supervizio
+
+          if [ -n "$DETECT" ]; then
+            echo "=== Detection vs expected-matrix: $DETECT ==="
+            docker cp e2e/validate-detection.sh svz:/opt/svz/validate-detection.sh
+            docker cp e2e/expected-matrix.json svz:/opt/svz/expected-matrix.json
+            docker exec svz sh -c '/usr/local/bin/supervizio --inventory all > /opt/svz/inventory.json' \
+              || echo "::warning::--inventory all exited non-zero; validating the dump it wrote"
+            docker exec svz jq -c '.package_managers.data.managers[] | select(.available)' /opt/svz/inventory.json
+            docker exec svz sh /opt/svz/validate-detection.sh "$DETECT" /opt/svz/probe.json /opt/svz/inventory.json
+          fi
 
           echo "=== Supervision scenarios ==="
           docker exec svz sh /opt/svz/scenario-battery.sh /usr/local/bin/supervizio
@@ -5229,7 +5525,7 @@ jobs:
     # and the job does not even wait for it.
     needs: [resolve, e2e-docker-amd64, e2e-docker-arm64, e2e-macos, e2e-macos-arm64, e2e-linux-artix-dinit, e2e-linux-debian-sysvinit, e2e-windows-amd64, e2e-windows-arm64,
              e2e-linux-alpine-openrc, e2e-linux-debian-systemd, e2e-linux-rocky-systemd, e2e-linux-opensuse-zypper, e2e-linux-arch-pacman,
-             e2e-linux-alpine-runit, e2e-linux-alpine-s6,
+             e2e-linux-alpine-runit, e2e-linux-alpine-s6, e2e-linux-void-xbps,
              arm64-packages, e2e-linux-arm64, e2e-linux-exotic,
              e2e-bsd-freebsd-amd64, e2e-bsd-netbsd-amd64, e2e-bsd-openbsd-amd64,
              e2e-bsd-freebsd-arm64, e2e-bsd-netbsd-arm64, e2e-bsd-openbsd-arm64]
@@ -5264,10 +5560,11 @@ jobs:
             "linux-arch-pacman=${{ needs.e2e-linux-arch-pacman.result }}"
             "linux-alpine-runit=${{ needs.e2e-linux-alpine-runit.result }}"
             "linux-alpine-s6=${{ needs.e2e-linux-alpine-s6.result }}"
-            # The nine arm64 Linux legs are one matrix job, so they arrive as
+            "linux-void-xbps=${{ needs.e2e-linux-void-xbps.result }}"
+            # The ten arm64 Linux legs are one matrix job, so they arrive as
             # one result here -- a matrix is `failure` if any of its entries
             # is. `arm64-packages` is listed beside it because it is what
-            # those nine consume: when it fails they are `skipped`, which this
+            # those ten consume: when it fails they are `skipped`, which this
             # loop already counts as not-success, and naming it says which of
             # the two broke.
             "arm64-packages=${{ needs.arm64-packages.result }}"

@@ -169,6 +169,14 @@
           "scenario": "e2e"
         },
         {
+          "id": "linux/amd64/void-xbps",
+          "state": "required",
+          "merge_ci": "gating",
+          "from": "e2e.yml e2e-linux-void-xbps",
+          "runner": "ubuntu-26.04",
+          "scenario": "e2e"
+        },
+        {
           "id": "linux/arm64/alpine-openrc",
           "state": "required",
           "merge_ci": "gating",
@@ -237,6 +245,14 @@
           "state": "required",
           "merge_ci": "gating",
           "from": "e2e.yml e2e-linux-arm64[arch-pacman]",
+          "runner": "ubuntu-26.04-arm",
+          "scenario": "e2e"
+        },
+        {
+          "id": "linux/arm64/void-xbps",
+          "state": "required",
+          "merge_ci": "gating",
+          "from": "e2e.yml e2e-linux-arm64[void-xbps]",
           "runner": "ubuntu-26.04-arm",
           "scenario": "e2e"
         },
