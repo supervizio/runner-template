@@ -1781,7 +1781,7 @@ jobs:
       # primary (validate-detection.sh against agent's expected-matrix, whose
       # debian-vm-amd64 column lists pkg_available: apt, pacman).
       - name: Install, graft, validate and uninstall in a debian guest
-        uses: vmactions/debian-vm@389ba1da28ff5b440cba52db8e03fc2e08e2affa # v1.0.0
+        uses: vmactions/debian-vm@626b64f9a6be64bbeaf3850f8bac2532d4e77db4 # v1.0.1
         with:
           release: '13'
           copyback: false

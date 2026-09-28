@@ -141,7 +141,7 @@ jobs:
     continue-on-error: true
     timeout-minutes: 25
     steps:
-      - uses: vmactions/debian-vm@389ba1da28ff5b440cba52db8e03fc2e08e2affa # v1.0.0
+      - uses: vmactions/debian-vm@626b64f9a6be64bbeaf3850f8bac2532d4e77db4 # v1.0.1
         with:
           release: '13'
           run: |
@@ -166,7 +166,7 @@ jobs:
     continue-on-error: true
     timeout-minutes: 25
     steps:
-      - uses: vmactions/debian-vm@389ba1da28ff5b440cba52db8e03fc2e08e2affa # v1.0.0
+      - uses: vmactions/debian-vm@626b64f9a6be64bbeaf3850f8bac2532d4e77db4 # v1.0.1
         with:
           release: '13'
           cache-after-prepare: true
