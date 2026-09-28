@@ -100,7 +100,11 @@ the script; they do not re-implement a rule.
   of the uploaded bytes; the validator passes a consistent draft and refuses it
   after an asset is replaced or the tag is re-pointed; a check run holds 65535
   characters of text; a 268-character run-name is kept whole. It runs on `main`
-  when its file changes, or by `workflow_dispatch`.
+  when its file or `release-contract/tests/live_proof.py` changes, or by
+  `workflow_dispatch`. The policy and receipt it stages come from `live_proof.py`,
+  which `release-contract.yml` exercises offline (`test_live_proof.py`): an inline
+  copy in the workflow went stale against the contract unnoticed, and the proof
+  was red on `main` from 2026-09-25 to this fix.
 - **`validate-release.yml`** is the release lane (README D3 and section 4). The
   candidate is an OCI artifact in the private repository's own GHCR package
   (`policy.json` `bridge_package`), named by digest in the dispatch: nothing
