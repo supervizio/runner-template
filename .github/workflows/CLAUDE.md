@@ -37,8 +37,8 @@ it with `grep -n 'runs-on' .github/workflows/*.yml`. This repository is public,
 so pointing a job at a self-hosted runner would let a fork's pull request run
 code there.
 
-The Linux jobs run on `ubuntu-26.04` and `ubuntu-26.04-arm`, and so do the legs
-`policy.json` names. Two exceptions, each with its reason where it is set:
+The Linux jobs run on `ubuntu-26.04` and `ubuntu-26.04-arm`, and so do the Linux
+legs `policy.json` names. Two exceptions, each with its reason where it is set:
 `post-commit.yml` stays on `ubuntu-latest` (the fleet stub), and `e2e.yml`'s
 `386-glibc` leg on `ubuntu-24.04` until 26.04's Docker lets an i386 glibc
 container open a socket (actions/runner-images#14790). actionlint does not know
