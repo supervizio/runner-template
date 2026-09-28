@@ -3178,8 +3178,9 @@ jobs:
           # .cpu.frequency_mhz, and why this one field is exempted here.
           #
           # The probe does not fail to read a clock on this host, it declares
-          # there is none. Measured on run 35507794810, all nine legs, word for
-          # word the same:
+          # there is none. Measured on ubuntu-24.04-arm, run 35507794810, all
+          # nine legs, word for word the same (and again on ubuntu-26.04-arm,
+          # run 36392064661):
           #
           #   "brand": {"value": "ARM"}
           #   "frequency_mhz": {"value": null, "reason": "NOT_PRESENT",
@@ -3195,7 +3196,7 @@ jobs:
           #
           # validate-probe.sh has exactly one knob for this field,
           # SVZ_EMULATED_CPU, named after the first case that reached it -- the
-          # TCG-emulated BSD arm64 legs. ubuntu-24.04-arm is NOT emulated; it
+          # TCG-emulated BSD arm64 legs. The arm64 runner is NOT emulated; it
           # is native aarch64 hardware that exposes no clock. The knob is the
           # right one, its name is one case too narrow. (Worth renaming in
           # agent, e.g. SVZ_NO_CPU_CLOCK; not this repo's file.)
