@@ -435,6 +435,22 @@
           "scenario": "e2e"
         },
         {
+          "id": "illumos/amd64",
+          "state": "required",
+          "merge_ci": "gating",
+          "from": "e2e.yml e2e-illumos-amd64 (OmniOS r151054)",
+          "runner": "ubuntu-26.04",
+          "scenario": "e2e"
+        },
+        {
+          "id": "solaris/amd64",
+          "state": "required",
+          "merge_ci": "gating",
+          "from": "e2e.yml e2e-solaris-amd64 (Oracle Solaris 11.4)",
+          "runner": "ubuntu-26.04",
+          "scenario": "e2e"
+        },
+        {
           "id": "linux-exotic/386-glibc",
           "state": "required",
           "merge_ci": "gating",

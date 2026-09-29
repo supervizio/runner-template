@@ -73,6 +73,7 @@ Create a **fine-grained PAT** scoped to `supervizio/agent` with the above permis
 | Docker arm64 (debian, alpine, scratch) | `ubuntu-26.04-arm` | `supervizio-linux-arm64`, `supervizio-linux-arm64-musl` |
 | macOS x86_64 | `macos-15-intel` | `supervizio-darwin-amd64` |
 | macOS ARM64 | `macos-15` | `supervizio-darwin-arm64` |
+| illumos (OmniOS r151054), Oracle Solaris 11.4 — raw binary and IPS archive, each through install.sh, under SMF | `ubuntu-26.04`, a `vmactions` guest | `supervizio-{illumos,solaris}-amd64`, `supervizio-{illumos,solaris}-amd64-pkg` (`.p5p` inside) |
 | Linux exotic — 386, armv7, armv6, riscv64, ppc64le, s390x (glibc + musl) and loong64 | `ubuntu-26.04`, under `qemu-user`/`binfmt_misc` except 386 (native); `386-glibc` stays on `ubuntu-24.04` until 26.04's Docker lets i386 glibc open a socket (actions/runner-images#14790) | `supervizio-{386,arm7,arm6,riscv64,ppc64le,s390x}.{deb,apk}`, `supervizio-linux-loong64` |
 
 The table above is not the whole matrix — the twelve Linux legs per arch
@@ -112,6 +113,7 @@ Each E2E job posts individual commit statuses to the agent repo:
 - `e2e/macos-x86_64` — macOS Intel result
 - `e2e/macos-arm64` — macOS Apple Silicon result
 - `e2e/linux-exotic/{name}` — per-target exotic Linux results (emulated, except the two 386 legs)
+- `e2e/illumos/omnios-amd64`, `e2e/solaris/amd64` — illumos and Solaris results
 - `e2e/runner-template` — aggregate final status
 
 ## Agent-Side Setup

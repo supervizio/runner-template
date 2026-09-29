@@ -982,7 +982,7 @@ class LegMatrix(unittest.TestCase):
         for leg in policy["repositories"][AGENT]["legs"]:
             leg["scenario"] = None
         legs, _ = rc.leg_matrix(dispatch_body()["client_payload"], policy)
-        self.assertEqual(len(legs), 64)
+        self.assertEqual(len(legs), 66)
         self.assertIn(
             {"id": "windows/arm64", "runner": "windows-11-arm", "required": True, "scenario": None, "host": "native", "platform": ""},
             legs,
@@ -1559,8 +1559,8 @@ class Cli(unittest.TestCase):
 class ShippedPolicy(unittest.TestCase):
     def test_policy_is_valid_and_sized_as_inventoried(self):
         rc.validate_policy(POLICY)
-        self.assertEqual(len(rc.required_legs(POLICY, AGENT)), 64)
-        self.assertEqual(len(POLICY["repositories"][AGENT]["legs"]), 64)
+        self.assertEqual(len(rc.required_legs(POLICY, AGENT)), 66)
+        self.assertEqual(len(POLICY["repositories"][AGENT]["legs"]), 66)
         self.assertEqual(len(rc.required_legs(POLICY, LIBPROBE)), 14)
         self.assertEqual(rc.advisory_legs(POLICY, LIBPROBE), ["bsd/freebsd-arm64", "bsd/openbsd-arm64", "bsd/netbsd-arm64"])
         # Nothing may be promoted before a leg's release scenario exists: every

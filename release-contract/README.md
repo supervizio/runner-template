@@ -349,7 +349,7 @@ instruction and a leg takes one to two hours.
 Inventory taken from `main` at `3b0f5b7` (#101, #102 and #110 merged), then
 OpenBSD arm64 widened to the seven releases amd64 runs.
 
-**supervizio/agent** — 64 required (source: `e2e.yml`, every leg gating in merge CI):
+**supervizio/agent** — 66 required (source: `e2e.yml`, every leg gating in merge CI):
 
 | Legs | Count | Runner |
 |---|---|---|
@@ -360,6 +360,7 @@ OpenBSD arm64 widened to the seven releases amd64 runs.
 | `linux/arm64/{alpine-openrc,alpine-runit,alpine-s6,alpine-dinit,debian-systemd,debian-sysvinit,rocky-systemd,opensuse-zypper,arch-pacman,void-xbps,gentoo-portage,nixos-nix}` | 12 | `ubuntu-26.04-arm` |
 | `freebsd/{amd64,arm64}` (15.1), `netbsd/{amd64,arm64}` (10.1) | 4 | `ubuntu-26.04` (QEMU) |
 | `openbsd/{amd64,arm64}/{7.3,7.4,7.5,7.6,7.7,7.8,7.9}` | 14 | `ubuntu-26.04` (QEMU) |
+| `illumos/amd64` (OmniOS r151054), `solaris/amd64` (Oracle Solaris 11.4): the raw binary and the IPS archive, each through install.sh, under SMF | 2 | `ubuntu-26.04` (QEMU) |
 | `linux-exotic/{386,armv7,riscv64,ppc64le,s390x}-{glibc,musl}`, `linux-exotic/armv6-musl`, `linux-exotic/loong64` | 12 | `ubuntu-26.04` (QEMU); `386-glibc` on `ubuntu-24.04` until 26.04's Docker lets i386 glibc open a socket (`e2e.yml`, actions/runner-images#14790) |
 
 `arm64-packages` gates the merge lane but is not a leg: it *builds* arm64 packages

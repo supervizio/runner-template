@@ -15,7 +15,7 @@ of it is what anyone works on.
 
 | File | Trigger | What it does |
 |------|---------|--------------|
-| `e2e.yml` | `repository_dispatch[run-e2e]`, `workflow_dispatch`, `workflow_call` | **agent's** E2E matrix — Docker, Linux guests, BSD, Windows, macOS. Merge lane: installs the packages the agent run published and reports `e2e/*` commit statuses back to that SHA. Release mode (`workflow_call` from `validate-release.yml`, `mode: release`): the same jobs, named `leg/<id>`, on a release candidate's assets and test kit — see "e2e.yml in release mode" below. |
+| `e2e.yml` | `repository_dispatch[run-e2e]`, `workflow_dispatch`, `workflow_call` | **agent's** E2E matrix — Docker, Linux guests, BSD, illumos, Solaris, Windows, macOS. Merge lane: installs the packages the agent run published and reports `e2e/*` commit statuses back to that SHA. Release mode (`workflow_call` from `validate-release.yml`, `mode: release`): the same jobs, named `leg/<id>`, on a release candidate's assets and test kit — see "e2e.yml in release mode" below. |
 | `external-e2e.yml` | `repository_dispatch[run-external-e2e]`, `workflow_dispatch` | **libprobe's** lane. Rebuilds from source on the dispatched SHA; posts `e2e-public/<run>-<attempt>`, green iff the 6 native legs AND the 3 BSD **amd64** legs pass. BSD arm64 (no KVM, 1-2 h a leg) and the containers are advisory: shown in the table, never in the verdict. A BSD amd64 leg whose guest never became ready is retried once on a fresh runner; a leg that reached its tests never is. The BSD steps are written once (`&bsd-leg`) and aliased by all nine BSD jobs. |
 | `cleanup-external-e2e.yml` | `workflow_run` on both of the above | Deletes each dispatched run once it finishes, so no public trace of a private-source run remains. `repository_dispatch` runs only — a `workflow_dispatch` is someone debugging on purpose. |
 | `release-contract.yml` | PR and push on `release-contract/**` | Tests the release contract's validator on Linux, macOS, Windows and Python 3.9, and re-derives the manifest test vector with coreutils alone. See "The release contract" below. |
@@ -98,6 +98,22 @@ the 26.04 labels yet; `.github/actionlint.yaml` lists them.
   `e2e/vm/{gentoo-portage,nixos-nix}` (amd64), `e2e/linux-arm64/...` (arm64).
 - **BSD legs** run under QEMU through `vmactions/*-vm`, pinned to a release; arm64
   guests are emulated (TCG) and slow.
+- **illumos and Solaris: `e2e-illumos-amd64`, `e2e-solaris-amd64`** (release
+  legs `illumos/amd64`, `solaris/amd64`). A stock OmniOS r151054 and a stock
+  Oracle Solaris 11.4 guest (`vmactions/omnios-vm`, `vmactions/solaris-vm`, no
+  compiler), jq from each OS's own repository. The binary and the `.p5p` are
+  agent's native build and IPS archive (agent's `solarish-package.yml`, CI
+  artifacts `supervizio-{illumos,solaris}-amd64[-pkg]`, release assets
+  `supervizio-{illumos,solaris}-amd64[.p5p]`). `.github/solarish-leg/in-guest.sh`
+  installs the raw binary through install.sh (which grafts the SMF manifest),
+  then the archive through install.sh (pkg(5), whose actuator registers the
+  same service): online under SMF after each, nothing left after each
+  uninstall. validate-probe, `validate-detection.sh
+  {omnios,solaris}-amd64`, an SMF cycle (disable, enable, SIGKILL then
+  restarted) and the scenario battery run on the first. The merge lane checks
+  out only the four paths the release kit carries (`e2e/`, `setup/`,
+  `go.work`, `.dockerignore`), never agent's sources. Status contexts
+  `e2e/illumos/omnios-amd64`, `e2e/solaris/amd64`.
 
 ## Upstream images: pinned hash or signature
 
