@@ -21,7 +21,8 @@ What it asserts, in order:
    `e2e/expected-matrix.json` column (`SVZ_KEY`: `omnios-amd64`,
    `solaris-amd64`).
 3. An SMF cycle: `svcadm disable -s` stops it, `svcadm enable -s` brings it
-   back, and a SIGKILLed supervizio is restarted by SMF under a new pid.
+   back, and a SIGKILLed supervizio is restarted by SMF under a new pid with
+   the service `online` again — a new pid alone does not pass.
 4. The supervision battery (`scenario-battery.sh`).
 5. `uninstall.sh`: no service, no binary, no manifest left.
 6. The IPS archive through install.sh: pkg(5) must own it, the manifest's
