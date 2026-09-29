@@ -64,7 +64,25 @@ gone() {
 }
 
 # The supervizio SMF started: the one whose command line is the manifest's.
+# A zombie has no arguments, so an exited supervizio never matches.
 main_pid() { pgrep -f "^$BIN --config /etc/supervizio/config.yaml" | head -1; }
+
+# running: online, with a live supervizio that is still the same process 5 s
+# later. online alone is svc.startd's view the moment the start method ran: a
+# supervisor that exits at startup is online for an instant (svcs -p shows its
+# zombie as <defunct>), then restarted until SMF puts it in maintenance.
+running() {
+  wait_state online || return 1
+  pid="$(main_pid)"
+  sleep 5
+  if [ -z "$pid" ] || [ "$(main_pid)" != "$pid" ] || [ "$(state)" != online ]; then
+    echo "::error::no supervizio stayed up in $FMRI (pid '$pid', now '$(main_pid)', state '$(state)')"
+    svcs -p "$FMRI" 2>&1 || true
+    tail -30 /var/svc/log/application-supervizio:default.log 2>/dev/null || true
+    return 1
+  fi
+  svcs -p "$FMRI"
+}
 
 echo "=== 1. The raw binary, through install.sh (SMF grafted by install.sh)"
 SUPERVIZIO_LOCAL_BIN="$WS/bin/supervizio"
@@ -74,8 +92,7 @@ sh "$WS/setup/install.sh" || { echo "::error::install.sh (binary) failed"; exit 
 [ -x "$BIN" ] || { echo "::error::$BIN not installed"; exit 1; }
 "$BIN" --version
 [ -f "$MANIFEST" ] || { echo "::error::no SMF manifest at $MANIFEST"; exit 1; }
-wait_state online
-svcs -p "$FMRI"
+running || exit 1
 echo "OK: SMF runs supervizio"
 
 echo "=== Validate probe"
@@ -128,7 +145,7 @@ sh "$WS/setup/install.sh" || { echo "::error::install.sh (package) failed"; exit
 pkg list -H application/supervizio || { echo "::error::pkg(5) does not own supervizio: install.sh did not take the IPS path"; exit 1; }
 pkg info application/supervizio | sed -n '1,12p'
 [ -x "$BIN" ] || { echo "::error::the package installed no $BIN"; exit 1; }
-wait_state online
+running || exit 1
 "$BIN" --version
 "$BIN" --probe | jq -e '.os.platform.value' >/dev/null || { echo "::error::--probe from the packaged binary failed"; exit 1; }
 echo "OK: the package's service is online"

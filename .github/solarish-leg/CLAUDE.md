@@ -1,4 +1,4 @@
-<!-- updated: 2026-09-29T00:00:00Z -->
+<!-- updated: 2026-09-29T03:41:17Z -->
 # .github/solarish-leg/
 
 `in-guest.sh` is what `e2e.yml`'s `e2e-illumos-amd64` (OmniOS r151054) and
@@ -13,7 +13,10 @@ What it asserts, in order:
 1. The raw binary through agent's `setup/install.sh`: no package it may
    download, so install.sh installs `/usr/local/bin/supervizio` and grafts
    `/lib/svc/manifest/site/supervizio.xml` itself. The service must reach
-   `online`.
+   `online` AND hold a live supervizio that is still the same process five
+   seconds later (`running`): a supervisor that exits at startup is `online`
+   for an instant, its zombie listed as `<defunct>` by `svcs -p` — which is
+   how a startup refusal once passed this step.
 2. `validate-probe.sh`, then `validate-detection.sh` against agent's
    `e2e/expected-matrix.json` column (`SVZ_KEY`: `omnios-amd64`,
    `solaris-amd64`).
@@ -22,7 +25,8 @@ What it asserts, in order:
 4. The supervision battery (`scenario-battery.sh`).
 5. `uninstall.sh`: no service, no binary, no manifest left.
 6. The IPS archive through install.sh: pkg(5) must own it, the manifest's
-   actuator must have registered the service online, and `uninstall.sh`
+   actuator must have registered the service and it must be `running`, and
+   `uninstall.sh`
    (`pkg uninstall`) must leave nothing behind.
 
 POSIX `sh`: the guests' `/bin/sh` is ksh93, and ksh93 remembers which PATH
