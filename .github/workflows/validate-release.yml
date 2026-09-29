@@ -244,10 +244,12 @@ jobs:
         shell: bash
         run: rm -rf candidate
 
-      # Releases pinned, as in external-e2e.yml. The base system's cc is the
-      # consumer's compiler; nothing is installed in the guest. Every guest
-      # registers the same shell name, so one step below runs the harness in
-      # whichever booted.
+      # Releases pinned, as in external-e2e.yml. The BSDs' base cc is the
+      # consumer's compiler; OmniOS and Solaris have none in their stock
+      # images, so their legs boot the `-build` / `-gcc` variants, which carry
+      # the gcc run.sh uses there. Nothing is installed in the guest. Every
+      # guest registers the same shell name, so one step below runs the
+      # harness in whichever booted.
       - name: Harness -- boot FreeBSD 15.1
         if: ${{ matrix.leg.scenario == 'abi' && matrix.leg.host == 'freebsd' }}
         uses: vmactions/freebsd-vm@a2f9a41fa97f6848b8c3b791087dfcdaa5b473ff # v1.5.8

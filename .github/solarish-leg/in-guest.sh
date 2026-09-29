@@ -124,7 +124,10 @@ while [ "$i" -lt 60 ]; do
   sleep 1
   i=$((i + 1))
 done
-[ -n "$after" ] && [ "$after" != "$before" ] || { echo "::error::SMF did not restart supervizio after SIGKILL (pid $before)"; exit 1; }
+if [ -z "$after" ] || [ "$after" = "$before" ] || [ "$(state)" != online ]; then
+  echo "::error::SMF did not bring supervizio back after SIGKILL (pid $before; now '$after', state '$(state)')"
+  exit 1
+fi
 echo "OK: pid $before killed, SMF started pid $after"
 
 echo "=== Supervision scenarios"
