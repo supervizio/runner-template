@@ -5,10 +5,10 @@
 # published `libprobe.a` and `probe.h` of ONE platform, taken out of the release
 # tarball after checking it, plus consumer.c, this script and plan.env. This
 # script is then run wherever the platform lives -- natively on a hosted runner,
-# inside a BSD guest, inside a container -- which is why it is plain POSIX sh:
-# FreeBSD, OpenBSD and NetBSD /bin/sh, Alpine's busybox and Git Bash on Windows
-# all run it. It needs a C compiler and nothing else: no Python, no network, no
-# token.
+# inside a BSD, illumos or Solaris guest, inside a container -- which is why it
+# is plain POSIX sh: FreeBSD, OpenBSD and NetBSD /bin/sh, the ksh93 illumos and
+# Solaris ship as /bin/sh, Alpine's busybox and Git Bash on Windows all run it.
+# It needs a C compiler and nothing else: no Python, no network, no token.
 #
 # Usage: run.sh [all|build|exec]   (default all)
 #   build  compile the consumer only -- the scratch leg builds in Alpine and
@@ -66,6 +66,21 @@ case "$PLATFORM" in
   netbsd-*)
     cc_default=cc
     libs="-lexecinfo -lpthread -lgcc_s -lc -lm -lrt -lutil -lkvm -lnpf"
+    ;;
+  illumos-*)
+    # The guest image carries gcc and no cc. -m64: the archive is LP64 whatever
+    # the compiler's default. libkstat is libprobe's own; the rest is what
+    # `rustc --print native-static-libs` names for x86_64-unknown-illumos.
+    cc_default=gcc
+    cflags="$cflags -m64"
+    libs="-lkstat -lsendfile -llgrp -lsocket -lposix4 -lpthread -lresolv -lnsl -lumem -lgcc_s -lc -lm -lrt"
+    ;;
+  solaris-*)
+    # As illumos, less the two libraries Rust's std does not ask for on
+    # x86_64-pc-solaris (libnsl, libumem).
+    cc_default=gcc
+    cflags="$cflags -m64"
+    libs="-lkstat -lsendfile -llgrp -lsocket -lposix4 -lpthread -lresolv -lgcc_s -lc -lm -lrt"
     ;;
   windows-amd64)
     cc_default=gcc

@@ -130,9 +130,20 @@ SCENARIO_E2E = "e2e"
 E2E_CALLER = "e2e"
 CALLER_SEPARATOR = " / "
 # Where a leg's harness executes (README section 5). `native` is the leg's runner
-# itself; a BSD name is a guest that runner boots; `container-*` is a container
-# on it. The workflow reads this to pick the steps between prepare and check.
-HARNESS_HOSTS = ("native", "freebsd", "openbsd", "netbsd", "container-ubuntu", "container-alpine", "container-scratch")
+# itself; an OS name (a BSD, OmniOS for illumos, Solaris) is a guest that runner
+# boots; `container-*` is a container on it. The workflow reads this to pick the
+# steps between prepare and check.
+HARNESS_HOSTS = (
+    "native",
+    "freebsd",
+    "openbsd",
+    "netbsd",
+    "omnios",
+    "solaris",
+    "container-ubuntu",
+    "container-alpine",
+    "container-scratch",
+)
 PLATFORM_RE = re.compile(r"^[a-z0-9]+(?:-[a-z0-9]+)*$")
 HARNESS_DIR = os.path.join(HERE, "harness")
 ABI_REPORT_SCHEMA = "supervizio.libprobe-abi-report/v1"

@@ -68,6 +68,13 @@ jobs:
       run_id: ${{ steps.resolve.outputs.run_id }}
       sha: ${{ steps.resolve.outputs.sha }}
       source_repo: ${{ steps.resolve.outputs.source_repo }}
+      # Merge lane only: `false` when the agent run carries no illumos (or no
+      # Solaris) binary and package, so that leg is skipped rather than failed.
+      # agent builds them (package-solarish) only for a pull request touching
+      # its .github/solarish-paths.txt, and on every release. Empty -- no
+      # token to list with, release mode -- never skips anything.
+      illumos: ${{ steps.artifacts.outputs.illumos }}
+      solaris: ${{ steps.artifacts.outputs.solaris }}
     steps:
       - name: Resolve dispatch parameters
         id: resolve
@@ -148,6 +155,7 @@ jobs:
       #
       # `needs: [resolve]` means a failure here skips the whole matrix instead.
       - name: Check the agent run actually produced artifacts
+        id: artifacts
         if: inputs.mode != 'release'
         env:
           GH_TOKEN: ${{ secrets.AGENT_REPO_TOKEN }}
@@ -191,6 +199,27 @@ jobs:
           if ! printf '%s\n' "$names" | grep -qx 'supervizio-amd64.xbps'; then
             echo "::warning::no supervizio-amd64.xbps in run $SRC_RUN - both void-xbps legs will fail. Its producer is agent's packages-xbps job."
           fi
+          # Not a failure either way: agent builds illumos and Solaris
+          # (package-solarish) only when a pull request touches its
+          # .github/solarish-paths.txt, and its CI Summary is what judges that
+          # job. A kernel whose binary AND package are here runs its leg; one
+          # with neither is skipped (`<p>=false`), and the report reads that
+          # skip as "not built" rather than as a failure. Half a pair is a
+          # broken producer: the leg runs and fails on the missing half.
+          for p in illumos solaris; do
+            bin=false; pkg=false
+            printf '%s\n' "$names" | grep -qx "supervizio-$p-amd64" && bin=true
+            printf '%s\n' "$names" | grep -qx "supervizio-$p-amd64-pkg" && pkg=true
+            if [ "$bin" = false ] && [ "$pkg" = false ]; then
+              echo "::notice::no $p binary or package in run $SRC_RUN: agent did not build $p for this change (package-solarish runs when a pull request touches its .github/solarish-paths.txt) -- e2e-$p-amd64 is skipped"
+              echo "$p=false" >> "$GITHUB_OUTPUT"
+            else
+              if [ "$bin" != "$pkg" ]; then
+                echo "::warning::run $SRC_RUN carries only one of supervizio-$p-amd64 and supervizio-$p-amd64-pkg - e2e-$p-amd64 will fail on the other. Its producer is agent's package-solarish job (solarish-package.yml)."
+              fi
+              echo "$p=true" >> "$GITHUB_OUTPUT"
+            fi
+          done
           # Advisory too: the gentoo-portage and nixos-nix legs render their
           # channel from BOTH static binaries and fail without either.
           for a in supervizio-linux-amd64-musl supervizio-linux-arm64-musl; do
@@ -6101,6 +6130,273 @@ jobs:
   # Desormais chaque leg publie la VM qu'il a reellement acquise (artefact
   # `vm-claim-<name>`, ecrit par l'etape "Record VM claim") et ce job ne touche
   # que cette liste. Une VM que ce run n'a jamais prise n'est jamais reinitialisee.
+  # ---------------------------------------------------------------------------
+  # illumos (OmniOS r151054, OmniOS's long-term-support release) and Oracle
+  # Solaris 11.4: agent's native build and its IPS archive, both from agent's
+  # package-solarish (solarish-package.yml). One guest per kernel runs
+  # .github/solarish-leg/in-guest.sh: the raw binary through install.sh, which
+  # grafts the SMF manifest, then the .p5p through install.sh, whose actuator
+  # has manifest-import register the same service. Each must come up online
+  # under SMF and leave nothing behind when uninstalled; the probe, the
+  # detection matrix (omnios-amd64 / solaris-amd64) and an SMF cycle
+  # (disable, enable, SIGKILL -> restarted) run on the first, the supervision
+  # battery once. amd64 only: agent builds nothing else for these kernels.
+  #
+  # Release mode ALWAYS runs both legs (required by policy.json). The merge
+  # lane skips a leg only when resolve positively found neither artifact of
+  # its kernel in the agent run: agent builds them only for a pull request
+  # touching its .github/solarish-paths.txt. The report reads that skip as
+  # `not-built`, and any other skip as a failure.
+  e2e-illumos-amd64:
+    name: ${{ inputs.mode == 'release' && 'leg/illumos/amd64' || 'E2E illumos amd64 (OmniOS)' }}
+    needs: [resolve]
+    runs-on: ubuntu-26.04
+    timeout-minutes: 45
+    if: ${{ github.event.inputs.arm_only != 'true' && (inputs.mode == 'release' || needs.resolve.outputs.illumos != 'false') }}
+    steps:
+      - name: Report status (pending)
+        if: needs.resolve.outputs.sha != ''
+        continue-on-error: true
+        env:
+          GH_TOKEN: ${{ secrets.AGENT_REPO_TOKEN }}
+        run: |
+          [ -z "$GH_TOKEN" ] && exit 0
+          curl -sf -X POST -H "Authorization: Bearer $GH_TOKEN" -H "Accept: application/vnd.github+json" \
+            "https://api.github.com/repos/${{ needs.resolve.outputs.source_repo }}/statuses/${{ needs.resolve.outputs.sha }}" \
+            -d '{"state":"pending","context":"e2e/illumos/omnios-amd64","description":"Running...","target_url":"${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"}'
+
+      # Merge lane: only the agent tree the release kit carries (e2e/, setup/,
+      # go.work, .dockerignore), never its sources -- the guest needs the
+      # scripts, and the same four paths are what release mode extracts.
+      - name: Checkout agent's scripts
+        if: inputs.mode != 'release'
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: ${{ needs.resolve.outputs.source_repo }}
+          ref: ${{ needs.resolve.outputs.ref }}
+          token: ${{ secrets.AGENT_REPO_TOKEN }}
+          persist-credentials: false
+          sparse-checkout-cone-mode: false
+          sparse-checkout: |
+            /e2e/
+            /setup/
+            /go.work
+            /.dockerignore
+
+      - name: Check out the release lane
+        if: inputs.mode == 'release'
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          path: .release-lane
+          persist-credentials: false
+
+      - name: Take the release candidate's files
+        if: inputs.mode == 'release'
+        uses: ./.release-lane/.github/actions/release-candidate
+        with:
+          dispatch: ${{ inputs.dispatch }}
+          policy: ${{ inputs.policy }}
+          kit-dir: .
+          files: |
+            supervizio-illumos-amd64 bin
+            supervizio-illumos-amd64.p5p pkg
+
+      # Built natively and packaged in agent's own guest (solarish-package.yml),
+      # mirrored to GitHub artifacts; downloaded on the HOST and synced into
+      # the guest -- the token never enters the VM.
+      - name: Download the binary from the agent run (cross-repo)
+        if: inputs.mode != 'release'
+        uses: actions/download-artifact@70fc10c6e5e1ce46ad2ea6f2b72d43f7d47b13c3 # v8.0.0
+        with:
+          name: supervizio-illumos-amd64
+          path: bin
+          repository: ${{ needs.resolve.outputs.source_repo }}
+          run-id: ${{ needs.resolve.outputs.run_id }}
+          github-token: ${{ secrets.AGENT_REPO_TOKEN }}
+
+      - name: Download the IPS archive from the agent run (cross-repo)
+        if: inputs.mode != 'release'
+        uses: actions/download-artifact@70fc10c6e5e1ce46ad2ea6f2b72d43f7d47b13c3 # v8.0.0
+        with:
+          name: supervizio-illumos-amd64-pkg
+          path: pkg
+          repository: ${{ needs.resolve.outputs.source_repo }}
+          run-id: ${{ needs.resolve.outputs.run_id }}
+          github-token: ${{ secrets.AGENT_REPO_TOKEN }}
+
+      - name: Verify the binary and the archive arrived
+        run: |
+          set -euo pipefail
+          ls -la bin/ pkg/
+          [ -s "bin/supervizio-illumos-amd64" ] || {
+            echo "::error::supervizio-illumos-amd64 missing or empty -- did agent's package-solarish publish it?" >&2
+            exit 1
+          }
+          [ -s "pkg/supervizio-illumos-amd64.p5p" ] || {
+            echo "::error::supervizio-illumos-amd64.p5p missing or empty -- did agent's package-solarish publish it?" >&2
+            exit 1
+          }
+          mv "bin/supervizio-illumos-amd64" bin/supervizio
+
+      - name: Check out the leg's guest script
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          path: .solarish-leg
+          sparse-checkout: .github/solarish-leg
+          persist-credentials: false
+
+      # A stock image, no compiler: what an administrator installs on. jq is
+      # the one tool agent's validators need that it does not carry.
+      - name: Install, validate and uninstall in an OmniOS guest
+        uses: vmactions/omnios-vm@9576f0b6d15e7696548409baa533bc0a339caf42 # v1.3.7
+        env:
+          SVZ_KEY: omnios-amd64
+          SVZ_OS: illumos
+        with:
+          release: 'r151054'
+          copyback: false
+          envs: SVZ_KEY SVZ_OS
+          prepare: pkg install -q ooce/util/jq
+          run: sh .solarish-leg/.github/solarish-leg/in-guest.sh
+
+      - name: Report status (result)
+        if: always() && needs.resolve.outputs.sha != ''
+        continue-on-error: true
+        env:
+          GH_TOKEN: ${{ secrets.AGENT_REPO_TOKEN }}
+        run: |
+          [ -z "$GH_TOKEN" ] && exit 0
+          STATE="success"; DESC="Passed"
+          if [ "${{ job.status }}" != "success" ]; then STATE="failure"; DESC="Failed"; fi
+          curl -sf -X POST -H "Authorization: Bearer $GH_TOKEN" -H "Accept: application/vnd.github+json" \
+            "https://api.github.com/repos/${{ needs.resolve.outputs.source_repo }}/statuses/${{ needs.resolve.outputs.sha }}" \
+            -d "{\"state\":\"$STATE\",\"context\":\"e2e/illumos/omnios-amd64\",\"description\":\"$DESC\",\"target_url\":\"${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}\"}"
+
+  e2e-solaris-amd64:
+    name: ${{ inputs.mode == 'release' && 'leg/solaris/amd64' || 'E2E Solaris 11.4 amd64' }}
+    needs: [resolve]
+    runs-on: ubuntu-26.04
+    timeout-minutes: 45
+    if: ${{ github.event.inputs.arm_only != 'true' && (inputs.mode == 'release' || needs.resolve.outputs.solaris != 'false') }}
+    steps:
+      - name: Report status (pending)
+        if: needs.resolve.outputs.sha != ''
+        continue-on-error: true
+        env:
+          GH_TOKEN: ${{ secrets.AGENT_REPO_TOKEN }}
+        run: |
+          [ -z "$GH_TOKEN" ] && exit 0
+          curl -sf -X POST -H "Authorization: Bearer $GH_TOKEN" -H "Accept: application/vnd.github+json" \
+            "https://api.github.com/repos/${{ needs.resolve.outputs.source_repo }}/statuses/${{ needs.resolve.outputs.sha }}" \
+            -d '{"state":"pending","context":"e2e/solaris/amd64","description":"Running...","target_url":"${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"}'
+
+      # Merge lane: only the agent tree the release kit carries (e2e/, setup/,
+      # go.work, .dockerignore), never its sources -- the guest needs the
+      # scripts, and the same four paths are what release mode extracts.
+      - name: Checkout agent's scripts
+        if: inputs.mode != 'release'
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: ${{ needs.resolve.outputs.source_repo }}
+          ref: ${{ needs.resolve.outputs.ref }}
+          token: ${{ secrets.AGENT_REPO_TOKEN }}
+          persist-credentials: false
+          sparse-checkout-cone-mode: false
+          sparse-checkout: |
+            /e2e/
+            /setup/
+            /go.work
+            /.dockerignore
+
+      - name: Check out the release lane
+        if: inputs.mode == 'release'
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          path: .release-lane
+          persist-credentials: false
+
+      - name: Take the release candidate's files
+        if: inputs.mode == 'release'
+        uses: ./.release-lane/.github/actions/release-candidate
+        with:
+          dispatch: ${{ inputs.dispatch }}
+          policy: ${{ inputs.policy }}
+          kit-dir: .
+          files: |
+            supervizio-solaris-amd64 bin
+            supervizio-solaris-amd64.p5p pkg
+
+      # Built natively and packaged in agent's own guest (solarish-package.yml),
+      # mirrored to GitHub artifacts; downloaded on the HOST and synced into
+      # the guest -- the token never enters the VM.
+      - name: Download the binary from the agent run (cross-repo)
+        if: inputs.mode != 'release'
+        uses: actions/download-artifact@70fc10c6e5e1ce46ad2ea6f2b72d43f7d47b13c3 # v8.0.0
+        with:
+          name: supervizio-solaris-amd64
+          path: bin
+          repository: ${{ needs.resolve.outputs.source_repo }}
+          run-id: ${{ needs.resolve.outputs.run_id }}
+          github-token: ${{ secrets.AGENT_REPO_TOKEN }}
+
+      - name: Download the IPS archive from the agent run (cross-repo)
+        if: inputs.mode != 'release'
+        uses: actions/download-artifact@70fc10c6e5e1ce46ad2ea6f2b72d43f7d47b13c3 # v8.0.0
+        with:
+          name: supervizio-solaris-amd64-pkg
+          path: pkg
+          repository: ${{ needs.resolve.outputs.source_repo }}
+          run-id: ${{ needs.resolve.outputs.run_id }}
+          github-token: ${{ secrets.AGENT_REPO_TOKEN }}
+
+      - name: Verify the binary and the archive arrived
+        run: |
+          set -euo pipefail
+          ls -la bin/ pkg/
+          [ -s "bin/supervizio-solaris-amd64" ] || {
+            echo "::error::supervizio-solaris-amd64 missing or empty -- did agent's package-solarish publish it?" >&2
+            exit 1
+          }
+          [ -s "pkg/supervizio-solaris-amd64.p5p" ] || {
+            echo "::error::supervizio-solaris-amd64.p5p missing or empty -- did agent's package-solarish publish it?" >&2
+            exit 1
+          }
+          mv "bin/supervizio-solaris-amd64" bin/supervizio
+
+      - name: Check out the leg's guest script
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          path: .solarish-leg
+          sparse-checkout: .github/solarish-leg
+          persist-credentials: false
+
+      # A stock image, no compiler: what an administrator installs on. jq is
+      # the one tool agent's validators need that it does not carry.
+      - name: Install, validate and uninstall in an Oracle Solaris guest
+        uses: vmactions/solaris-vm@87d3c436511cef802cd1637f86f73b1a97715c8c # v1.4.1
+        env:
+          SVZ_KEY: solaris-amd64
+          SVZ_OS: solaris
+        with:
+          release: '11.4'
+          copyback: false
+          envs: SVZ_KEY SVZ_OS
+          prepare: pkg install -q text/jq
+          run: sh .solarish-leg/.github/solarish-leg/in-guest.sh
+
+      - name: Report status (result)
+        if: always() && needs.resolve.outputs.sha != ''
+        continue-on-error: true
+        env:
+          GH_TOKEN: ${{ secrets.AGENT_REPO_TOKEN }}
+        run: |
+          [ -z "$GH_TOKEN" ] && exit 0
+          STATE="success"; DESC="Passed"
+          if [ "${{ job.status }}" != "success" ]; then STATE="failure"; DESC="Failed"; fi
+          curl -sf -X POST -H "Authorization: Bearer $GH_TOKEN" -H "Accept: application/vnd.github+json" \
+            "https://api.github.com/repos/${{ needs.resolve.outputs.source_repo }}/statuses/${{ needs.resolve.outputs.sha }}" \
+            -d "{\"state\":\"$STATE\",\"context\":\"e2e/solaris/amd64\",\"description\":\"$DESC\",\"target_url\":\"${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}\"}"
+
   report:
     name: Report Results
     # e2e-windows belongs here. Without it the aggregate reports green while
@@ -6112,7 +6408,8 @@ jobs:
              e2e-linux-gentoo-portage, e2e-linux-nixos-nix,
              arm64-packages, e2e-linux-arm64, e2e-linux-exotic,
              e2e-bsd-freebsd-amd64, e2e-bsd-netbsd-amd64, e2e-bsd-openbsd-amd64,
-             e2e-bsd-freebsd-arm64, e2e-bsd-netbsd-arm64, e2e-bsd-openbsd-arm64]
+             e2e-bsd-freebsd-arm64, e2e-bsd-netbsd-arm64, e2e-bsd-openbsd-arm64,
+             e2e-illumos-amd64, e2e-solaris-amd64]
     # Release mode reports nothing: validate-release.yml's verdict reads the
     # leg jobs themselves, and this workflow holds no token to post with.
     if: always() && inputs.mode != 'release'
@@ -6130,6 +6427,11 @@ jobs:
           # the loop.
           NEEDS_JSON: ${{ toJSON(needs) }}
         run: |
+          # not_built RESULT BUILT: a leg skipped because resolve found no
+          # artifact of its kernel reads `not-built`; anything else is itself.
+          not_built() {
+            if [ "$1" = skipped ] && [ "$2" = false ]; then echo not-built; else echo "$1"; fi
+          }
           LEGS=(
             "docker-amd64=${{ needs.e2e-docker-amd64.result }}"
             "docker-arm64=${{ needs.e2e-docker-arm64.result }}"
@@ -6177,11 +6479,17 @@ jobs:
             # openbsd-arm64 is a release matrix, so it arrives as ONE result:
             # `failure` if either release cell failed.
             "bsd-openbsd-arm64=${{ needs.e2e-bsd-openbsd-arm64.result }}"
+            # Skipped by their `if:` when agent built no illumos/Solaris
+            # artifact for this change (resolve said `false`): recorded as
+            # `not-built`, which passes. Any other skip still fails.
+            "illumos-amd64=$(not_built '${{ needs.e2e-illumos-amd64.result }}' '${{ needs.resolve.outputs.illumos }}')"
+            "solaris-amd64=$(not_built '${{ needs.e2e-solaris-amd64.result }}' '${{ needs.resolve.outputs.solaris }}')"
           )
 
           echo "=== E2E Results ==="
           BAD=0
           OFFENDERS=""
+          NOT_BUILT=""
           for entry in "${LEGS[@]}"; do
             leg="${entry%%=*}"
             res="${entry#*=}"
@@ -6192,7 +6500,12 @@ jobs:
             # ran counted as fine. An `arm_only` dispatch skips 11 of these 12
             # and still produced a green `e2e/runner-template` on the agent SHA:
             # a verdict asserting the artifact was validated on twelve platforms
-            # when it ran on one.
+            # when it ran on one. `not-built` is the one exception, and only the
+            # illumos/Solaris legs can carry it (see not_built above).
+            if [ "$res" = not-built ]; then
+              NOT_BUILT="${NOT_BUILT}${leg} "
+              continue
+            fi
             if [ "$res" != "success" ]; then
               BAD=$((BAD + 1))
               OFFENDERS="${OFFENDERS}${leg}:${res} "
@@ -6237,10 +6550,17 @@ jobs:
             echo "VERDICT: failure — $BAD of ${#LEGS[@]} legs did not succeed"
             echo "  $OFFENDERS"
           else
+            RAN=$(( ${#LEGS[@]} - $(printf '%s' "$NOT_BUILT" | wc -w) ))
             echo "state=success" >> "$GITHUB_OUTPUT"
-            echo "description=All ${#LEGS[@]} E2E legs passed" >> "$GITHUB_OUTPUT"
-            echo ""
-            echo "VERDICT: success — all ${#LEGS[@]} legs passed"
+            if [ -n "$NOT_BUILT" ]; then
+              echo "description=All $RAN E2E legs that had a build passed (not built for this change: ${NOT_BUILT% })" >> "$GITHUB_OUTPUT"
+              echo ""
+              echo "VERDICT: success — all $RAN legs passed; not built for this change, so not run: ${NOT_BUILT% }"
+            else
+              echo "description=All ${#LEGS[@]} E2E legs passed" >> "$GITHUB_OUTPUT"
+              echo ""
+              echo "VERDICT: success — all ${#LEGS[@]} legs passed"
+            fi
           fi
 
       - name: Report final status

@@ -14,6 +14,7 @@ GitHub-hosted runner; none targets the self-hosted fleet.
 | `.github/workflows/` | the E2E lanes, the contract's CI and proofs — `.github/workflows/CLAUDE.md` says what each workflow is for |
 | `release-contract/` | the release contract (below) |
 | `.github/actions/qemu-vm/` | the QEMU guest action used by `e2e.yml`'s Linux legs and by the proof workflows |
+| `.github/solarish-leg/` | what `e2e.yml`'s illumos (OmniOS) and Solaris legs run in their guest: agent's binary and IPS archive, each installed through install.sh and run under SMF |
 | `.github/nixos-leg/` | the NixOS system `e2e.yml`'s `nixos-nix` legs boot to install agent's Nix flake |
 | everything else (`.devcontainer/`, `AGENTS.md`, the sections after this one) | the devcontainer template this repository was created from; it describes the template, not the E2E work |
 

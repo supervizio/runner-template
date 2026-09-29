@@ -15,7 +15,7 @@ of it is what anyone works on.
 
 | File | Trigger | What it does |
 |------|---------|--------------|
-| `e2e.yml` | `repository_dispatch[run-e2e]`, `workflow_dispatch`, `workflow_call` | **agent's** E2E matrix — Docker, Linux guests, BSD, Windows, macOS. Merge lane: installs the packages the agent run published and reports `e2e/*` commit statuses back to that SHA. Release mode (`workflow_call` from `validate-release.yml`, `mode: release`): the same jobs, named `leg/<id>`, on a release candidate's assets and test kit — see "e2e.yml in release mode" below. |
+| `e2e.yml` | `repository_dispatch[run-e2e]`, `workflow_dispatch`, `workflow_call` | **agent's** E2E matrix — Docker, Linux guests, BSD, illumos, Solaris, Windows, macOS. Merge lane: installs the packages the agent run published and reports `e2e/*` commit statuses back to that SHA. Release mode (`workflow_call` from `validate-release.yml`, `mode: release`): the same jobs, named `leg/<id>`, on a release candidate's assets and test kit — see "e2e.yml in release mode" below. |
 | `external-e2e.yml` | `repository_dispatch[run-external-e2e]`, `workflow_dispatch` | **libprobe's** lane. Rebuilds from source on the dispatched SHA; posts `e2e-public/<run>-<attempt>`, green iff the 6 native legs AND the 3 BSD **amd64** legs pass. BSD arm64 (no KVM, 1-2 h a leg) and the containers are advisory: shown in the table, never in the verdict. A BSD amd64 leg whose guest never became ready is retried once on a fresh runner; a leg that reached its tests never is. The BSD steps are written once (`&bsd-leg`) and aliased by all nine BSD jobs. |
 | `cleanup-external-e2e.yml` | `workflow_run` on both of the above | Deletes each dispatched run once it finishes, so no public trace of a private-source run remains. `repository_dispatch` runs only — a `workflow_dispatch` is someone debugging on purpose. |
 | `release-contract.yml` | PR and push on `release-contract/**` | Tests the release contract's validator on Linux, macOS, Windows and Python 3.9, and re-derives the manifest test vector with coreutils alone. See "The release contract" below. |
@@ -98,6 +98,36 @@ the 26.04 labels yet; `.github/actionlint.yaml` lists them.
   `e2e/vm/{gentoo-portage,nixos-nix}` (amd64), `e2e/linux-arm64/...` (arm64).
 - **BSD legs** run under QEMU through `vmactions/*-vm`, pinned to a release; arm64
   guests are emulated (TCG) and slow.
+- **illumos and Solaris: `e2e-illumos-amd64`, `e2e-solaris-amd64`** (release
+  legs `illumos/amd64`, `solaris/amd64`). A stock OmniOS r151054 and a stock
+  Oracle Solaris 11.4 guest (`vmactions/omnios-vm`, `vmactions/solaris-vm`, no
+  compiler), jq from each OS's own repository. The binary and the `.p5p` are
+  agent's native build and IPS archive (agent's `solarish-package.yml`, CI
+  artifacts `supervizio-{illumos,solaris}-amd64[-pkg]`, release assets
+  `supervizio-{illumos,solaris}-amd64[.p5p]`). `.github/solarish-leg/in-guest.sh`
+  installs the raw binary through install.sh (which grafts the SMF manifest),
+  then the archive through install.sh (pkg(5), whose actuator registers the
+  same service): online under SMF after each, nothing left after each
+  uninstall. validate-probe, `validate-detection.sh
+  {omnios,solaris}-amd64`, an SMF cycle (disable, enable, SIGKILL then
+  restarted) and the scenario battery run on the first. The merge lane checks
+  out only the four paths the release kit carries (`e2e/`, `setup/`,
+  `go.work`, `.dockerignore`), never agent's sources. Status contexts
+  `e2e/illumos/omnios-amd64`, `e2e/solaris/amd64`.
+
+  **When they run.** agent builds these two kernels (about 26 hosted minutes
+  of a private repository) on every release, but for a pull request only when
+  it touches the paths agent lists in its `.github/solarish-paths.txt`. So in
+  the merge lane `resolve` reads the agent run's artifact list: a kernel with
+  neither its binary nor its `-pkg` there gets `illumos=false` /
+  `solaris=false`, its leg is skipped by its `if:`, posts no status, and
+  `report` records it as `not-built`, which passes (the aggregate description
+  names it). Every other skip is still a failure, and a kernel with half its
+  pair runs and fails on the missing half. No token to list the run with
+  leaves the output empty: the legs run. Release mode never consults any of
+  this -- both legs always run, and `validate-release.yml` judges them as
+  required legs. `SolarishLegsInReleaseMode` in
+  `release-contract/tests/test_release_contract.py` pins all three rules.
 
 ## Upstream images: pinned hash or signature
 
@@ -153,7 +183,11 @@ the script; they do not re-implement a rule.
   scenario: `scenario --stage prepare`, then the harness
   (`release-contract/harness/libprobe/run.sh`) on the runner, in a `vmactions`
   guest or in a container per `matrix.leg.host`, then `scenario --stage check`
-  (README section 5).
+  (README section 5). The guests are FreeBSD, OpenBSD, NetBSD, OmniOS r151054
+  (`-build` image, for the illumos archive) and Oracle Solaris 11.4 (`-gcc`
+  image); each registers the custom shell `guestvm`, so one step runs the
+  harness in whichever booted. A guest host in `HARNESS_HOSTS` that no step
+  boots fails `test_release_contract.py`.
 - **`validate-release-doorbell.yml`** posts `release-validation/<tag>/g<N>` on the
   private commit when a `repository_dispatch` run on `main` completes, with the
   merge lanes' status tokens. It is the lane's only secret, kept out of the
@@ -182,7 +216,10 @@ dispatch body, the policy, and **no `secrets:`** — every secret reads empty in
 the called workflow, and nothing in release mode needs one:
 
 - `resolve` outputs an empty `sha`, so every status step (gated on
-  `sha != ''`) is skipped; `report` does not run.
+  `sha != ''`) is skipped; `report` does not run. Nor does its artifact
+  pre-check, so `illumos`/`solaris` are empty and the illumos and Solaris legs
+  run whatever the merge lane would have skipped (their `if:` also says
+  `inputs.mode == 'release' ||` first).
 - Each leg skips `Checkout agent code` and its `actions/download-artifact`
   step(s), and instead checks this repository out to `.release-lane` and runs
   `.github/actions/release-candidate`: `bridge pull` of the leg's assets, the

@@ -237,39 +237,59 @@ jobs:
 
       # A guest syncs the whole workspace in and back after every step. The
       # candidate has done its job (work/ holds the one platform the leg runs),
-      # and 26 archives over an emulated NIC is what an arm64 guest cannot
+      # and 28 archives over an emulated NIC is what an arm64 guest cannot
       # afford.
       - name: Harness -- keep only work/ for the guest
-        if: ${{ matrix.leg.scenario == 'abi' && contains(fromJSON('["freebsd","openbsd","netbsd"]'), matrix.leg.host) }}
+        if: ${{ matrix.leg.scenario == 'abi' && contains(fromJSON('["freebsd","openbsd","netbsd","omnios","solaris"]'), matrix.leg.host) }}
         shell: bash
         run: rm -rf candidate
 
-      # Releases pinned, as in external-e2e.yml. The base system's cc is the
-      # consumer's compiler; nothing is installed in the guest.
+      # Releases pinned, as in external-e2e.yml. The BSDs' base cc is the
+      # consumer's compiler; OmniOS and Solaris have none in their stock
+      # images, so their legs boot the `-build` / `-gcc` variants, which carry
+      # the gcc run.sh uses there. Nothing is installed in the guest. Every
+      # guest registers the same shell name, so one step below runs the
+      # harness in whichever booted.
       - name: Harness -- boot FreeBSD 15.1
         if: ${{ matrix.leg.scenario == 'abi' && matrix.leg.host == 'freebsd' }}
         uses: vmactions/freebsd-vm@a2f9a41fa97f6848b8c3b791087dfcdaa5b473ff # v1.5.8
         with:
           release: '15.1'
           arch: ${{ runner.arch == 'ARM64' && 'aarch64' || 'x86_64' }}
-          custom-shell-name: bsdvm
+          custom-shell-name: guestvm
       - name: Harness -- boot OpenBSD 7.9
         if: ${{ matrix.leg.scenario == 'abi' && matrix.leg.host == 'openbsd' }}
         uses: vmactions/openbsd-vm@86cdc08415d9d0865267e686561e276c52d62530 # v1.4.7
         with:
           release: '7.9'
           arch: ${{ runner.arch == 'ARM64' && 'aarch64' || 'x86_64' }}
-          custom-shell-name: bsdvm
+          custom-shell-name: guestvm
       - name: Harness -- boot NetBSD 10.1
         if: ${{ matrix.leg.scenario == 'abi' && matrix.leg.host == 'netbsd' }}
         uses: vmactions/netbsd-vm@20ee93a005c9fc78743e6e05269f4cb023b87413 # v1.5.0
         with:
           release: '10.1'
           arch: ${{ runner.arch == 'ARM64' && 'aarch64' || 'x86_64' }}
-          custom-shell-name: bsdvm
+          custom-shell-name: guestvm
+      # illumos and Solaris: the image variants that carry gcc, the compiler
+      # run.sh uses there (neither ships a cc); amd64 only, as libprobe
+      # publishes neither for another architecture. r151054 is OmniOS's
+      # long-term-support release, supported to 2028-05.
+      - name: Harness -- boot OmniOS r151054
+        if: ${{ matrix.leg.scenario == 'abi' && matrix.leg.host == 'omnios' }}
+        uses: vmactions/omnios-vm@9576f0b6d15e7696548409baa533bc0a339caf42 # v1.3.7
+        with:
+          release: r151054-build
+          custom-shell-name: guestvm
+      - name: Harness -- boot Oracle Solaris 11.4
+        if: ${{ matrix.leg.scenario == 'abi' && matrix.leg.host == 'solaris' }}
+        uses: vmactions/solaris-vm@87d3c436511cef802cd1637f86f73b1a97715c8c # v1.4.1
+        with:
+          release: 11.4-gcc
+          custom-shell-name: guestvm
       - name: Harness -- in the guest
-        if: ${{ matrix.leg.scenario == 'abi' && contains(fromJSON('["freebsd","openbsd","netbsd"]'), matrix.leg.host) }}
-        shell: bsdvm {0}
+        if: ${{ matrix.leg.scenario == 'abi' && contains(fromJSON('["freebsd","openbsd","netbsd","omnios","solaris"]'), matrix.leg.host) }}
+        shell: guestvm {0}
         run: sh work/run.sh
 
       # Built and run inside the image itself, with that image's libc; scratch
