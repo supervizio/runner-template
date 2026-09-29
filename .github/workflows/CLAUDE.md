@@ -153,7 +153,11 @@ the script; they do not re-implement a rule.
   scenario: `scenario --stage prepare`, then the harness
   (`release-contract/harness/libprobe/run.sh`) on the runner, in a `vmactions`
   guest or in a container per `matrix.leg.host`, then `scenario --stage check`
-  (README section 5).
+  (README section 5). The guests are FreeBSD, OpenBSD, NetBSD, OmniOS r151054
+  (`-build` image, for the illumos archive) and Oracle Solaris 11.4 (`-gcc`
+  image); each registers the custom shell `guestvm`, so one step runs the
+  harness in whichever booted. A guest host in `HARNESS_HOSTS` that no step
+  boots fails `test_release_contract.py`.
 - **`validate-release-doorbell.yml`** posts `release-validation/<tag>/g<N>` on the
   private commit when a `repository_dispatch` run on `main` completes, with the
   merge lanes' status tokens. It is the lane's only secret, kept out of the

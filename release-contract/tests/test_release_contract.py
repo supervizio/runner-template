@@ -12,10 +12,12 @@ from __future__ import annotations
 
 import base64
 import copy
+import fnmatch
 import hashlib
 import http.server
 import json
 import os
+import re
 import subprocess
 import sys
 import tempfile
@@ -974,7 +976,7 @@ class LegMatrix(unittest.TestCase):
         legs, unknown = rc.leg_matrix(dispatch_body(LIBPROBE)["client_payload"], POLICY)
         self.assertEqual(unknown, [])
         self.assertIn("native/windows-arm64", [leg["id"] for leg in legs])
-        self.assertEqual(len([leg for leg in legs if leg["required"]]), 12)
+        self.assertEqual(len([leg for leg in legs if leg["required"]]), 14)
         # Without the e2e scenario the same agent legs go back to the leg matrix.
         policy = copy.deepcopy(POLICY)
         for leg in policy["repositories"][AGENT]["legs"]:
@@ -995,12 +997,46 @@ class LegMatrix(unittest.TestCase):
             {"id": "bsd/openbsd-amd64", "runner": "ubuntu-26.04", "required": True, "scenario": "abi", "host": "openbsd", "platform": "openbsd-amd64"},
         )
         self.assertEqual((by_id["container/scratch"]["host"], by_id["container/scratch"]["platform"]), ("container-scratch", "linux-amd64-musl"))
+        self.assertEqual(
+            by_id["solarish/illumos-amd64"],
+            {"id": "solarish/illumos-amd64", "runner": "ubuntu-26.04", "required": True, "scenario": "abi", "host": "omnios", "platform": "illumos-amd64"},
+        )
+        self.assertEqual((by_id["solarish/solaris-amd64"]["host"], by_id["solarish/solaris-amd64"]["platform"]), ("solaris", "solaris-amd64"))
+
+    def test_every_harness_platform_has_a_link_recipe(self):
+        # run.sh exits 2 on a platform its `case` has no arm for, so a leg the
+        # policy schedules there could never pass: catch it here, not in a run.
+        with open(os.path.join(rc.HARNESS_DIR, "libprobe", "run.sh"), encoding="utf-8") as fh:
+            script = fh.read()
+        arms = [p for line in re.findall(r"^  ([a-z0-9*|-]+)\)$", script, re.M) for p in line.split("|") if p != "*"]
+        self.assertIn("illumos-*", arms)
+        for leg in POLICY["repositories"][LIBPROBE]["legs"]:
+            platform = leg["harness"]["platform"]
+            with self.subTest(leg=leg["id"]):
+                self.assertTrue(any(fnmatch.fnmatchcase(platform, arm) for arm in arms), f"run.sh has no recipe for {platform}")
+
+    def test_every_guest_host_is_booted_and_runs_the_harness(self):
+        # A guest host the workflow never boots would leave its leg with no
+        # harness run at all, and `--stage check` with no report to judge.
+        with open(os.path.join(ROOT, os.pardir, ".github", "workflows", "validate-release.yml"), encoding="utf-8") as fh:
+            workflow = fh.read()
+        guests = sorted(h for h in rc.HARNESS_HOSTS if h != "native" and not h.startswith("container-"))
+        for host in guests:
+            with self.subTest(host=host):
+                self.assertIn(f"matrix.leg.host == '{host}'", workflow)
+        # The step that keeps only work/ for the guest and the step that runs
+        # the harness in it must both list every guest host.
+        for step in ("Harness -- keep only work/ for the guest", "Harness -- in the guest"):
+            found = re.search(re.escape(f"- name: {step}") + r"\n\s+if: .*?fromJSON\('(\[[^']*\])'\)", workflow)
+            with self.subTest(step=step):
+                self.assertIsNotNone(found)
+                self.assertEqual(sorted(json.loads(found.group(1))), guests)
 
     def test_advisory_legs_run_without_being_required(self):
         legs, _ = rc.leg_matrix(dispatch_body(LIBPROBE)["client_payload"], POLICY)
         advisory = [leg["id"] for leg in legs if not leg["required"]]
         self.assertEqual(advisory, rc.advisory_legs(POLICY, LIBPROBE))
-        self.assertEqual(len(legs), 15)
+        self.assertEqual(len(legs), 17)
 
     def test_a_leg_nobody_can_run_is_not_scheduled_and_reads_missing(self):
         payload = dispatch_body()["client_payload"]
@@ -1525,7 +1561,7 @@ class ShippedPolicy(unittest.TestCase):
         rc.validate_policy(POLICY)
         self.assertEqual(len(rc.required_legs(POLICY, AGENT)), 64)
         self.assertEqual(len(POLICY["repositories"][AGENT]["legs"]), 64)
-        self.assertEqual(len(rc.required_legs(POLICY, LIBPROBE)), 12)
+        self.assertEqual(len(rc.required_legs(POLICY, LIBPROBE)), 14)
         self.assertEqual(rc.advisory_legs(POLICY, LIBPROBE), ["bsd/freebsd-arm64", "bsd/openbsd-arm64", "bsd/netbsd-arm64"])
         # Nothing may be promoted before a leg's release scenario exists: every
         # agent leg is an e2e.yml job in release mode. Every libprobe leg runs

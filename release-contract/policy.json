@@ -681,6 +681,30 @@
           }
         },
         {
+          "id": "solarish/illumos-amd64",
+          "state": "required",
+          "merge_ci": "gating",
+          "from": "no merge-lane job here: libprobe's own CI runs its source in an OmniOS r151054 guest, since that compiles private code this repository never checks out",
+          "runner": "ubuntu-26.04",
+          "scenario": "abi",
+          "harness": {
+            "platform": "illumos-amd64",
+            "host": "omnios"
+          }
+        },
+        {
+          "id": "solarish/solaris-amd64",
+          "state": "required",
+          "merge_ci": "gating",
+          "from": "no merge-lane job here: libprobe's own CI runs its source in an Oracle Solaris 11.4 guest, since that compiles private code this repository never checks out",
+          "runner": "ubuntu-26.04",
+          "scenario": "abi",
+          "harness": {
+            "platform": "solaris-amd64",
+            "host": "solaris"
+          }
+        },
+        {
           "id": "container/ubuntu",
           "state": "required",
           "merge_ci": "advisory",

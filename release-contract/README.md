@@ -311,7 +311,7 @@ What `validate-release.yml` guarantees:
 - a scenario runs in three steps: `scenario --stage prepare` on the leg's runner
   (checks the pulled files; for a harness, stages it in `work/`), the harness
   where the leg's platform lives (`policy.json` `harness.host`: the runner itself,
-  a BSD guest the runner boots, or a container on it), and `scenario --stage
+  a BSD, OmniOS or Solaris guest the runner boots, or a container on it), and `scenario --stage
   check` on the runner, which judges what the harness left there. None of the
   three holds a token.
 - no job references a secret; permissions per job as in D3.
@@ -330,7 +330,9 @@ scenario is wired, which fails the leg; `integrity`, proof only; `abi`, below; `
 than by the generic `leg` job, whose `runner` is then documentation). A
 leg whose scenario executes something names a `harness`: the `platform` whose
 published archive it runs and the `host` it runs on (`native`, `freebsd`,
-`openbsd`, `netbsd`, `container-ubuntu`, `container-alpine`, `container-scratch`).
+`openbsd`, `netbsd`, `omnios`, `solaris`, `container-ubuntu`, `container-alpine`,
+`container-scratch`); `tests/test_release_contract.py` fails if a guest host is
+not booted by `validate-release.yml` or a leg's platform has no `run.sh` recipe.
 States:
 
 - `required` — must be in every receipt's `required_matrix`; decides the verdict.
@@ -365,13 +367,16 @@ on a public runner. A release carries its own arm64 packages, built privately, a
 the release legs install those — packaging on the public side would need the
 return path of brief §4.6, and nothing requires it.
 
-**supervizio/libprobe** — 12 required, 3 advisory (source: `external-e2e.yml`):
+**supervizio/libprobe** — 14 required, 3 advisory (source: `external-e2e.yml`,
+and libprobe's own CI for illumos and Solaris):
 `native/{linux,windows,macos}-{amd64,arm64}` and `bsd/{freebsd,openbsd,netbsd}-amd64`
 (gating in merge CI since #110), `container/{ubuntu,alpine,scratch}` (advisory in
 merge CI, gating for a release), `bsd/{freebsd,openbsd,netbsd}-arm64` (advisory in
-both). In the release lane each runs the **`abi` scenario**, the ABI/runtime
-harness of brief §4.1 (`harness/libprobe/`), on its own platform's published
-archive — never a rebuild:
+both), `solarish/{illumos,solaris}-amd64` (gating in libprobe's own merge CI, which
+runs the source in an OmniOS and a Solaris guest because that compiles private
+code; nothing here runs them for a merge). In the release lane each runs the
+**`abi` scenario**, the ABI/runtime harness of brief §4.1 (`harness/libprobe/`),
+on its own platform's published archive — never a rebuild:
 
 | Legs | Archive | Where the consumer is built and run |
 |---|---|---|
@@ -380,6 +385,8 @@ archive — never a rebuild:
 | `native/windows-amd64` | `windows-amd64` (`x86_64-pc-windows-gnu`) | the runner, MinGW `gcc` |
 | `native/windows-arm64` | `windows-arm64` (`aarch64-pc-windows-gnullvm`) | the runner, llvm-mingw (pinned release, digest-checked) |
 | `bsd/{freebsd,openbsd,netbsd}-{amd64,arm64}` | same name | a `vmactions` guest (15.1 / 7.9 / 10.1), the base system's `cc` |
+| `solarish/illumos-amd64` | `illumos-amd64` (`x86_64-unknown-illumos`) | a `vmactions` OmniOS r151054 guest (`-build` image), its `gcc -m64` |
+| `solarish/solaris-amd64` | `solaris-amd64` (`x86_64-pc-solaris`) | a `vmactions` Oracle Solaris 11.4 guest (`-gcc` image), its `gcc -m64` |
 | `container/ubuntu` | `linux-amd64` | an `ubuntu:24.04` container, its own `gcc` |
 | `container/alpine` | `linux-amd64-musl` | an `alpine:3.21` container, its own `gcc`, static |
 | `container/scratch` | `linux-amd64-musl` | built static in Alpine, run in a `FROM scratch` image holding only the binary |

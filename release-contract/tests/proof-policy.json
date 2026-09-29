@@ -1,7 +1,7 @@
 {
   "schema": "supervizio.release-policy/v1",
   "inventory": {
-    "purpose": "validate-release.yml, run by hand (workflow_dispatch) on a branch. supervizio/agent: a candidate of RANDOM bytes and three integrity-only legs on three OS families; they prove the bridge -- admission, pull by digest, re-hash -- and execute nothing. supervizio/libprobe: the bytes of a real, already published libprobe release re-pushed as a candidate, and the production libprobe legs with their abi scenario, unchanged; they prove the ABI harness on every leg. Both use the proof package, never a production one. Never selected by repository_dispatch.",
+    "purpose": "validate-release.yml, run by hand (workflow_dispatch) on a branch. supervizio/agent: a candidate of RANDOM bytes and three integrity-only legs on three OS families; they prove the bridge -- admission, pull by digest, re-hash -- and execute nothing. supervizio/libprobe: the bytes of a real, already published libprobe release re-pushed as a candidate, and the production libprobe legs with their abi scenario, unchanged, except solarish/illumos-amd64 and solarish/solaris-amd64: no release published before the illumos and Solaris port carries those two archives, so they join this list with the first release that does; they prove the ABI harness on every leg. Both use the proof package, never a production one. Never selected by repository_dispatch.",
     "pending_prs": {}
   },
   "validation": {
