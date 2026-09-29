@@ -177,6 +177,22 @@
           "scenario": "e2e"
         },
         {
+          "id": "linux/amd64/gentoo-portage",
+          "state": "required",
+          "merge_ci": "gating",
+          "from": "e2e.yml e2e-linux-gentoo-portage[amd64]",
+          "runner": "ubuntu-26.04",
+          "scenario": "e2e"
+        },
+        {
+          "id": "linux/amd64/nixos-nix",
+          "state": "required",
+          "merge_ci": "gating",
+          "from": "e2e.yml e2e-linux-nixos-nix[amd64]",
+          "runner": "ubuntu-26.04",
+          "scenario": "e2e"
+        },
+        {
           "id": "linux/arm64/alpine-openrc",
           "state": "required",
           "merge_ci": "gating",
@@ -253,6 +269,22 @@
           "state": "required",
           "merge_ci": "gating",
           "from": "e2e.yml e2e-linux-arm64[void-xbps]",
+          "runner": "ubuntu-26.04-arm",
+          "scenario": "e2e"
+        },
+        {
+          "id": "linux/arm64/gentoo-portage",
+          "state": "required",
+          "merge_ci": "gating",
+          "from": "e2e.yml e2e-linux-gentoo-portage[arm64]",
+          "runner": "ubuntu-26.04-arm",
+          "scenario": "e2e"
+        },
+        {
+          "id": "linux/arm64/nixos-nix",
+          "state": "required",
+          "merge_ci": "gating",
+          "from": "e2e.yml e2e-linux-nixos-nix[arm64]",
           "runner": "ubuntu-26.04-arm",
           "scenario": "e2e"
         },
