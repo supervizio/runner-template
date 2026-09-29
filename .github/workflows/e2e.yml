@@ -4857,8 +4857,9 @@ jobs:
             -d "{\"state\":\"$STATE\",\"context\":\"e2e/bsd/freebsd-amd64\",\"description\":\"$DESC\",\"target_url\":\"${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}\"}"
 
   # THE FLOOR OF THE FREEBSD 14 BRANCH, AS A GUEST. agent links its FreeBSD
-  # binary against the oldest 14.x sysroot the mirror still serves (agent's
-  # build-bsd-cross, sysroot_sha256), and a binary carries its sysroot's
+  # binary against the oldest 14.x sysroot the mirror serves, moved to the
+  # next 14.x before its end-of-life (agent's build-bsd-cross: sysroots,
+  # sysroot_sha256, sysroot_eol), and a binary carries its sysroot's
   # expectations: the leg above proves forward onto 15.x, nothing proved the
   # 14.x the sysroot claims. This one does.
   #
@@ -4927,10 +4928,10 @@ jobs:
         with:
           usesh: true
           # Pinned to the 14.x agent's FreeBSD sysroot is linked against, and
-          # moved with it: the sysroot is the oldest 14.x the mirror serves
-          # (14.4, EoL 2026-12-31), so this guest is too. v1.5.7 ships
-          # conf/14.4.conf and 14.5.conf.
-          release: '14.4'
+          # moved with it: agent moved its sysroot from 14.4 (EoL 2026-12-31)
+          # to 14.5 (EoL 2027-06-30) ahead of 14.4's end-of-life, so this
+          # guest did too. v1.5.8 ships conf/14.5.conf.
+          release: '14.5'
           copyback: false
           prepare: pkg install -y jq
           run: |
