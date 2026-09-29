@@ -70,6 +70,32 @@ the 26.04 labels yet; `.github/actionlint.yaml` lists them.
   install.sh; no VM image exists for Void (no cloud image, no vmactions
   action). Honest delta: a container covers install, start and supervision,
   not boot ordering or clean shutdown.
+- **Channels, not packages: `gentoo-portage` and `nixos-nix`** (amd64 and
+  arm64, one matrix job each). agent ships to Gentoo and NixOS through a
+  manifest -- an overlay's ebuild, a flake's package and NixOS module -- that
+  names the static `supervizio-linux-{amd64,arm64}-musl` by hash. Each leg
+  renders that channel with agent's `setup/packaging/render-channels.py`, from
+  the agent tree (or the release's kit) and both binaries under test, which is
+  what agent's `deploy-repo.yml` publishes for a validated release. The binary
+  under test is put where the package manager would fetch it to (Portage's
+  DISTDIR; the Nix store, under the flake's own name and hash, the leg
+  asserting that path IS the package's source), the containers run with
+  `--network none`, and each leg compares the installed file's sha256 with
+  the binary under test. Gentoo: `gentoo/stage3` and `gentoo/portage` of one
+  day, pinned by digest, `openrc-init` as PID 1, `emerge` from the overlay
+  configured as its README says, `rc-update`/`rc-service` as the ebuild's elog
+  says, `emerge --unmerge`. NixOS 26.05: `.github/nixos-leg/flake.nix`, built
+  on the runner by Nix installed from its sha256-pinned installer (never
+  cachix/install-nix-action, which writes the job's token into a
+  world-readable nix.conf), booted from an empty image with the host's store
+  read-only, unprivileged like every other container leg (the stock services
+  that would need `--cap-add SYS_ADMIN` and AppArmor off -- nscd, dbus-broker,
+  oomd, the wrappers, the special-filesystem remounts -- are switched off in
+  that flake, each with its measured reason); installing is switching to the
+  specialisation that enables `services.supervizio`, removing is switching
+  back. Both run validate-probe, `validate-detection.sh
+  {gentoo,nixos}-container-<arch>` and the scenario battery. Status contexts:
+  `e2e/vm/{gentoo-portage,nixos-nix}` (amd64), `e2e/linux-arm64/...` (arm64).
 - **BSD legs** run under QEMU through `vmactions/*-vm`, pinned to a release; arm64
   guests are emulated (TCG) and slow.
 
