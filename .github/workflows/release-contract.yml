@@ -13,15 +13,22 @@
 name: release-contract
 
 on:
+  # e2e.yml and .github/scripts/ are here because the tests read them: the
+  # merge lane's not-built rules (FamilyLegsNotBuilt, E2eFamilies) are pinned
+  # by this suite, and a change to either must run it.
   pull_request:
     paths:
       - "release-contract/**"
       - ".github/workflows/release-contract.yml"
+      - ".github/workflows/e2e.yml"
+      - ".github/scripts/**"
   push:
     branches: [main]
     paths:
       - "release-contract/**"
       - ".github/workflows/release-contract.yml"
+      - ".github/workflows/e2e.yml"
+      - ".github/scripts/**"
   workflow_dispatch:
 
 permissions:

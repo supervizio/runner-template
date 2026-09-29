@@ -17,6 +17,16 @@ on:
         description: 'Run only the arm64 e2e jobs (skip amd64/VM)'
         required: false
         default: 'false'
+      built:
+        description: >-
+          Families the agent run built, space-separated (linux windows darwin
+          freebsd netbsd openbsd illumos solaris): the other legs report
+          not-built. Empty = judge by the artifacts the run carries.
+        required: false
+        default: ''
+  # client_payload: sha, run_id, ref, source_repo, and -- from agent's ci.yml,
+  # which runs only the jobs a change can affect -- `built`, the families that
+  # run built (see resolve).
   repository_dispatch:
     types: [run-e2e]
   # Release mode: validate-release.yml calls this workflow for agent's legs,
@@ -68,11 +78,19 @@ jobs:
       run_id: ${{ steps.resolve.outputs.run_id }}
       sha: ${{ steps.resolve.outputs.sha }}
       source_repo: ${{ steps.resolve.outputs.source_repo }}
-      # Merge lane only: `false` when the agent run carries no illumos (or no
-      # Solaris) binary and package, so that leg is skipped rather than failed.
-      # agent builds them (package-solarish) only for a pull request touching
-      # its .github/solarish-paths.txt, and on every release. Empty -- no
-      # token to list with, release mode -- never skips anything.
+      # Merge lane only, one per family: `false` when the agent run did not
+      # build that family, so its legs are skipped and the report reads them
+      # `not-built` instead of failed. agent's ci.yml builds only the families
+      # a pull request can affect, and says which (`built` in the dispatch);
+      # without that word, a family is built when the run carries an artifact
+      # of it. Empty -- release mode, or no token and no word -- never skips
+      # anything: release mode requires every leg.
+      linux: ${{ steps.artifacts.outputs.linux }}
+      windows: ${{ steps.artifacts.outputs.windows }}
+      darwin: ${{ steps.artifacts.outputs.darwin }}
+      freebsd: ${{ steps.artifacts.outputs.freebsd }}
+      netbsd: ${{ steps.artifacts.outputs.netbsd }}
+      openbsd: ${{ steps.artifacts.outputs.openbsd }}
       illumos: ${{ steps.artifacts.outputs.illumos }}
       solaris: ${{ steps.artifacts.outputs.solaris }}
     steps:
@@ -154,6 +172,21 @@ jobs:
       # own dispatch was holding.
       #
       # `needs: [resolve]` means a failure here skips the whole matrix instead.
+      #
+      # It also decides which families' legs run at all. agent's ci.yml builds
+      # only the families a pull request can affect, and says which in the
+      # dispatch (`built`); the legs of the others are skipped and `report`
+      # reads them `not-built`. .github/scripts/e2e_families.py decides, with
+      # the run's artifact list as a cross-check (and as the answer when the
+      # dispatch says nothing), and says why.
+      - name: Checkout the family decision
+        if: inputs.mode != 'release'
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          sparse-checkout: .github/scripts
+          persist-credentials: false
+          path: .rt
+
       - name: Check the agent run actually produced artifacts
         id: artifacts
         if: inputs.mode != 'release'
@@ -161,72 +194,40 @@ jobs:
           GH_TOKEN: ${{ secrets.AGENT_REPO_TOKEN }}
           SRC_REPO: ${{ steps.resolve.outputs.source_repo }}
           SRC_RUN: ${{ steps.resolve.outputs.run_id }}
+          # The dispatch's word, read by the script from env, never pasted
+          # into shell: a payload is text whoever holds the token chose.
+          EVENT: ${{ github.event_name }}
+          PAYLOAD: ${{ toJSON(github.event.client_payload) }}
+          INPUT_BUILT: ${{ inputs.built }}
         run: |
           set -euo pipefail
+          listed=false
+          names=""
           if [ -z "${GH_TOKEN:-}" ]; then
             echo "::warning::AGENT_REPO_TOKEN not set - cannot pre-check artifacts, letting the legs try"
-            exit 0
-          fi
-          # An expired artifact stays LISTED, with expired=true, and its
-          # download fails. Counting it as present let an old run through here
-          # and then failed every leg at its own download step: run 35575688538
-          # lists 18 artifacts, 16 of them expired, supervizio-linux-amd64 included.
-          listing="$(gh api --paginate "repos/$SRC_REPO/actions/runs/$SRC_RUN/artifacts?per_page=100" \
-            --jq '.artifacts[] | "\(.expired) \(.name)"' 2>/dev/null || true)"
-          names="$(printf '%s\n' "$listing" | awk '$1 == "false" { print $2 }' | sort -u)"
-          expired="$(printf '%s\n' "$listing" | awk '$1 == "true" { print $2 }' | sort -u)"
-          count="$(printf '%s' "$names" | grep -c . || true)"
-          echo "run $SRC_RUN carries $count downloadable artifact(s)"
-          printf '%s\n' "$names" | sed 's/^/  /'
-          if [ -n "$expired" ]; then
-            echo "expired, so not downloadable: $(printf '%s\n' "$expired" | grep -c .)"
-            printf '%s\n' "$expired" | sed 's/^/  /'
-          fi
-          # linux-amd64 is the floor: the docker legs cannot run without it, and
-          # no useful subset of this matrix exists when it is missing.
-          if ! printf '%s\n' "$names" | grep -qx 'supervizio-linux-amd64'; then
-            echo "::error::agent run $SRC_RUN has no downloadable supervizio-linux-amd64 - nothing here can be tested. If it is listed above as expired, the run is older than its artifact retention: dispatch against a newer one. If that run is green and published nothing, the artifact bridge is what is missing (supervizio/agent#202); if it is still going, dispatch again once it finishes." >&2
-            exit 1
-          fi
-          # Advisory, not fatal. The openbsd leg reports its own red, which is
-          # the honest place for it -- failing the whole dispatch here would
-          # take twenty-five other legs down with one missing package.
-          if ! printf '%s\n' "$names" | grep -qx 'supervizio-openbsd-amd64-pkg'; then
-            echo "::warning::no supervizio-openbsd-amd64-pkg in run $SRC_RUN - e2e-bsd-openbsd-amd64 will fail. Its producer is agent's package-openbsd job, which calls bsd-package.yml for both OpenBSD arches."
-          fi
-          # Advisory for the same reason: the two void-xbps legs report their
-          # own red.
-          if ! printf '%s\n' "$names" | grep -qx 'supervizio-amd64.xbps'; then
-            echo "::warning::no supervizio-amd64.xbps in run $SRC_RUN - both void-xbps legs will fail. Its producer is agent's packages-xbps job."
-          fi
-          # Not a failure either way: agent builds illumos and Solaris
-          # (package-solarish) only when a pull request touches its
-          # .github/solarish-paths.txt, and its CI Summary is what judges that
-          # job. A kernel whose binary AND package are here runs its leg; one
-          # with neither is skipped (`<p>=false`), and the report reads that
-          # skip as "not built" rather than as a failure. Half a pair is a
-          # broken producer: the leg runs and fails on the missing half.
-          for p in illumos solaris; do
-            bin=false; pkg=false
-            printf '%s\n' "$names" | grep -qx "supervizio-$p-amd64" && bin=true
-            printf '%s\n' "$names" | grep -qx "supervizio-$p-amd64-pkg" && pkg=true
-            if [ "$bin" = false ] && [ "$pkg" = false ]; then
-              echo "::notice::no $p binary or package in run $SRC_RUN: agent did not build $p for this change (package-solarish runs when a pull request touches its .github/solarish-paths.txt) -- e2e-$p-amd64 is skipped"
-              echo "$p=false" >> "$GITHUB_OUTPUT"
-            else
-              if [ "$bin" != "$pkg" ]; then
-                echo "::warning::run $SRC_RUN carries only one of supervizio-$p-amd64 and supervizio-$p-amd64-pkg - e2e-$p-amd64 will fail on the other. Its producer is agent's package-solarish job (solarish-package.yml)."
-              fi
-              echo "$p=true" >> "$GITHUB_OUTPUT"
+          else
+            # An expired artifact stays LISTED, with expired=true, and its
+            # download fails. Counting it as present let an old run through here
+            # and then failed every leg at its own download step: run 35575688538
+            # lists 18 artifacts, 16 of them expired, supervizio-linux-amd64 included.
+            listing="$(gh api --paginate "repos/$SRC_REPO/actions/runs/$SRC_RUN/artifacts?per_page=100" \
+              --jq '.artifacts[] | "\(.expired) \(.name)"' 2>/dev/null || true)"
+            names="$(printf '%s\n' "$listing" | awk '$1 == "false" { print $2 }' | sort -u)"
+            expired="$(printf '%s\n' "$listing" | awk '$1 == "true" { print $2 }' | sort -u)"
+            count="$(printf '%s' "$names" | grep -c . || true)"
+            echo "run $SRC_RUN carries $count downloadable artifact(s)"
+            printf '%s\n' "$names" | sed 's/^/  /'
+            if [ -n "$expired" ]; then
+              echo "expired, so not downloadable: $(printf '%s\n' "$expired" | grep -c .)"
+              printf '%s\n' "$expired" | sed 's/^/  /'
             fi
-          done
-          # Advisory too: the gentoo-portage and nixos-nix legs render their
-          # channel from BOTH static binaries and fail without either.
-          for a in supervizio-linux-amd64-musl supervizio-linux-arm64-musl; do
-            if ! printf '%s\n' "$names" | grep -qx "$a"; then
-              echo "::warning::no $a in run $SRC_RUN - the four gentoo-portage and nixos-nix legs will fail. Its producer is agent's build-cross job."
-            fi
-          done
+            listed=true
+          fi
+          # linux=true requires supervizio-linux-amd64 (the docker legs' floor),
+          # a run with no artifact of any family fails, and a word naming an
+          # unknown family fails: each is a ten-second failure instead of
+          # twenty-six at their downloads.
+          printf '%s\n' "$names" | AGENT_LISTED="$listed" python3 .rt/.github/scripts/e2e_families.py >>"$GITHUB_OUTPUT"
 
       - name: Display resolved parameters
         run: |
@@ -242,7 +243,7 @@ jobs:
   e2e-docker-amd64:
     name: ${{ inputs.mode == 'release' && format('leg/docker/amd64/{0}', matrix.name) || format('E2E Docker amd64 {0}', matrix.name) }}
     needs: [resolve]
-    if: ${{ github.event.inputs.arm_only != 'true' }}
+    if: ${{ github.event.inputs.arm_only != 'true' && (inputs.mode == 'release' || needs.resolve.outputs.linux != 'false') }}
     runs-on: ubuntu-26.04
     timeout-minutes: 10
     strategy:
@@ -477,6 +478,7 @@ jobs:
   e2e-docker-arm64:
     name: ${{ inputs.mode == 'release' && format('leg/docker/arm64/{0}', matrix.name) || format('E2E Docker arm64 {0}', matrix.name) }}
     needs: [resolve]
+    if: ${{ inputs.mode == 'release' || needs.resolve.outputs.linux != 'false' }}
     # GitHub-hosted native arm64 runner: real Docker (no DinD sidecar, no QEMU)
     # and a native aarch64 toolchain. The binary is built natively here rather
     # than pulled from the lab zot store (unreachable from a hosted runner).
@@ -693,7 +695,7 @@ jobs:
     # rather than maintaining one.
     runs-on: macos-15-intel
     timeout-minutes: 15
-    if: ${{ github.event.inputs.arm_only != 'true' }}
+    if: ${{ github.event.inputs.arm_only != 'true' && (inputs.mode == 'release' || needs.resolve.outputs.darwin != 'false') }}
     steps:
       - name: Report status (pending)
         if: needs.resolve.outputs.sha != ''
@@ -811,6 +813,7 @@ jobs:
   e2e-macos-arm64:
     name: ${{ inputs.mode == 'release' && 'leg/macos/arm64' || 'E2E macOS ARM64' }}
     needs: [resolve]
+    if: ${{ inputs.mode == 'release' || needs.resolve.outputs.darwin != 'false' }}
     runs-on: macos-15
     timeout-minutes: 10
     steps:
@@ -1002,7 +1005,7 @@ jobs:
     # arm_only dispatch used to acquire a bench VM while vm-cleanup was
     # skipped — a leaked lease, and the bench does not reclaim those
     # implicitly. Harmless now that no VM is taken, kept for consistency.
-    if: ${{ github.event.inputs.arm_only != 'true' }}
+    if: ${{ github.event.inputs.arm_only != 'true' && (inputs.mode == 'release' || needs.resolve.outputs.windows != 'false') }}
     strategy:
       fail-fast: false
       matrix:
@@ -1145,7 +1148,7 @@ jobs:
     # arm_only dispatch used to acquire a bench VM while vm-cleanup was
     # skipped — a leaked lease, and the bench does not reclaim those
     # implicitly. Harmless now that no VM is taken, kept for consistency.
-    if: ${{ github.event.inputs.arm_only != 'true' }}
+    if: ${{ github.event.inputs.arm_only != 'true' && (inputs.mode == 'release' || needs.resolve.outputs.windows != 'false') }}
     strategy:
       fail-fast: false
       matrix:
@@ -1290,7 +1293,7 @@ jobs:
     needs: [resolve]
     runs-on: ubuntu-26.04
     timeout-minutes: 30
-    if: ${{ github.event.inputs.arm_only != 'true' }}
+    if: ${{ github.event.inputs.arm_only != 'true' && (inputs.mode == 'release' || needs.resolve.outputs.linux != 'false') }}
     env:
       # A TAG of artixlinux/artixlinux. `artixlinux/base-dinit` is a 404.
       # Pinned by digest: this container gets a root shell and installs our
@@ -1437,7 +1440,7 @@ jobs:
     needs: [resolve]
     runs-on: ubuntu-26.04
     timeout-minutes: 30
-    if: ${{ github.event.inputs.arm_only != 'true' }}
+    if: ${{ github.event.inputs.arm_only != 'true' && (inputs.mode == 'release' || needs.resolve.outputs.linux != 'false') }}
     steps:
       - name: Report status (pending)
         if: needs.resolve.outputs.sha != ''
@@ -1586,7 +1589,7 @@ jobs:
     needs: [resolve]
     runs-on: ubuntu-26.04
     timeout-minutes: 30
-    if: ${{ github.event.inputs.arm_only != 'true' }}
+    if: ${{ github.event.inputs.arm_only != 'true' && (inputs.mode == 'release' || needs.resolve.outputs.linux != 'false') }}
     steps:
       - name: Report status (pending)
         if: needs.resolve.outputs.sha != ''
@@ -1733,7 +1736,7 @@ jobs:
     needs: [resolve]
     runs-on: ubuntu-26.04
     timeout-minutes: 30
-    if: ${{ github.event.inputs.arm_only != 'true' }}
+    if: ${{ github.event.inputs.arm_only != 'true' && (inputs.mode == 'release' || needs.resolve.outputs.linux != 'false') }}
     steps:
       - name: Report status (pending)
         if: needs.resolve.outputs.sha != ''
@@ -1896,7 +1899,7 @@ jobs:
     needs: [resolve]
     runs-on: ubuntu-26.04
     timeout-minutes: 30
-    if: ${{ github.event.inputs.arm_only != 'true' }}
+    if: ${{ github.event.inputs.arm_only != 'true' && (inputs.mode == 'release' || needs.resolve.outputs.linux != 'false') }}
     steps:
       - name: Report status (pending)
         if: needs.resolve.outputs.sha != ''
@@ -2089,7 +2092,7 @@ jobs:
     needs: [resolve]
     runs-on: ubuntu-26.04
     timeout-minutes: 30
-    if: ${{ github.event.inputs.arm_only != 'true' }}
+    if: ${{ github.event.inputs.arm_only != 'true' && (inputs.mode == 'release' || needs.resolve.outputs.linux != 'false') }}
     steps:
       - name: Report status (pending)
         if: needs.resolve.outputs.sha != ''
@@ -2279,7 +2282,7 @@ jobs:
     needs: [resolve]
     runs-on: ubuntu-26.04
     timeout-minutes: 30
-    if: ${{ github.event.inputs.arm_only != 'true' }}
+    if: ${{ github.event.inputs.arm_only != 'true' && (inputs.mode == 'release' || needs.resolve.outputs.linux != 'false') }}
     steps:
       - name: Report status (pending)
         if: needs.resolve.outputs.sha != ''
@@ -2453,7 +2456,7 @@ jobs:
     needs: [resolve]
     runs-on: ubuntu-26.04
     timeout-minutes: 30
-    if: ${{ github.event.inputs.arm_only != 'true' }}
+    if: ${{ github.event.inputs.arm_only != 'true' && (inputs.mode == 'release' || needs.resolve.outputs.linux != 'false') }}
     steps:
       - name: Report status (pending)
         if: needs.resolve.outputs.sha != ''
@@ -2628,7 +2631,7 @@ jobs:
     needs: [resolve]
     runs-on: ubuntu-26.04
     timeout-minutes: 30
-    if: ${{ github.event.inputs.arm_only != 'true' }}
+    if: ${{ github.event.inputs.arm_only != 'true' && (inputs.mode == 'release' || needs.resolve.outputs.linux != 'false') }}
     steps:
       - name: Report status (pending)
         if: needs.resolve.outputs.sha != ''
@@ -2811,7 +2814,7 @@ jobs:
     needs: [resolve]
     runs-on: ubuntu-26.04
     timeout-minutes: 30
-    if: ${{ github.event.inputs.arm_only != 'true' }}
+    if: ${{ github.event.inputs.arm_only != 'true' && (inputs.mode == 'release' || needs.resolve.outputs.linux != 'false') }}
     env:
       # Pinned by digest: this container gets a root shell and installs our
       # package. The same index digest the arm64 void-xbps entry pins.
@@ -3018,6 +3021,7 @@ jobs:
   e2e-linux-gentoo-portage:
     name: ${{ inputs.mode == 'release' && format('leg/linux/{0}/gentoo-portage', matrix.arch) || format('E2E Linux {0} gentoo-portage', matrix.arch) }}
     needs: [resolve]
+    if: ${{ inputs.mode == 'release' || needs.resolve.outputs.linux != 'false' }}
     runs-on: ${{ matrix.arch == 'arm64' && 'ubuntu-26.04-arm' || 'ubuntu-26.04' }}
     timeout-minutes: 40
     strategy:
@@ -3296,6 +3300,7 @@ jobs:
   e2e-linux-nixos-nix:
     name: ${{ inputs.mode == 'release' && format('leg/linux/{0}/nixos-nix', matrix.arch) || format('E2E Linux {0} nixos-nix', matrix.arch) }}
     needs: [resolve]
+    if: ${{ inputs.mode == 'release' || needs.resolve.outputs.linux != 'false' }}
     runs-on: ${{ matrix.arch == 'arm64' && 'ubuntu-26.04-arm' || 'ubuntu-26.04' }}
     timeout-minutes: 40
     strategy:
@@ -3635,7 +3640,7 @@ jobs:
     # Release mode installs the arm64 packages the RELEASE carries, built
     # privately and bound by the manifest; building others here would test
     # bytes nobody downloads.
-    if: inputs.mode != 'release'
+    if: ${{ inputs.mode != 'release' && needs.resolve.outputs.linux != 'false' }}
     needs: [resolve]
     runs-on: ubuntu-26.04-arm
     timeout-minutes: 20
@@ -3764,7 +3769,7 @@ jobs:
     # arm64-packages is skipped in release mode, and a skipped need skips this
     # job by default. Spelled out, the merge lane is exactly what it was: run
     # only when both needs succeeded and nothing was cancelled.
-    if: ${{ !cancelled() && needs.resolve.result == 'success' && (inputs.mode == 'release' || needs.arm64-packages.result == 'success') }}
+    if: ${{ !cancelled() && needs.resolve.result == 'success' && (inputs.mode == 'release' || needs.arm64-packages.result == 'success') && (inputs.mode == 'release' || needs.resolve.outputs.linux != 'false') }}
     runs-on: ubuntu-26.04-arm
     timeout-minutes: 30
     strategy:
@@ -4242,7 +4247,7 @@ jobs:
     # One leg carries its own `runner`, below; every other one runs here.
     runs-on: ${{ matrix.runner || 'ubuntu-26.04' }}
     timeout-minutes: 45
-    if: ${{ github.event.inputs.arm_only != 'true' }}
+    if: ${{ github.event.inputs.arm_only != 'true' && (inputs.mode == 'release' || needs.resolve.outputs.linux != 'false') }}
     strategy:
       fail-fast: false
       matrix:
@@ -4731,7 +4736,7 @@ jobs:
     needs: [resolve]
     runs-on: ubuntu-26.04
     timeout-minutes: 30
-    if: ${{ github.event.inputs.arm_only != 'true' }}
+    if: ${{ github.event.inputs.arm_only != 'true' && (inputs.mode == 'release' || needs.resolve.outputs.freebsd != 'false') }}
     steps:
       - name: Report status (pending)
         if: needs.resolve.outputs.sha != ''
@@ -4879,7 +4884,7 @@ jobs:
     needs: [resolve]
     runs-on: ubuntu-26.04
     timeout-minutes: 30
-    if: ${{ inputs.mode != 'release' && github.event.inputs.arm_only != 'true' }}
+    if: ${{ inputs.mode != 'release' && github.event.inputs.arm_only != 'true' && needs.resolve.outputs.freebsd != 'false' }}
     continue-on-error: true
     steps:
       - name: Report status (pending)
@@ -4987,7 +4992,7 @@ jobs:
     needs: [resolve]
     runs-on: ubuntu-26.04
     timeout-minutes: 30
-    if: ${{ github.event.inputs.arm_only != 'true' }}
+    if: ${{ github.event.inputs.arm_only != 'true' && (inputs.mode == 'release' || needs.resolve.outputs.netbsd != 'false') }}
     steps:
       - name: Report status (pending)
         if: needs.resolve.outputs.sha != ''
@@ -5113,7 +5118,7 @@ jobs:
     needs: [resolve]
     runs-on: ubuntu-26.04
     timeout-minutes: 30
-    if: ${{ github.event.inputs.arm_only != 'true' }}
+    if: ${{ github.event.inputs.arm_only != 'true' && (inputs.mode == 'release' || needs.resolve.outputs.openbsd != 'false') }}
     strategy:
       fail-fast: false
       matrix:
@@ -5493,7 +5498,7 @@ jobs:
     needs: [resolve]
     runs-on: ubuntu-26.04
     timeout-minutes: 180
-    if: ${{ github.event.inputs.arm_only != 'true' }}
+    if: ${{ github.event.inputs.arm_only != 'true' && (inputs.mode == 'release' || needs.resolve.outputs.freebsd != 'false') }}
     steps:
       - name: Report status (pending)
         if: needs.resolve.outputs.sha != ''
@@ -5659,7 +5664,7 @@ jobs:
     needs: [resolve]
     runs-on: ubuntu-26.04
     timeout-minutes: 180
-    if: ${{ github.event.inputs.arm_only != 'true' }}
+    if: ${{ github.event.inputs.arm_only != 'true' && (inputs.mode == 'release' || needs.resolve.outputs.netbsd != 'false') }}
     steps:
       - name: Report status (pending)
         if: needs.resolve.outputs.sha != ''
@@ -5850,7 +5855,7 @@ jobs:
     # this one additionally installs a package and runs the eight supervision
     # scenarios inside it.
     timeout-minutes: 180
-    if: ${{ github.event.inputs.arm_only != 'true' }}
+    if: ${{ github.event.inputs.arm_only != 'true' && (inputs.mode == 'release' || needs.resolve.outputs.openbsd != 'false') }}
     strategy:
       fail-fast: false
       matrix:
@@ -6428,61 +6433,66 @@ jobs:
           # the loop.
           NEEDS_JSON: ${{ toJSON(needs) }}
         run: |
-          # not_built RESULT BUILT: a leg skipped because resolve found no
-          # artifact of its kernel reads `not-built`; anything else is itself.
+          # not_built RESULT BUILT: a leg skipped because resolve said its
+          # family was not built (`false`: the dispatch's `built` left it out,
+          # or the run carries none of its artifacts) reads `not-built`;
+          # anything else is itself. Every leg goes through it, each with its
+          # own family, and ONLY `skipped` with `false` is excused: a skip with
+          # the family built, or with no answer, is still a failure.
           not_built() {
             if [ "$1" = skipped ] && [ "$2" = false ]; then echo not-built; else echo "$1"; fi
           }
           LEGS=(
-            "docker-amd64=${{ needs.e2e-docker-amd64.result }}"
-            "docker-arm64=${{ needs.e2e-docker-arm64.result }}"
-            "macos-x86_64=${{ needs.e2e-macos.result }}"
-            "macos-arm64=${{ needs.e2e-macos-arm64.result }}"
-            "linux-artix-dinit=${{ needs.e2e-linux-artix-dinit.result }}"
-            "linux-debian-sysvinit=${{ needs.e2e-linux-debian-sysvinit.result }}"
-            "linux-alpine-openrc=${{ needs.e2e-linux-alpine-openrc.result }}"
-            "linux-debian-systemd=${{ needs.e2e-linux-debian-systemd.result }}"
-            "linux-rocky-systemd=${{ needs.e2e-linux-rocky-systemd.result }}"
-            "linux-opensuse-zypper=${{ needs.e2e-linux-opensuse-zypper.result }}"
-            "linux-arch-pacman=${{ needs.e2e-linux-arch-pacman.result }}"
-            "linux-alpine-runit=${{ needs.e2e-linux-alpine-runit.result }}"
-            "linux-alpine-s6=${{ needs.e2e-linux-alpine-s6.result }}"
-            "linux-void-xbps=${{ needs.e2e-linux-void-xbps.result }}"
+            "docker-amd64=$(not_built '${{ needs.e2e-docker-amd64.result }}' '${{ needs.resolve.outputs.linux }}')"
+            "docker-arm64=$(not_built '${{ needs.e2e-docker-arm64.result }}' '${{ needs.resolve.outputs.linux }}')"
+            "macos-x86_64=$(not_built '${{ needs.e2e-macos.result }}' '${{ needs.resolve.outputs.darwin }}')"
+            "macos-arm64=$(not_built '${{ needs.e2e-macos-arm64.result }}' '${{ needs.resolve.outputs.darwin }}')"
+            "linux-artix-dinit=$(not_built '${{ needs.e2e-linux-artix-dinit.result }}' '${{ needs.resolve.outputs.linux }}')"
+            "linux-debian-sysvinit=$(not_built '${{ needs.e2e-linux-debian-sysvinit.result }}' '${{ needs.resolve.outputs.linux }}')"
+            "linux-alpine-openrc=$(not_built '${{ needs.e2e-linux-alpine-openrc.result }}' '${{ needs.resolve.outputs.linux }}')"
+            "linux-debian-systemd=$(not_built '${{ needs.e2e-linux-debian-systemd.result }}' '${{ needs.resolve.outputs.linux }}')"
+            "linux-rocky-systemd=$(not_built '${{ needs.e2e-linux-rocky-systemd.result }}' '${{ needs.resolve.outputs.linux }}')"
+            "linux-opensuse-zypper=$(not_built '${{ needs.e2e-linux-opensuse-zypper.result }}' '${{ needs.resolve.outputs.linux }}')"
+            "linux-arch-pacman=$(not_built '${{ needs.e2e-linux-arch-pacman.result }}' '${{ needs.resolve.outputs.linux }}')"
+            "linux-alpine-runit=$(not_built '${{ needs.e2e-linux-alpine-runit.result }}' '${{ needs.resolve.outputs.linux }}')"
+            "linux-alpine-s6=$(not_built '${{ needs.e2e-linux-alpine-s6.result }}' '${{ needs.resolve.outputs.linux }}')"
+            "linux-void-xbps=$(not_built '${{ needs.e2e-linux-void-xbps.result }}' '${{ needs.resolve.outputs.linux }}')"
             # Gentoo through the overlay and NixOS through the flake: each a
             # matrix of amd64 and arm64, arriving as ONE result -- `failure`
             # if either arch failed.
-            "linux-gentoo-portage=${{ needs.e2e-linux-gentoo-portage.result }}"
-            "linux-nixos-nix=${{ needs.e2e-linux-nixos-nix.result }}"
+            "linux-gentoo-portage=$(not_built '${{ needs.e2e-linux-gentoo-portage.result }}' '${{ needs.resolve.outputs.linux }}')"
+            "linux-nixos-nix=$(not_built '${{ needs.e2e-linux-nixos-nix.result }}' '${{ needs.resolve.outputs.linux }}')"
             # The ten arm64 Linux legs are one matrix job, so they arrive as
             # one result here -- a matrix is `failure` if any of its entries
             # is. `arm64-packages` is listed beside it because it is what
             # those ten consume: when it fails they are `skipped`, which this
             # loop already counts as not-success, and naming it says which of
             # the two broke.
-            "arm64-packages=${{ needs.arm64-packages.result }}"
-            "linux-arm64=${{ needs.e2e-linux-arm64.result }}"
+            "arm64-packages=$(not_built '${{ needs.arm64-packages.result }}' '${{ needs.resolve.outputs.linux }}')"
+            "linux-arm64=$(not_built '${{ needs.e2e-linux-arm64.result }}' '${{ needs.resolve.outputs.linux }}')"
             # Twelve more matrix entries arriving as one result, same rule.
             # These are the exotic Linux legs (386/armv7/armv6/riscv64/
             # ppc64le/s390x in glibc and musl, plus loong64) -- every one of
             # them a target agent shipped with nothing executing it before.
-            "linux-exotic=${{ needs.e2e-linux-exotic.result }}"
-            "windows-amd64=${{ needs.e2e-windows-amd64.result }}"
-            "windows-arm64=${{ needs.e2e-windows-arm64.result }}"
-            "bsd-freebsd-amd64=${{ needs.e2e-bsd-freebsd-amd64.result }}"
-            "bsd-freebsd-arm64=${{ needs.e2e-bsd-freebsd-arm64.result }}"
-            "bsd-netbsd-amd64=${{ needs.e2e-bsd-netbsd-amd64.result }}"
-            "bsd-netbsd-arm64=${{ needs.e2e-bsd-netbsd-arm64.result }}"
-            "bsd-openbsd-amd64=${{ needs.e2e-bsd-openbsd-amd64.result }}"
+            "linux-exotic=$(not_built '${{ needs.e2e-linux-exotic.result }}' '${{ needs.resolve.outputs.linux }}')"
+            "windows-amd64=$(not_built '${{ needs.e2e-windows-amd64.result }}' '${{ needs.resolve.outputs.windows }}')"
+            "windows-arm64=$(not_built '${{ needs.e2e-windows-arm64.result }}' '${{ needs.resolve.outputs.windows }}')"
+            "bsd-freebsd-amd64=$(not_built '${{ needs.e2e-bsd-freebsd-amd64.result }}' '${{ needs.resolve.outputs.freebsd }}')"
+            "bsd-freebsd-arm64=$(not_built '${{ needs.e2e-bsd-freebsd-arm64.result }}' '${{ needs.resolve.outputs.freebsd }}')"
+            "bsd-netbsd-amd64=$(not_built '${{ needs.e2e-bsd-netbsd-amd64.result }}' '${{ needs.resolve.outputs.netbsd }}')"
+            "bsd-netbsd-arm64=$(not_built '${{ needs.e2e-bsd-netbsd-arm64.result }}' '${{ needs.resolve.outputs.netbsd }}')"
+            "bsd-openbsd-amd64=$(not_built '${{ needs.e2e-bsd-openbsd-amd64.result }}' '${{ needs.resolve.outputs.openbsd }}')"
             # Listed from the day the leg exists, not later. A leg absent from
             # this array is a leg the aggregate never waits for and never
             # reads -- which is exactly how e2e-windows could go red under a
             # green verdict, the defect the comment on `needs:` above records.
             # openbsd-arm64 is a release matrix, so it arrives as ONE result:
             # `failure` if either release cell failed.
-            "bsd-openbsd-arm64=${{ needs.e2e-bsd-openbsd-arm64.result }}"
-            # Skipped by their `if:` when agent built no illumos/Solaris
-            # artifact for this change (resolve said `false`): recorded as
-            # `not-built`, which passes. Any other skip still fails.
+            "bsd-openbsd-arm64=$(not_built '${{ needs.e2e-bsd-openbsd-arm64.result }}' '${{ needs.resolve.outputs.openbsd }}')"
+            # Skipped by their `if:` when agent did not build illumos/Solaris
+            # for this change (resolve said `false`), like every leg above
+            # whose family it did not build: recorded as `not-built`, which
+            # passes. Any other skip still fails.
             "illumos-amd64=$(not_built '${{ needs.e2e-illumos-amd64.result }}' '${{ needs.resolve.outputs.illumos }}')"
             "solaris-amd64=$(not_built '${{ needs.e2e-solaris-amd64.result }}' '${{ needs.resolve.outputs.solaris }}')"
           )
@@ -6501,8 +6511,9 @@ jobs:
             # ran counted as fine. An `arm_only` dispatch skips 11 of these 12
             # and still produced a green `e2e/runner-template` on the agent SHA:
             # a verdict asserting the artifact was validated on twelve platforms
-            # when it ran on one. `not-built` is the one exception, and only the
-            # illumos/Solaris legs can carry it (see not_built above).
+            # when it ran on one. `not-built` is the one exception: a leg
+            # skipped because resolve said its family was not built (see
+            # not_built above). An `arm_only` skip is not one of them.
             if [ "$res" = not-built ]; then
               NOT_BUILT="${NOT_BUILT}${leg} "
               continue

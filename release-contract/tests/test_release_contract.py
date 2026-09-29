@@ -1115,13 +1115,8 @@ class CalledWorkflowLegs(unittest.TestCase):
                 self.assertEqual(rc.results_from_jobs(jobs, ["macos/arm64"]), {"macos/arm64": "missing"})
 
 
-class SolarishLegsInReleaseMode(unittest.TestCase):
-    """agent builds illumos and Solaris for a pull request only when it touches
-    their paths, so e2e.yml's merge lane skips those two legs when the agent run
-    carries neither artifact. A release must run them regardless: they are
-    required legs, and a skip there would leave the receipt without them."""
-
-    LEGS = (("e2e-illumos-amd64", "illumos/amd64", "illumos"), ("e2e-solaris-amd64", "solaris/amd64", "solaris"))
+class _E2eWorkflowReader:
+    """e2e.yml, read: its jobs, and a leg condition evaluated without running it."""
 
     @classmethod
     def setUpClass(cls):
@@ -1157,6 +1152,15 @@ class SolarishLegsInReleaseMode(unittest.TestCase):
             return equal if isinstance(node.ops[0], ast.Eq) else not equal
         raise AssertionError(f"not a condition this test can read: {ast.dump(node)}")
 
+
+class SolarishLegsInReleaseMode(_E2eWorkflowReader, unittest.TestCase):
+    """agent builds illumos and Solaris for a pull request only when it touches
+    their paths, so e2e.yml's merge lane skips those two legs when the agent run
+    did not build them. A release must run them regardless: they are required
+    legs, and a skip there would leave the receipt without them."""
+
+    LEGS = (("e2e-illumos-amd64", "illumos/amd64", "illumos"), ("e2e-solaris-amd64", "solaris/amd64", "solaris"))
+
     def test_release_mode_runs_both_legs_whatever_the_merge_lane_found(self):
         required = rc.required_legs(POLICY, AGENT)
         for job, leg, kernel in self.LEGS:
@@ -1186,13 +1190,193 @@ class SolarishLegsInReleaseMode(unittest.TestCase):
         self.assertIsNotNone(step)
         self.assertEqual(step.group(1), "inputs.mode != 'release'")
 
-    def test_the_report_excuses_those_two_legs_and_no_other(self):
+    def test_the_report_never_runs_in_release_mode(self):
+        # validate-release.yml judges the leg jobs themselves, where a skip is
+        # `missing`: no `not-built` excuse can reach a receipt.
+        self.assertIn("if: always() && inputs.mode != 'release'", self.job("report"))
+
+
+class FamilyLegsNotBuilt(_E2eWorkflowReader, unittest.TestCase):
+    """agent's ci.yml builds only the families a pull request can affect, and
+    names them in its dispatch (`built`). e2e.yml's merge lane skips the legs
+    of every other family and its report records them `not-built`, which
+    passes -- the illumos/Solaris rule, extended to every family. Release mode
+    runs every leg whatever the merge lane would have skipped."""
+
+    # Every job the report judges, and its family.
+    FAMILY = {
+        "e2e-docker-amd64": "linux", "e2e-docker-arm64": "linux",
+        "e2e-macos": "darwin", "e2e-macos-arm64": "darwin",
+        "e2e-windows-amd64": "windows", "e2e-windows-arm64": "windows",
+        "e2e-linux-artix-dinit": "linux", "e2e-linux-debian-sysvinit": "linux",
+        "e2e-linux-alpine-openrc": "linux", "e2e-linux-debian-systemd": "linux",
+        "e2e-linux-rocky-systemd": "linux", "e2e-linux-opensuse-zypper": "linux",
+        "e2e-linux-arch-pacman": "linux", "e2e-linux-alpine-runit": "linux",
+        "e2e-linux-alpine-s6": "linux", "e2e-linux-void-xbps": "linux",
+        "e2e-linux-gentoo-portage": "linux", "e2e-linux-nixos-nix": "linux",
+        "arm64-packages": "linux", "e2e-linux-arm64": "linux", "e2e-linux-exotic": "linux",
+        "e2e-bsd-freebsd-amd64": "freebsd", "e2e-bsd-freebsd-arm64": "freebsd",
+        "e2e-bsd-netbsd-amd64": "netbsd", "e2e-bsd-netbsd-arm64": "netbsd",
+        "e2e-bsd-openbsd-amd64": "openbsd", "e2e-bsd-openbsd-arm64": "openbsd",
+        "e2e-illumos-amd64": "illumos", "e2e-solaris-amd64": "solaris",
+    }
+    # Merge lane only by design, so never in release mode: arm64-packages (the
+    # release carries its own arm64 packages) and the advisory FreeBSD 14 floor.
+    MERGE_ONLY = {"arm64-packages": "linux", "e2e-bsd-freebsd-14-amd64": "freebsd"}
+
+    def condition(self, job):
+        found = re.search(r"^    if: (.*)$", self.job(job), re.M)
+        self.assertIsNotNone(found, f"{job} has no if:")
+        cond = found.group(1).strip()
+        return cond[4:-3] if cond.startswith("${{") else cond
+
+    @classmethod
+    def runs(cls, condition, arm_only, mode, built, family):
+        # e2e-linux-arm64 also waits on arm64-packages, which its family's
+        # `false` skips; `!cancelled()` is true for a run nobody cancelled.
+        condition = (condition.replace("!cancelled()", "'x' == 'x'")
+                     .replace("needs.resolve.result", "'success'")
+                     .replace("needs.arm64-packages.result", "'skipped'" if built == "false" or mode == "release" else "'success'"))
+        return super().runs(condition, arm_only, mode, built, family)
+
+    def test_every_judged_job_has_a_family(self):
+        needs = re.search(r"^    needs: \[(.*?)\]", self.job("report"), re.M | re.S).group(1)
+        judged = {n.strip() for n in needs.replace("\n", " ").split(",")} - {"resolve"}
+        self.assertEqual(judged, set(self.FAMILY))
+
+    def test_release_mode_runs_every_leg_whatever_the_merge_lane_found(self):
+        for job, family in self.FAMILY.items():
+            if job in self.MERGE_ONLY:
+                continue
+            for built in ("true", "false", ""):
+                with self.subTest(job=job, built=built):
+                    self.assertTrue(self.runs(self.condition(job), "", "release", built, family))
+
+    def test_the_merge_lane_skips_a_leg_only_on_its_own_family_not_built(self):
+        for job, family in {**self.FAMILY, **self.MERGE_ONLY}.items():
+            with self.subTest(job=job):
+                cond = self.condition(job)
+                self.assertIn(f"needs.resolve.outputs.{family} != 'false'", cond)
+                self.assertFalse(self.runs(cond, "", "", "false", family))
+                # Built, or never decided (no token, no word): the leg runs.
+                self.assertTrue(self.runs(cond, "", "", "true", family))
+                self.assertTrue(self.runs(cond, "", "", "", family))
+
+    def test_the_report_excuses_each_leg_by_its_own_family_alone(self):
         report = self.job("report")
-        excused = re.findall(r'^\s+"([a-z0-9-]+)=\$\(not_built ', report, re.M)
-        self.assertEqual(sorted(excused), ["illumos-amd64", "solaris-amd64"])
-        # The report never runs in release mode: validate-release.yml judges
-        # the leg jobs themselves, where a skip is `missing`.
-        self.assertIn("if: always() && inputs.mode != 'release'", report)
+        rows = re.findall(r"""^\s+"([a-z0-9_-]+)=(.*)"$""", report, re.M)
+        excused = {}
+        for leg, value in rows:
+            m = re.fullmatch(r"""\$\(not_built '\$\{\{ needs\.([a-z0-9-]+)\.result \}\}' '\$\{\{ needs\.resolve\.outputs\.([a-z]+) \}\}'\)""", value)
+            self.assertIsNotNone(m, f"report leg {leg} is not judged through not_built with its family: {value}")
+            excused[m.group(1)] = m.group(2)
+        self.assertEqual(excused, self.FAMILY)
+        # Only a skip with a positive `false` is excused.
+        self.assertIn('if [ "$1" = skipped ] && [ "$2" = false ]; then echo not-built; else echo "$1"; fi', report)
+
+    def test_every_family_comes_from_the_merge_lane_decision(self):
+        resolve = self.job("resolve")
+        for family in set(self.FAMILY.values()):
+            with self.subTest(family=family):
+                self.assertIn(f"{family}: ${{{{ steps.artifacts.outputs.{family} }}}}", resolve)
+        self.assertIn("python3 .rt/.github/scripts/e2e_families.py", resolve)
+        checkout = re.search(r"- name: Checkout the family decision\n\s+if: (.*)\n", resolve)
+        self.assertIsNotNone(checkout)
+        self.assertEqual(checkout.group(1), "inputs.mode != 'release'")
+
+
+def _families_module():
+    import importlib.util
+    path = os.path.join(ROOT, os.pardir, ".github", "scripts", "e2e_families.py")
+    spec = importlib.util.spec_from_file_location("e2e_families", path)
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    return mod, path
+
+
+class E2eFamilies(unittest.TestCase):
+    """.github/scripts/e2e_families.py: which families' legs run in the merge
+    lane. A family is `false` only on a word that omits it or a listing that
+    holds none of its artifacts; everything it cannot establish runs."""
+
+    @classmethod
+    def setUpClass(cls):
+        cls.mod, cls.path = _families_module()
+
+    ALL_BUILT = {"supervizio-linux-amd64", "supervizio-linux-amd64-musl", "supervizio-linux-arm64-musl",
+                 "supervizio-amd64.xbps", "supervizio-windows-amd64", "supervizio-darwin-arm64",
+                 "supervizio-freebsd-amd64", "supervizio-netbsd-amd64", "supervizio-openbsd-amd64-pkg",
+                 "supervizio-openbsd-arm64-pkg", "supervizio-illumos-amd64", "supervizio-illumos-amd64-pkg",
+                 "supervizio-solaris-amd64", "supervizio-solaris-amd64-pkg"}
+
+    def decide(self, word, names):
+        return self.mod.decide(word, set(names) if names is not None else None)
+
+    def test_the_dispatch_word_decides(self):
+        flags, _ = self.decide("linux windows", self.ALL_BUILT)
+        self.assertEqual({f for f, v in flags.items() if v == "true"}, {"linux", "windows"})
+        self.assertEqual({f for f, v in flags.items() if v == "false"},
+                         {"darwin", "freebsd", "netbsd", "openbsd", "illumos", "solaris"})
+
+    def test_a_word_without_a_listing_still_decides(self):
+        flags, _ = self.decide("openbsd", None)
+        self.assertEqual(flags["openbsd"], "true")
+        self.assertEqual(flags["linux"], "false")
+
+    def test_no_word_falls_back_on_the_artifacts(self):
+        flags, _ = self.decide(None, {"supervizio-linux-amd64", "supervizio-windows-arm64"})
+        self.assertEqual({f for f, v in flags.items() if v == "true"}, {"linux", "windows"})
+
+    def test_no_word_and_no_listing_runs_every_leg(self):
+        flags, _ = self.decide(None, None)
+        self.assertEqual(set(flags.values()), {""})
+
+    def test_refusals(self):
+        for word, names in (("linux beos", None), ("", None), ("  ", None),
+                            ("linux", {"supervizio-windows-amd64"}),   # linux without its floor
+                            (None, set()), (None, {"something-else"})):
+            with self.subTest(word=word, names=names):
+                flags, msgs = self.decide(word, names)
+                self.assertIsNone(flags)
+                self.assertTrue(any(m.startswith("::error::") for m in msgs))
+
+    def test_a_declared_family_without_artifacts_runs_and_says_so(self):
+        flags, msgs = self.decide("linux darwin", {"supervizio-linux-amd64"})
+        self.assertEqual(flags["darwin"], "true")
+        self.assertTrue(any("darwin was built" in m and m.startswith("::warning::") for m in msgs))
+
+    def test_an_undeclared_family_is_not_run_even_with_artifacts(self):
+        flags, msgs = self.decide("linux", {"supervizio-linux-amd64", "supervizio-netbsd-amd64"})
+        self.assertEqual(flags["netbsd"], "false")
+        self.assertTrue(any("netbsd" in m and m.startswith("::notice::") for m in msgs))
+
+    def test_half_a_solarish_pair_is_a_warning(self):
+        _, msgs = self.decide("illumos", {"supervizio-illumos-amd64"})
+        self.assertTrue(any("only one of supervizio-illumos-amd64" in m for m in msgs))
+
+    def test_where_the_word_is_read(self):
+        w = self.mod.declared_word
+        self.assertEqual(w("repository_dispatch", json.dumps({"sha": "x", "built": "linux"}), ""), "linux")
+        self.assertIsNone(w("repository_dispatch", json.dumps({"sha": "x"}), ""))
+        self.assertIsNone(w("repository_dispatch", "not json", ""))
+        self.assertEqual(w("repository_dispatch", json.dumps({"built": None}), ""), "")
+        self.assertEqual(w("workflow_dispatch", "null", "darwin"), "darwin")
+        self.assertIsNone(w("workflow_dispatch", "null", "  "))
+        self.assertIsNone(w("workflow_call", json.dumps({"built": "linux"}), ""))
+
+    def test_the_script_as_resolve_runs_it(self):
+        env = dict(os.environ, EVENT="repository_dispatch", PAYLOAD=json.dumps({"built": "freebsd netbsd"}),
+                   INPUT_BUILT="", AGENT_LISTED="true")
+        out = subprocess.run([sys.executable, self.path], input="supervizio-freebsd-amd64\nsupervizio-netbsd-arm64\n",
+                             capture_output=True, text=True, env=env, check=True).stdout.split()
+        self.assertIn("freebsd=true", out)
+        self.assertIn("netbsd=true", out)
+        self.assertIn("linux=false", out)
+        self.assertEqual(len(out), 8)
+        bad = subprocess.run([sys.executable, self.path], input="", capture_output=True, text=True,
+                             env=dict(env, PAYLOAD=json.dumps({"built": "haiku"})))
+        self.assertEqual(bad.returncode, 1)
+        self.assertEqual(bad.stdout, "")
 
 
 class _Registry(http.server.BaseHTTPRequestHandler):
