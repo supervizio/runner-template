@@ -75,9 +75,10 @@ Create a **fine-grained PAT** scoped to `supervizio/agent` with the above permis
 | macOS ARM64 | `macos-15` | `supervizio-darwin-arm64` |
 | Linux exotic — 386, armv7, armv6, riscv64, ppc64le, s390x (glibc + musl) and loong64 | `ubuntu-26.04`, under `qemu-user`/`binfmt_misc` except 386 (native); `386-glibc` stays on `ubuntu-24.04` until 26.04's Docker lets i386 glibc open a socket (actions/runner-images#14790) | `supervizio-{386,arm7,arm6,riscv64,ppc64le,s390x}.{deb,apk}`, `supervizio-linux-loong64` |
 
-The table above is not the whole matrix — the ten Linux init legs per arch
-(Void's `.xbps` under runit included), the Windows legs and the BSD legs are in
-`e2e.yml` and not listed here.
+The table above is not the whole matrix — the twelve Linux legs per arch
+(Void's `.xbps` under runit, Gentoo through the supervizio overlay under OpenRC and
+NixOS through the supervizio flake under systemd included), the Windows legs and
+the BSD legs are in `e2e.yml` and not listed here.
 
 The exotic Linux legs exist because GitHub sells no riscv64, ppc64le, s390x or
 loongarch runner and the bench has no such guest: emulation is the only way to

@@ -191,6 +191,13 @@ jobs:
           if ! printf '%s\n' "$names" | grep -qx 'supervizio-amd64.xbps'; then
             echo "::warning::no supervizio-amd64.xbps in run $SRC_RUN - both void-xbps legs will fail. Its producer is agent's packages-xbps job."
           fi
+          # Advisory too: the gentoo-portage and nixos-nix legs render their
+          # channel from BOTH static binaries and fail without either.
+          for a in supervizio-linux-amd64-musl supervizio-linux-arm64-musl; do
+            if ! printf '%s\n' "$names" | grep -qx "$a"; then
+              echo "::warning::no $a in run $SRC_RUN - the four gentoo-portage and nixos-nix legs will fail. Its producer is agent's build-cross job."
+            fi
+          done
 
       - name: Display resolved parameters
         run: |
@@ -2945,6 +2952,582 @@ jobs:
             -d "{\"state\":\"$STATE\",\"context\":\"e2e/vm/void-xbps\",\"description\":\"$DESC\",\"target_url\":\"${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}\"}"
 
   # ===========================================================================
+  # E2E LINUX — Gentoo through the supervizio overlay, NixOS through the flake
+  # ===========================================================================
+  #
+  # agent ships to these two through a manifest, not a package file: an
+  # ebuild in an overlay (app-admin/supervizio-bin), and a package plus a
+  # NixOS module in a flake, both naming the release's static
+  # supervizio-linux-{amd64,arm64}-musl by hash. agent's
+  # setup/packaging/render-channels.py writes them -- here from the tree under
+  # test (the agent checkout, or the release's kit) and the two binaries under
+  # test, exactly as agent's deploy-repo.yml writes them from a published
+  # release. So what a leg installs is what the channel would carry. Each leg
+  # renders the channel whole, both arches as published, and installs its own.
+  #
+  # Nothing comes from supervizio.github.io. Each leg puts the binary under
+  # test where the package manager would have fetched it to -- Portage's
+  # DISTDIR, the Nix store -- and the channel's own hashes must then accept
+  # it: the Manifest's BLAKE2B and SHA512 when emerge verifies the distfile,
+  # the flake's SRI hash, which fixes the store path the leg asserts it
+  # seeded. Both containers run with --network none, so nothing could be
+  # fetched anyway, and each leg checks the installed file's sha256 against
+  # the binary under test.
+  #
+  # Containers on both arches, as for Void: the same honest delta -- install,
+  # start, supervision and removal, not boot ordering or clean shutdown.
+  # Detection is asserted against agent's gentoo-container-<arch> and
+  # nixos-container-<arch> columns: portage primary under OpenRC, nix primary
+  # under systemd.
+
+  # Gentoo stage3, openrc-init as PID 1 -- OpenRC itself, not a sysvinit
+  # /sbin/init handing over to it. The overlay goes where repos.conf says,
+  # exactly as its README tells a user to configure it (the sync-uri is the
+  # published repository; the leg never syncs). emerge, then what the
+  # ebuild's elog says to do: rc-update add, rc-service start. Removal is
+  # what a user does too: stop, rc-update del, emerge --unmerge.
+  e2e-linux-gentoo-portage:
+    name: ${{ inputs.mode == 'release' && format('leg/linux/{0}/gentoo-portage', matrix.arch) || format('E2E Linux {0} gentoo-portage', matrix.arch) }}
+    needs: [resolve]
+    runs-on: ${{ matrix.arch == 'arm64' && 'ubuntu-26.04-arm' || 'ubuntu-26.04' }}
+    timeout-minutes: 40
+    strategy:
+      fail-fast: false
+      matrix:
+        # arm_only, a debugging dispatch, keeps the arm64 leg alone.
+        arch: ${{ fromJSON(github.event.inputs.arm_only == 'true' && '["arm64"]' || '["amd64", "arm64"]') }}
+    env:
+      # Both pinned by digest. The stage3 gets a root shell and installs our
+      # package; 20260928 is the default flavour (OpenRC), one index digest
+      # for amd64 and arm64. gentoo/portage is the ebuild tree of the same day,
+      # data only, published for amd64 alone: FROM --platform=linux/amd64
+      # copies the same files on either arch without running anything.
+      STAGE3: gentoo/stage3@sha256:4268db4a130b74a0d1782b9df842fae28d28306023e115206850ae54ce905cdc # gentoo/stage3:20260928
+      PORTAGE: gentoo/portage@sha256:13722974e092a107eb26976b0e4a91beeb54a211697b417a46718b813be86a8d # gentoo/portage:20260928
+      ARCH: ${{ matrix.arch }}
+      CONTEXT: ${{ matrix.arch == 'arm64' && 'e2e/linux-arm64/gentoo-portage' || 'e2e/vm/gentoo-portage' }}
+    steps:
+      - name: Report status (pending)
+        if: needs.resolve.outputs.sha != ''
+        continue-on-error: true
+        env:
+          GH_TOKEN: ${{ secrets.AGENT_REPO_TOKEN }}
+          TARGET: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          [ -z "$GH_TOKEN" ] && exit 0
+          curl -sf -X POST -H "Authorization: Bearer $GH_TOKEN" -H "Accept: application/vnd.github+json" \
+            "https://api.github.com/repos/${{ needs.resolve.outputs.source_repo }}/statuses/${{ needs.resolve.outputs.sha }}" \
+            -d "$(jq -nc --arg c "$CONTEXT" --arg u "$TARGET" '{state:"pending", context:$c, description:"Running...", target_url:$u}')"
+
+      - name: Checkout agent code
+        if: inputs.mode != 'release'
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: ${{ needs.resolve.outputs.source_repo }}
+          ref: ${{ needs.resolve.outputs.ref }}
+          token: ${{ secrets.AGENT_REPO_TOKEN }}
+          persist-credentials: false
+
+      # Release mode (validate-release.yml): no checkout of the private tree
+      # and no cross-repo download. The kit of the tagged commit and both
+      # static binaries, pulled by digest and proven against the manifest;
+      # .github/actions/release-candidate says how.
+      - name: Check out the release lane
+        if: inputs.mode == 'release'
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          path: .release-lane
+          persist-credentials: false
+
+      - name: Take the release candidate's files
+        if: inputs.mode == 'release'
+        uses: ./.release-lane/.github/actions/release-candidate
+        with:
+          dispatch: ${{ inputs.dispatch }}
+          policy: ${{ inputs.policy }}
+          kit-dir: .
+          files: |
+            supervizio-linux-amd64-musl bin
+            supervizio-linux-arm64-musl bin
+
+      - name: Download the amd64 static binary from the agent run (cross-repo)
+        if: inputs.mode != 'release'
+        uses: actions/download-artifact@70fc10c6e5e1ce46ad2ea6f2b72d43f7d47b13c3 # v8.0.0
+        with:
+          name: supervizio-linux-amd64-musl
+          path: bin
+          repository: ${{ needs.resolve.outputs.source_repo }}
+          run-id: ${{ needs.resolve.outputs.run_id }}
+          github-token: ${{ secrets.AGENT_REPO_TOKEN }}
+
+      - name: Download the arm64 static binary from the agent run (cross-repo)
+        if: inputs.mode != 'release'
+        uses: actions/download-artifact@70fc10c6e5e1ce46ad2ea6f2b72d43f7d47b13c3 # v8.0.0
+        with:
+          name: supervizio-linux-arm64-musl
+          path: bin
+          repository: ${{ needs.resolve.outputs.source_repo }}
+          run-id: ${{ needs.resolve.outputs.run_id }}
+          github-token: ${{ secrets.AGENT_REPO_TOKEN }}
+
+      # The tag the overlay is written for: the candidate's, or v0.0.0, the
+      # version agent's CI stamps on every package it builds.
+      - name: Render the overlay for the binaries under test
+        id: render
+        env:
+          MODE: ${{ inputs.mode }}
+          DISPATCH: ${{ inputs.dispatch }}
+        run: |
+          set -euo pipefail
+          if [ "$MODE" = release ]; then
+            TAG="$(printf '%s' "$DISPATCH" | jq -r .client_payload.candidate.tag)"
+          else
+            TAG=v0.0.0
+          fi
+          ls -l bin/
+          python3 setup/packaging/render-channels.py gentoo --tag "$TAG" --out overlay \
+            --binary amd64=bin/supervizio-linux-amd64-musl --binary arm64=bin/supervizio-linux-arm64-musl \
+            | tee render.json
+          {
+            echo "pv=$(jq -r .version render.json)"
+            echo "distfile=$(jq -r --arg a "$ARCH" '.distfiles[$a]' render.json)"
+          } >> "$GITHUB_OUTPUT"
+          find overlay -type f | sort
+          cat overlay/app-admin/supervizio-bin/Manifest
+
+      - name: Build the Gentoo substrate and boot it, openrc-init as PID 1
+        run: |
+          set -euo pipefail
+          want=x86_64; [ "$ARCH" = arm64 ] && want=aarch64
+          docker pull -q "$STAGE3" >/dev/null
+          [ "$(docker run --rm "$STAGE3" uname -m)" = "$want" ] || { echo "::error::$STAGE3 is not $want here"; exit 1; }
+          # The stage3 as a user gets it, plus the ebuild tree, prepared the
+          # way a container is:
+          #   rc_sys="docker"  OpenRC skips the services that need a kernel of
+          #                    their own (sysctl, the loopback, hwclock).
+          #   FEATURES         Portage's pid, ipc and network sandboxes need
+          #                    namespaces an unprivileged container cannot
+          #                    create; the LD_PRELOAD sandbox stays on.
+          #   jq               validate-probe.sh and validate-detection.sh need
+          #                    it, and no Gentoo binhost carries app-misc/jq:
+          #                    built here, without the oniguruma it does not need.
+          # Empty build context: the agent checkout is in the workspace.
+          mkdir -p /tmp/ctx
+          cat > /tmp/ctx/Dockerfile <<'EOF'
+          ARG PORTAGE
+          ARG STAGE3
+          FROM --platform=linux/amd64 ${PORTAGE} AS portage
+          FROM ${STAGE3}
+          COPY --from=portage /var/db/repos/gentoo /var/db/repos/gentoo
+          RUN sed -i 's/^#\?rc_sys=.*/rc_sys="docker"/' /etc/rc.conf \
+           && echo 'FEATURES="-ipc-sandbox -network-sandbox -pid-sandbox"' >> /etc/portage/make.conf \
+           && MAKEOPTS="-j$(nproc)" USE="-oniguruma" emerge --quiet --oneshot app-misc/jq
+          EOF
+          docker build -q --build-arg PORTAGE="$PORTAGE" --build-arg STAGE3="$STAGE3" -t svz-gentoo /tmp/ctx >/dev/null
+          # --network none: from here on nothing can be fetched, the
+          # binary under test included.
+          docker run -d --name svz --network none --entrypoint /sbin/openrc-init svz-gentoo >/dev/null
+          for _ in $(seq 1 30); do
+            [ "$(docker exec svz rc-status --runlevel 2>/dev/null || true)" = default ] && break
+            sleep 1
+          done
+          [ "$(docker inspect -f '{{.State.Running}}' svz)" = "true" ] || {
+            echo "::error::openrc-init exited (code $(docker inspect -f '{{.State.ExitCode}}' svz))"
+            docker logs svz 2>&1 || true; exit 1; }
+          pid1=$(docker exec svz cat /proc/1/comm)
+          echo "PID 1 = $pid1, runlevel $(docker exec svz rc-status --runlevel), $(docker exec svz uname -m)"
+          [ "$pid1" = openrc-init ] || { echo "::error::PID 1 is '$pid1', expected openrc-init"; exit 1; }
+          [ "$(docker exec svz rc-status --runlevel)" = default ] || { echo "::error::OpenRC never reached the default runlevel"; docker logs svz 2>&1 || true; exit 1; }
+          docker exec svz sh -c 'head -2 /etc/os-release; emerge --version'
+
+      - name: Install through the overlay, validate, uninstall
+        env:
+          PV: ${{ steps.render.outputs.pv }}
+          DISTFILE: ${{ steps.render.outputs.distfile }}
+        run: |
+          set -euo pipefail
+          bin="bin/supervizio-linux-$ARCH-musl"
+          docker exec svz mkdir -p /opt/svz /etc/portage/repos.conf
+          docker cp overlay svz:/var/db/repos/supervizio
+          # repos.conf as the overlay's README gives it.
+          docker exec svz sh -c 'printf "%s\n" "[supervizio]" "location = /var/db/repos/supervizio" "sync-type = git" "sync-uri = https://github.com/supervizio/gentoo-overlay.git" > /etc/portage/repos.conf/supervizio.conf'
+          # The binary under test, where Portage would have fetched it to.
+          docker cp "$bin" "svz:/var/cache/distfiles/$DISTFILE"
+          docker exec svz chown portage:portage "/var/cache/distfiles/$DISTFILE"
+          # A prerelease (a _suffix) is keyworded ~arch: accept it, as its
+          # README tells a user to.
+          case "$PV" in
+            *_*) docker exec svz sh -c "mkdir -p /etc/portage/package.accept_keywords && echo 'app-admin/supervizio-bin ~$ARCH' > /etc/portage/package.accept_keywords/supervizio" ;;
+          esac
+          docker cp e2e/validate-probe.sh svz:/opt/svz/validate-probe.sh
+          docker cp e2e/scenario-battery.sh svz:/opt/svz/scenario-battery.sh
+          docker cp e2e/validate-detection.sh svz:/opt/svz/validate-detection.sh
+          docker cp e2e/expected-matrix.json svz:/opt/svz/expected-matrix.json
+
+          echo "=== emerge, as a user would ==="
+          docker exec svz emerge --verbose app-admin/supervizio-bin 2>&1 | tee /tmp/emerge.log
+          [ "$(docker exec svz portageq match / app-admin/supervizio-bin)" = "app-admin/supervizio-bin-$PV" ] || {
+            echo "::error::Portage does not have app-admin/supervizio-bin-$PV installed"; exit 1; }
+          # An ebuild Portage has a QA notice about is a defect of ours.
+          if grep -q 'QA Notice' /tmp/emerge.log; then
+            echo "::error::emerge printed a QA notice for the ebuild"; grep -A4 'QA Notice' /tmp/emerge.log; exit 1
+          fi
+          # What Portage installed is the binary under test, byte for byte.
+          want="$(sha256sum "$bin" | cut -d' ' -f1)"
+          got="$(docker exec svz sha256sum /usr/bin/supervizio | cut -d' ' -f1)"
+          [ "$got" = "$want" ] || { echo "::error::/usr/bin/supervizio is $got, the binary under test is $want"; exit 1; }
+          docker exec svz sh -c 'test -x /etc/init.d/supervizio && grep -qx "command=\"/usr/bin/supervizio\"" /etc/init.d/supervizio && grep -q "^ExecStart=/usr/bin/supervizio " /usr/lib/systemd/system/supervizio.service && test -f /etc/supervizio/config.yaml' || {
+            echo "::error::the package did not install its OpenRC script, systemd unit or configuration pointing at /usr/bin"; exit 1; }
+          docker exec svz /usr/bin/supervizio --version
+
+          echo "=== Start it under OpenRC, as the ebuild's elog says ==="
+          docker exec svz sh -c 'rc-update add supervizio default && rc-service supervizio start'
+          sleep 2
+          docker exec svz rc-service supervizio status
+          docker exec svz pgrep -x supervizio >/dev/null || { echo "::error::OpenRC reports supervizio started, but no process runs"; exit 1; }
+
+          echo "=== Validate probe ==="
+          # .cpu.frequency_mhz is exempted only where the probe DECLARES the
+          # clock absent and the host really exposes none -- the arm64
+          # runner; see the validate step of e2e-linux-arm64.
+          docker exec svz sh -c '/usr/bin/supervizio --probe > /opt/svz/probe.json'
+          EMU=0
+          if ! docker exec svz sh -c 'grep -q "^cpu MHz" /proc/cpuinfo || test -r /sys/devices/system/cpu/cpu0/cpufreq/scaling_cur_freq || test -r /sys/devices/system/cpu/cpu0/cpufreq/cpuinfo_max_freq || test -r /sys/devices/system/cpu/cpu0/cpufreq/base_frequency' \
+             && [ "$(docker exec svz jq -r '.cpu.frequency_mhz.value' /opt/svz/probe.json)" = null ] \
+             && [ "$(docker exec svz jq -r '.cpu.frequency_mhz.kind // ""' /opt/svz/probe.json)" = ABSENT ]; then
+            EMU=1
+            echo "::notice::.cpu.frequency_mhz exempted on this host: $(docker exec svz jq -r '.cpu.frequency_mhz.detail' /opt/svz/probe.json)"
+          fi
+          docker exec -e SVZ_EMULATED_CPU="$EMU" svz sh /opt/svz/validate-probe.sh /usr/bin/supervizio
+
+          echo "=== Detection vs expected-matrix: gentoo-container-$ARCH ==="
+          docker exec svz sh -c '/usr/bin/supervizio --inventory all > /opt/svz/inventory.json' \
+            || echo "::warning::--inventory all exited non-zero; validating the dump it wrote"
+          docker exec svz jq -c '.package_managers.data.managers[] | select(.available)' /opt/svz/inventory.json
+          docker exec svz sh /opt/svz/validate-detection.sh "gentoo-container-$ARCH" /opt/svz/probe.json /opt/svz/inventory.json
+
+          echo "=== Supervision scenarios ==="
+          docker exec svz sh /opt/svz/scenario-battery.sh /usr/bin/supervizio
+
+          echo "=== Uninstall: stop, remove from the runlevel, unmerge ==="
+          docker exec svz sh -c 'rc-service supervizio stop && rc-update del supervizio default'
+          docker exec -e CLEAN_DELAY=0 svz emerge --unmerge app-admin/supervizio-bin
+          if [ -n "$(docker exec svz portageq match / app-admin/supervizio-bin)" ]; then
+            echo "::error::Portage still has app-admin/supervizio-bin installed"; exit 1
+          fi
+          docker exec svz sh -c 'test ! -e /usr/bin/supervizio && test ! -e /etc/init.d/supervizio && test ! -e /usr/lib/systemd/system/supervizio.service && test ! -e /etc/runlevels/default/supervizio' || {
+            echo "::error::the package or its registration outlived emerge --unmerge"; exit 1; }
+          if docker exec svz pgrep -x supervizio >/dev/null; then
+            echo "::error::supervizio still runs after it was stopped and unmerged"; exit 1
+          fi
+
+      - name: Collect the container console on failure
+        if: failure()
+        run: docker logs svz 2>&1 || true
+
+      - name: Tear down
+        if: always()
+        run: docker rm -f svz >/dev/null 2>&1 || true
+
+      - name: Report status (result)
+        if: always() && needs.resolve.outputs.sha != ''
+        continue-on-error: true
+        env:
+          GH_TOKEN: ${{ secrets.AGENT_REPO_TOKEN }}
+          TARGET: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+          JOB_STATUS: ${{ job.status }}
+        run: |
+          [ -z "$GH_TOKEN" ] && exit 0
+          STATE="success"; DESC="Passed"
+          if [ "$JOB_STATUS" != "success" ]; then STATE="failure"; DESC="Failed"; fi
+          curl -sf -X POST -H "Authorization: Bearer $GH_TOKEN" -H "Accept: application/vnd.github+json" \
+            "https://api.github.com/repos/${{ needs.resolve.outputs.source_repo }}/statuses/${{ needs.resolve.outputs.sha }}" \
+            -d "$(jq -nc --arg s "$STATE" --arg c "$CONTEXT" --arg d "$DESC" --arg u "$TARGET" '{state:$s, context:$c, description:$d, target_url:$u}')"
+
+  # NixOS 26.05 with systemd as PID 1, in a container. NixOS is not a
+  # distribution one installs a package into from outside: a system is a
+  # configuration. .github/nixos-leg/flake.nix is one, importing supervizio's
+  # flake the way its README says, overridden to the channel rendered here,
+  # with a specialisation that enables services.supervizio. It is built on
+  # the runner (Nix, pinned by the installer's sha256), and the container
+  # boots the BASE system -- NixOS's own stage 2 from the host's read-only
+  # store, as nixos-container runs one. Installing is switching to the
+  # specialisation (switch-to-configuration: NixOS's activation starts the
+  # unit it gained), removing is switching back.
+  #
+  # The container is started like every other systemd container leg here --
+  # no added capability, Docker's AppArmor profile, the host cgroup tree
+  # writable -- because candidate bytes run in it as root. What stock NixOS
+  # needs beyond that (nscd keeping CAP_SYS_ADMIN, dbus-broker, oomd, the
+  # setuid wrappers' tmpfs) is switched off in .github/nixos-leg/flake.nix,
+  # where each is explained; none of it is supervizio's. Measured on both
+  # runners before settling: stock NixOS here boots "degraded" and cannot
+  # switch ("Failed to open dbus connection"); it would take --cap-add
+  # SYS_ADMIN and AppArmor off, which gives container root a way to the runner.
+  e2e-linux-nixos-nix:
+    name: ${{ inputs.mode == 'release' && format('leg/linux/{0}/nixos-nix', matrix.arch) || format('E2E Linux {0} nixos-nix', matrix.arch) }}
+    needs: [resolve]
+    runs-on: ${{ matrix.arch == 'arm64' && 'ubuntu-26.04-arm' || 'ubuntu-26.04' }}
+    timeout-minutes: 40
+    strategy:
+      fail-fast: false
+      matrix:
+        arch: ${{ fromJSON(github.event.inputs.arm_only == 'true' && '["arm64"]' || '["amd64", "arm64"]') }}
+    env:
+      NIX_VERSION: "2.35.2"
+      # https://releases.nixos.org/nix/nix-2.35.2/install.sha256. The
+      # installer then checks the tarball it downloads against its own hashes.
+      # Not cachix/install-nix-action: it writes this job's GITHUB_TOKEN into
+      # a world-readable /etc/nix/nix.conf, which no release leg may hold.
+      NIX_INSTALLER_SHA256: 9adda97297d9e8ab360df95c729eabff4f4f93d6db091953c3a68f29e3fb130c
+      ARCH: ${{ matrix.arch }}
+      SYSTEM: ${{ matrix.arch == 'arm64' && 'aarch64-linux' || 'x86_64-linux' }}
+      CONTEXT: ${{ matrix.arch == 'arm64' && 'e2e/linux-arm64/nixos-nix' || 'e2e/vm/nixos-nix' }}
+    steps:
+      - name: Report status (pending)
+        if: needs.resolve.outputs.sha != ''
+        continue-on-error: true
+        env:
+          GH_TOKEN: ${{ secrets.AGENT_REPO_TOKEN }}
+          TARGET: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          [ -z "$GH_TOKEN" ] && exit 0
+          curl -sf -X POST -H "Authorization: Bearer $GH_TOKEN" -H "Accept: application/vnd.github+json" \
+            "https://api.github.com/repos/${{ needs.resolve.outputs.source_repo }}/statuses/${{ needs.resolve.outputs.sha }}" \
+            -d "$(jq -nc --arg c "$CONTEXT" --arg u "$TARGET" '{state:"pending", context:$c, description:"Running...", target_url:$u}')"
+
+      - name: Checkout agent code
+        if: inputs.mode != 'release'
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: ${{ needs.resolve.outputs.source_repo }}
+          ref: ${{ needs.resolve.outputs.ref }}
+          token: ${{ secrets.AGENT_REPO_TOKEN }}
+          persist-credentials: false
+
+      - name: Check out the release lane
+        if: inputs.mode == 'release'
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          path: .release-lane
+          persist-credentials: false
+
+      - name: Take the release candidate's files
+        if: inputs.mode == 'release'
+        uses: ./.release-lane/.github/actions/release-candidate
+        with:
+          dispatch: ${{ inputs.dispatch }}
+          policy: ${{ inputs.policy }}
+          kit-dir: .
+          files: |
+            supervizio-linux-amd64-musl bin
+            supervizio-linux-arm64-musl bin
+
+      - name: Download the amd64 static binary from the agent run (cross-repo)
+        if: inputs.mode != 'release'
+        uses: actions/download-artifact@70fc10c6e5e1ce46ad2ea6f2b72d43f7d47b13c3 # v8.0.0
+        with:
+          name: supervizio-linux-amd64-musl
+          path: bin
+          repository: ${{ needs.resolve.outputs.source_repo }}
+          run-id: ${{ needs.resolve.outputs.run_id }}
+          github-token: ${{ secrets.AGENT_REPO_TOKEN }}
+
+      - name: Download the arm64 static binary from the agent run (cross-repo)
+        if: inputs.mode != 'release'
+        uses: actions/download-artifact@70fc10c6e5e1ce46ad2ea6f2b72d43f7d47b13c3 # v8.0.0
+        with:
+          name: supervizio-linux-arm64-musl
+          path: bin
+          repository: ${{ needs.resolve.outputs.source_repo }}
+          run-id: ${{ needs.resolve.outputs.run_id }}
+          github-token: ${{ secrets.AGENT_REPO_TOKEN }}
+
+      # The leg's NixOS configuration lives in this repository.
+      - name: Check out the NixOS leg's configuration
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          path: .nixos-leg
+          sparse-checkout: .github/nixos-leg
+          persist-credentials: false
+
+      - name: Install Nix (pinned, checksum-verified)
+        run: |
+          set -euo pipefail
+          ok=0
+          for i in 1 2 3; do
+            if curl -fsSL "https://releases.nixos.org/nix/nix-${NIX_VERSION}/install" -o /tmp/nix-install; then ok=1; break; fi
+            echo "::warning::Nix installer download attempt $i failed; retrying"; sleep $((i * 5))
+          done
+          [ "$ok" = 1 ] || { echo "::error::Nix installer download failed after 3 attempts"; exit 1; }
+          echo "${NIX_INSTALLER_SHA256}  /tmp/nix-install" | sha256sum -c -
+          printf '%s\n' 'experimental-features = nix-command flakes' 'max-jobs = auto' > /tmp/nix.conf
+          sh /tmp/nix-install --daemon --yes --no-channel-add --nix-extra-conf-file /tmp/nix.conf
+          echo /nix/var/nix/profiles/default/bin >> "$GITHUB_PATH"
+
+      - name: Render the flake for the binaries under test
+        env:
+          MODE: ${{ inputs.mode }}
+          DISPATCH: ${{ inputs.dispatch }}
+        run: |
+          set -euo pipefail
+          if [ "$MODE" = release ]; then
+            TAG="$(printf '%s' "$DISPATCH" | jq -r .client_payload.candidate.tag)"
+          else
+            TAG=v0.0.0
+          fi
+          ls -l bin/
+          python3 setup/packaging/render-channels.py nix --tag "$TAG" --out channel \
+            --binary amd64=bin/supervizio-linux-amd64-musl --binary arm64=bin/supervizio-linux-arm64-musl
+          find channel -type f | sort
+          cat channel/sources.json
+
+      # The flake's hash fixes the store path of the binary it fetches: add
+      # the binary under test under the flake's name, and that path is valid
+      # before Nix looks. The leg proves it IS the package's source: a flake
+      # whose hash does not match these bytes names another path, which Nix
+      # would try to download -- from a URL that does not serve them.
+      - name: Put the binary under test where Nix would have fetched it to
+        run: |
+          set -euo pipefail
+          name="$(jq -r --arg s "$SYSTEM" '.binaries[$s].name' channel/sources.json)"
+          mkdir -p /tmp/seed
+          cp "bin/supervizio-linux-$ARCH-musl" "/tmp/seed/$name"
+          seeded="$(nix-store --add-fixed sha256 "/tmp/seed/$name")"
+          src="$(nix eval --raw --no-write-lock-file --override-input supervizio "path:$PWD/channel" \
+            "path:$PWD/.nixos-leg/.github/nixos-leg#nixosConfigurations.$SYSTEM.config.specialisation.supervizio.configuration.services.supervizio.package.src.outPath")"
+          echo "seeded:          $seeded"
+          echo "package source:  $src"
+          [ "$seeded" = "$src" ] || { echo "::error::the flake's source is $src, not the binary under test ($seeded)"; exit 1; }
+
+      - name: Build the NixOS system
+        run: |
+          set -euo pipefail
+          nix build --no-write-lock-file --override-input supervizio "path:$PWD/channel" \
+            "path:$PWD/.nixos-leg/.github/nixos-leg#nixosConfigurations.$SYSTEM.config.system.build.toplevel" \
+            -o nixos-system
+          top="$(readlink -f nixos-system)"
+          echo "TOP=$top" >> "$GITHUB_ENV"
+          echo "system: $top ($(nix path-info -Sh "$top" | awk '{print $2, $3}') with its closure)"
+
+      - name: Boot NixOS, systemd as PID 1
+        run: |
+          set -euo pipefail
+          tar -cf /tmp/empty.tar --files-from /dev/null
+          docker import /tmp/empty.tar svz-empty >/dev/null
+          # The root starts empty; stage 2 builds /etc and the rest from the
+          # store, which the host lends read-only. cgroup v2 writable, a tmpfs
+          # /run, as for every systemd container leg here; --network none, so
+          # nothing is fetched from here on.
+          docker run -d --name svz --network none -e container=docker \
+            --cgroupns=host -v /sys/fs/cgroup:/sys/fs/cgroup:rw --tmpfs /run --tmpfs /run/lock \
+            -v /nix/store:/nix/store:ro --entrypoint "$TOP/init" svz-empty >/dev/null
+          state=""
+          for _ in $(seq 1 60); do
+            [ "$(docker inspect -f '{{.State.Running}}' svz)" = true ] || break
+            state="$(timeout 10 docker exec -e PATH=/run/current-system/sw/bin svz systemctl is-system-running 2>/dev/null || true)"
+            case "$state" in running|degraded) break ;; esac
+            sleep 2
+          done
+          [ "$(docker inspect -f '{{.State.Running}}' svz)" = "true" ] || {
+            echo "::error::NixOS exited (code $(docker inspect -f '{{.State.ExitCode}}' svz))"
+            docker logs svz 2>&1 || true; exit 1; }
+          # An imported image carries no PATH: every exec names NixOS's.
+          pid1="$(docker exec -e PATH=/run/current-system/sw/bin svz cat /proc/1/comm)"
+          echo "PID 1 = $pid1, system $state, $(docker exec -e PATH=/run/current-system/sw/bin svz uname -m)"
+          [ "$pid1" = systemd ] || { echo "::error::PID 1 is '$pid1', expected systemd"; exit 1; }
+          case "$state" in running|degraded) ;; *) echo "::error::systemd never finished booting ($state)"; docker logs svz 2>&1 || true; exit 1 ;; esac
+          docker exec -e PATH=/run/current-system/sw/bin svz systemctl --failed --no-legend || true
+          docker exec -e PATH=/run/current-system/sw/bin svz grep PRETTY_NAME /etc/os-release
+
+      - name: Install through the module, validate, remove
+        run: |
+          set -euo pipefail
+          nx() { docker exec -e PATH=/run/current-system/sw/bin svz "$@"; }
+          nx mkdir -p /opt/svz
+          docker cp e2e/validate-probe.sh svz:/opt/svz/validate-probe.sh
+          docker cp e2e/scenario-battery.sh svz:/opt/svz/scenario-battery.sh
+          docker cp e2e/validate-detection.sh svz:/opt/svz/validate-detection.sh
+          docker cp e2e/expected-matrix.json svz:/opt/svz/expected-matrix.json
+
+          echo "=== Enable services.supervizio: switch to the specialisation ==="
+          nx /run/current-system/specialisation/supervizio/bin/switch-to-configuration test
+          nx systemctl is-active supervizio || { nx systemctl status supervizio --no-pager || true; echo "::error::supervizio.service is not active after the switch"; exit 1; }
+          svz="$(nx sh -c 'command -v supervizio')"
+          [ "$svz" = /run/current-system/sw/bin/supervizio ] || { echo "::error::supervizio is not on the system PATH ($svz)"; exit 1; }
+          # The store holds the binary under test, byte for byte.
+          want="$(sha256sum "bin/supervizio-linux-$ARCH-musl" | cut -d' ' -f1)"
+          # Single quotes on purpose, here and below: expanded in the container.
+          # shellcheck disable=SC2016
+          got="$(nx sh -c 'sha256sum "$(readlink -f /run/current-system/sw/bin/supervizio)"' | cut -d' ' -f1)"
+          [ "$got" = "$want" ] || { echo "::error::the installed supervizio is $got, the binary under test is $want"; exit 1; }
+          # The unit is the package's own supervizio.service, pointed at the
+          # store, and the module put Nix on its PATH for the inventory.
+          nx systemctl cat supervizio | grep -q '^ExecStart=/nix/store/.*/bin/supervizio --config /etc/supervizio/config.yaml$' || {
+            echo "::error::supervizio.service does not run the package's binary"; nx systemctl cat supervizio || true; exit 1; }
+          unitpath="$(nx systemctl show -p Environment supervizio | tr ' ' '\n' | sed -n 's/^PATH=//p')"
+          nx env PATH="$unitpath" /bin/sh -c 'command -v nix && command -v nix-store' || {
+            echo "::error::nix and nix-store are not on supervizio.service's PATH ($unitpath)"; exit 1; }
+          nx supervizio --version
+
+          echo "=== Validate probe ==="
+          nx sh -c 'supervizio --probe > /opt/svz/probe.json'
+          EMU=0
+          if ! nx sh -c 'grep -q "^cpu MHz" /proc/cpuinfo || test -r /sys/devices/system/cpu/cpu0/cpufreq/scaling_cur_freq || test -r /sys/devices/system/cpu/cpu0/cpufreq/cpuinfo_max_freq || test -r /sys/devices/system/cpu/cpu0/cpufreq/base_frequency' \
+             && [ "$(nx jq -r '.cpu.frequency_mhz.value' /opt/svz/probe.json)" = null ] \
+             && [ "$(nx jq -r '.cpu.frequency_mhz.kind // ""' /opt/svz/probe.json)" = ABSENT ]; then
+            EMU=1
+            echo "::notice::.cpu.frequency_mhz exempted on this host: $(nx jq -r '.cpu.frequency_mhz.detail' /opt/svz/probe.json)"
+          fi
+          docker exec -e PATH=/run/current-system/sw/bin -e SVZ_EMULATED_CPU="$EMU" svz sh /opt/svz/validate-probe.sh "$svz"
+
+          echo "=== Detection vs expected-matrix: nixos-container-$ARCH ==="
+          nx sh -c 'supervizio --inventory all > /opt/svz/inventory.json' \
+            || echo "::warning::--inventory all exited non-zero; validating the dump it wrote"
+          nx jq -c '.package_managers.data.managers[] | select(.available)' /opt/svz/inventory.json
+          nx sh /opt/svz/validate-detection.sh "nixos-container-$ARCH" /opt/svz/probe.json /opt/svz/inventory.json
+
+          echo "=== Supervision scenarios ==="
+          nx sh /opt/svz/scenario-battery.sh "$svz"
+
+          echo "=== Remove: switch back to the system without the module ==="
+          nx /run/booted-system/bin/switch-to-configuration test
+          if nx systemctl cat supervizio >/dev/null 2>&1; then
+            echo "::error::supervizio.service outlived the switch back"; exit 1
+          fi
+          if nx sh -c 'command -v supervizio' >/dev/null 2>&1; then
+            echo "::error::supervizio is still on the system PATH"; exit 1
+          fi
+          if nx pgrep -x supervizio >/dev/null; then
+            echo "::error::supervizio still runs after the switch back"; exit 1
+          fi
+
+      - name: Collect the container console on failure
+        if: failure()
+        run: |
+          docker logs svz 2>&1 | tail -200 || true
+          docker exec -e PATH=/run/current-system/sw/bin svz journalctl --no-pager -n 200 2>&1 || true
+
+      - name: Tear down
+        if: always()
+        run: docker rm -f svz >/dev/null 2>&1 || true
+
+      - name: Report status (result)
+        if: always() && needs.resolve.outputs.sha != ''
+        continue-on-error: true
+        env:
+          GH_TOKEN: ${{ secrets.AGENT_REPO_TOKEN }}
+          TARGET: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+          JOB_STATUS: ${{ job.status }}
+        run: |
+          [ -z "$GH_TOKEN" ] && exit 0
+          STATE="success"; DESC="Passed"
+          if [ "$JOB_STATUS" != "success" ]; then STATE="failure"; DESC="Failed"; fi
+          curl -sf -X POST -H "Authorization: Bearer $GH_TOKEN" -H "Accept: application/vnd.github+json" \
+            "https://api.github.com/repos/${{ needs.resolve.outputs.source_repo }}/statuses/${{ needs.resolve.outputs.sha }}" \
+            -d "$(jq -nc --arg s "$STATE" --arg c "$CONTEXT" --arg d "$DESC" --arg u "$TARGET" '{state:$s, context:$c, description:$d, target_url:$u}')"
+
+  # ===========================================================================
   # E2E LINUX arm64 — the same nine init systems, on a real aarch64 machine
   # ===========================================================================
   #
@@ -5526,6 +6109,7 @@ jobs:
     needs: [resolve, e2e-docker-amd64, e2e-docker-arm64, e2e-macos, e2e-macos-arm64, e2e-linux-artix-dinit, e2e-linux-debian-sysvinit, e2e-windows-amd64, e2e-windows-arm64,
              e2e-linux-alpine-openrc, e2e-linux-debian-systemd, e2e-linux-rocky-systemd, e2e-linux-opensuse-zypper, e2e-linux-arch-pacman,
              e2e-linux-alpine-runit, e2e-linux-alpine-s6, e2e-linux-void-xbps,
+             e2e-linux-gentoo-portage, e2e-linux-nixos-nix,
              arm64-packages, e2e-linux-arm64, e2e-linux-exotic,
              e2e-bsd-freebsd-amd64, e2e-bsd-netbsd-amd64, e2e-bsd-openbsd-amd64,
              e2e-bsd-freebsd-arm64, e2e-bsd-netbsd-arm64, e2e-bsd-openbsd-arm64]
@@ -5561,6 +6145,11 @@ jobs:
             "linux-alpine-runit=${{ needs.e2e-linux-alpine-runit.result }}"
             "linux-alpine-s6=${{ needs.e2e-linux-alpine-s6.result }}"
             "linux-void-xbps=${{ needs.e2e-linux-void-xbps.result }}"
+            # Gentoo through the overlay and NixOS through the flake: each a
+            # matrix of amd64 and arm64, arriving as ONE result -- `failure`
+            # if either arch failed.
+            "linux-gentoo-portage=${{ needs.e2e-linux-gentoo-portage.result }}"
+            "linux-nixos-nix=${{ needs.e2e-linux-nixos-nix.result }}"
             # The ten arm64 Linux legs are one matrix job, so they arrive as
             # one result here -- a matrix is `failure` if any of its entries
             # is. `arm64-packages` is listed beside it because it is what
