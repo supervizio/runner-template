@@ -68,6 +68,13 @@ jobs:
       run_id: ${{ steps.resolve.outputs.run_id }}
       sha: ${{ steps.resolve.outputs.sha }}
       source_repo: ${{ steps.resolve.outputs.source_repo }}
+      # Merge lane only: `false` when the agent run carries no illumos (or no
+      # Solaris) binary and package, so that leg is skipped rather than failed.
+      # agent builds them (package-solarish) only for a pull request touching
+      # its .github/solarish-paths.txt, and on every release. Empty -- no
+      # token to list with, release mode -- never skips anything.
+      illumos: ${{ steps.artifacts.outputs.illumos }}
+      solaris: ${{ steps.artifacts.outputs.solaris }}
     steps:
       - name: Resolve dispatch parameters
         id: resolve
@@ -148,6 +155,7 @@ jobs:
       #
       # `needs: [resolve]` means a failure here skips the whole matrix instead.
       - name: Check the agent run actually produced artifacts
+        id: artifacts
         if: inputs.mode != 'release'
         env:
           GH_TOKEN: ${{ secrets.AGENT_REPO_TOKEN }}
@@ -191,9 +199,25 @@ jobs:
           if ! printf '%s\n' "$names" | grep -qx 'supervizio-amd64.xbps'; then
             echo "::warning::no supervizio-amd64.xbps in run $SRC_RUN - both void-xbps legs will fail. Its producer is agent's packages-xbps job."
           fi
+          # Not a failure either way: agent builds illumos and Solaris
+          # (package-solarish) only when a pull request touches its
+          # .github/solarish-paths.txt, and its CI Summary is what judges that
+          # job. A kernel whose binary AND package are here runs its leg; one
+          # with neither is skipped (`<p>=false`), and the report reads that
+          # skip as "not built" rather than as a failure. Half a pair is a
+          # broken producer: the leg runs and fails on the missing half.
           for p in illumos solaris; do
-            if ! printf '%s\n' "$names" | grep -qx "supervizio-$p-amd64-pkg"; then
-              echo "::warning::no supervizio-$p-amd64-pkg in run $SRC_RUN - e2e-$p-amd64 will fail. Its producer is agent's package-solarish job (solarish-package.yml)."
+            bin=false; pkg=false
+            printf '%s\n' "$names" | grep -qx "supervizio-$p-amd64" && bin=true
+            printf '%s\n' "$names" | grep -qx "supervizio-$p-amd64-pkg" && pkg=true
+            if [ "$bin" = false ] && [ "$pkg" = false ]; then
+              echo "::notice::no $p binary or package in run $SRC_RUN: agent did not build $p for this change (package-solarish runs when a pull request touches its .github/solarish-paths.txt) -- e2e-$p-amd64 is skipped"
+              echo "$p=false" >> "$GITHUB_OUTPUT"
+            else
+              if [ "$bin" != "$pkg" ]; then
+                echo "::warning::run $SRC_RUN carries only one of supervizio-$p-amd64 and supervizio-$p-amd64-pkg - e2e-$p-amd64 will fail on the other. Its producer is agent's package-solarish job (solarish-package.yml)."
+              fi
+              echo "$p=true" >> "$GITHUB_OUTPUT"
             fi
           done
           # Advisory too: the gentoo-portage and nixos-nix legs render their
@@ -6117,12 +6141,18 @@ jobs:
   # detection matrix (omnios-amd64 / solaris-amd64) and an SMF cycle
   # (disable, enable, SIGKILL -> restarted) run on the first, the supervision
   # battery once. amd64 only: agent builds nothing else for these kernels.
+  #
+  # Release mode ALWAYS runs both legs (required by policy.json). The merge
+  # lane skips a leg only when resolve positively found neither artifact of
+  # its kernel in the agent run: agent builds them only for a pull request
+  # touching its .github/solarish-paths.txt. The report reads that skip as
+  # `not-built`, and any other skip as a failure.
   e2e-illumos-amd64:
     name: ${{ inputs.mode == 'release' && 'leg/illumos/amd64' || 'E2E illumos amd64 (OmniOS)' }}
     needs: [resolve]
     runs-on: ubuntu-26.04
     timeout-minutes: 45
-    if: ${{ github.event.inputs.arm_only != 'true' }}
+    if: ${{ github.event.inputs.arm_only != 'true' && (inputs.mode == 'release' || needs.resolve.outputs.illumos != 'false') }}
     steps:
       - name: Report status (pending)
         if: needs.resolve.outputs.sha != ''
@@ -6247,7 +6277,7 @@ jobs:
     needs: [resolve]
     runs-on: ubuntu-26.04
     timeout-minutes: 45
-    if: ${{ github.event.inputs.arm_only != 'true' }}
+    if: ${{ github.event.inputs.arm_only != 'true' && (inputs.mode == 'release' || needs.resolve.outputs.solaris != 'false') }}
     steps:
       - name: Report status (pending)
         if: needs.resolve.outputs.sha != ''
@@ -6397,6 +6427,11 @@ jobs:
           # the loop.
           NEEDS_JSON: ${{ toJSON(needs) }}
         run: |
+          # not_built RESULT BUILT: a leg skipped because resolve found no
+          # artifact of its kernel reads `not-built`; anything else is itself.
+          not_built() {
+            if [ "$1" = skipped ] && [ "$2" = false ]; then echo not-built; else echo "$1"; fi
+          }
           LEGS=(
             "docker-amd64=${{ needs.e2e-docker-amd64.result }}"
             "docker-arm64=${{ needs.e2e-docker-arm64.result }}"
@@ -6444,13 +6479,17 @@ jobs:
             # openbsd-arm64 is a release matrix, so it arrives as ONE result:
             # `failure` if either release cell failed.
             "bsd-openbsd-arm64=${{ needs.e2e-bsd-openbsd-arm64.result }}"
-            "illumos-amd64=${{ needs.e2e-illumos-amd64.result }}"
-            "solaris-amd64=${{ needs.e2e-solaris-amd64.result }}"
+            # Skipped by their `if:` when agent built no illumos/Solaris
+            # artifact for this change (resolve said `false`): recorded as
+            # `not-built`, which passes. Any other skip still fails.
+            "illumos-amd64=$(not_built '${{ needs.e2e-illumos-amd64.result }}' '${{ needs.resolve.outputs.illumos }}')"
+            "solaris-amd64=$(not_built '${{ needs.e2e-solaris-amd64.result }}' '${{ needs.resolve.outputs.solaris }}')"
           )
 
           echo "=== E2E Results ==="
           BAD=0
           OFFENDERS=""
+          NOT_BUILT=""
           for entry in "${LEGS[@]}"; do
             leg="${entry%%=*}"
             res="${entry#*=}"
@@ -6461,7 +6500,12 @@ jobs:
             # ran counted as fine. An `arm_only` dispatch skips 11 of these 12
             # and still produced a green `e2e/runner-template` on the agent SHA:
             # a verdict asserting the artifact was validated on twelve platforms
-            # when it ran on one.
+            # when it ran on one. `not-built` is the one exception, and only the
+            # illumos/Solaris legs can carry it (see not_built above).
+            if [ "$res" = not-built ]; then
+              NOT_BUILT="${NOT_BUILT}${leg} "
+              continue
+            fi
             if [ "$res" != "success" ]; then
               BAD=$((BAD + 1))
               OFFENDERS="${OFFENDERS}${leg}:${res} "
@@ -6506,10 +6550,17 @@ jobs:
             echo "VERDICT: failure — $BAD of ${#LEGS[@]} legs did not succeed"
             echo "  $OFFENDERS"
           else
+            RAN=$(( ${#LEGS[@]} - $(printf '%s' "$NOT_BUILT" | wc -w) ))
             echo "state=success" >> "$GITHUB_OUTPUT"
-            echo "description=All ${#LEGS[@]} E2E legs passed" >> "$GITHUB_OUTPUT"
-            echo ""
-            echo "VERDICT: success — all ${#LEGS[@]} legs passed"
+            if [ -n "$NOT_BUILT" ]; then
+              echo "description=All $RAN E2E legs that had a build passed (not built for this change: ${NOT_BUILT% })" >> "$GITHUB_OUTPUT"
+              echo ""
+              echo "VERDICT: success — all $RAN legs passed; not built for this change, so not run: ${NOT_BUILT% }"
+            else
+              echo "description=All ${#LEGS[@]} E2E legs passed" >> "$GITHUB_OUTPUT"
+              echo ""
+              echo "VERDICT: success — all ${#LEGS[@]} legs passed"
+            fi
           fi
 
       - name: Report final status

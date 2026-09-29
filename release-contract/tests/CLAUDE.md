@@ -1,4 +1,4 @@
-<!-- updated: 2026-09-29T00:00:00Z -->
+<!-- updated: 2026-09-29T12:00:00Z -->
 # release-contract/tests/
 
 `python3 -m unittest discover -s release-contract/tests`, run by
@@ -14,6 +14,13 @@
 
 A leg added to `policy.json` changes the counts `ShippedPolicy` and `LegMatrix`
 assert: both move in the same change.
+
+`SolarishLegsInReleaseMode` ties agent's illumos and Solaris legs to
+`e2e.yml`: the merge lane may skip them when the agent run built neither
+kernel, so it reads each leg's `if:` (parsed, never executed) and asserts that
+release mode runs both whatever the artifact check found, that the merge lane
+skips only on a positive `false`, that those outputs come from the merge-lane
+pre-check alone, and that `report` excuses those two legs and no other.
 
 Two guards tie the libprobe harness to the workflow: every libprobe leg's
 platform must match a `case` arm of `harness/libprobe/run.sh`, and every guest

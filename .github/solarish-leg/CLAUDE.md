@@ -1,4 +1,4 @@
-<!-- updated: 2026-09-29T03:41:17Z -->
+<!-- updated: 2026-09-29T12:00:00Z -->
 # .github/solarish-leg/
 
 `in-guest.sh` is what `e2e.yml`'s `e2e-illumos-amd64` (OmniOS r151054) and
@@ -29,6 +29,12 @@ What it asserts, in order:
    actuator must have registered the service and it must be `running`, and
    `uninstall.sh`
    (`pkg uninstall`) must leave nothing behind.
+
+In the merge lane both legs run only when the agent run built their kernel:
+agent builds illumos/Solaris for a pull request that touches their paths, and
+for every release. With neither artifact the leg is skipped and `report` reads
+`not-built` (`../workflows/CLAUDE.md`, "When they run"). In release mode they
+always run.
 
 POSIX `sh`: the guests' `/bin/sh` is ksh93, and ksh93 remembers which PATH
 directories did not exist when PATH was set -- set PATH after installing

@@ -115,6 +115,20 @@ the 26.04 labels yet; `.github/actionlint.yaml` lists them.
   `go.work`, `.dockerignore`), never agent's sources. Status contexts
   `e2e/illumos/omnios-amd64`, `e2e/solaris/amd64`.
 
+  **When they run.** agent builds these two kernels (about 26 hosted minutes
+  of a private repository) on every release, but for a pull request only when
+  it touches the paths agent lists in its `.github/solarish-paths.txt`. So in
+  the merge lane `resolve` reads the agent run's artifact list: a kernel with
+  neither its binary nor its `-pkg` there gets `illumos=false` /
+  `solaris=false`, its leg is skipped by its `if:`, posts no status, and
+  `report` records it as `not-built`, which passes (the aggregate description
+  names it). Every other skip is still a failure, and a kernel with half its
+  pair runs and fails on the missing half. No token to list the run with
+  leaves the output empty: the legs run. Release mode never consults any of
+  this -- both legs always run, and `validate-release.yml` judges them as
+  required legs. `SolarishLegsInReleaseMode` in
+  `release-contract/tests/test_release_contract.py` pins all three rules.
+
 ## Upstream images: pinned hash or signature
 
 A VM leg boots an upstream cloud image and gives it a root shell, so the image
@@ -202,7 +216,10 @@ dispatch body, the policy, and **no `secrets:`** — every secret reads empty in
 the called workflow, and nothing in release mode needs one:
 
 - `resolve` outputs an empty `sha`, so every status step (gated on
-  `sha != ''`) is skipped; `report` does not run.
+  `sha != ''`) is skipped; `report` does not run. Nor does its artifact
+  pre-check, so `illumos`/`solaris` are empty and the illumos and Solaris legs
+  run whatever the merge lane would have skipped (their `if:` also says
+  `inputs.mode == 'release' ||` first).
 - Each leg skips `Checkout agent code` and its `actions/download-artifact`
   step(s), and instead checks this repository out to `.release-lane` and runs
   `.github/actions/release-candidate`: `bridge pull` of the leg's assets, the

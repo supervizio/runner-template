@@ -10,6 +10,7 @@ Run: python3 -m unittest discover -s release-contract/tests -v
 
 from __future__ import annotations
 
+import ast
 import base64
 import copy
 import fnmatch
@@ -1112,6 +1113,86 @@ class CalledWorkflowLegs(unittest.TestCase):
             with self.subTest(name):
                 jobs = [{"name": name, "status": "completed", "conclusion": "success"}]
                 self.assertEqual(rc.results_from_jobs(jobs, ["macos/arm64"]), {"macos/arm64": "missing"})
+
+
+class SolarishLegsInReleaseMode(unittest.TestCase):
+    """agent builds illumos and Solaris for a pull request only when it touches
+    their paths, so e2e.yml's merge lane skips those two legs when the agent run
+    carries neither artifact. A release must run them regardless: they are
+    required legs, and a skip there would leave the receipt without them."""
+
+    LEGS = (("e2e-illumos-amd64", "illumos/amd64", "illumos"), ("e2e-solaris-amd64", "solaris/amd64", "solaris"))
+
+    @classmethod
+    def setUpClass(cls):
+        with open(os.path.join(ROOT, os.pardir, ".github", "workflows", "e2e.yml"), encoding="utf-8") as fh:
+            cls.workflow = fh.read()
+
+    def job(self, name):
+        found = re.search(rf"^  {re.escape(name)}:\n(.*?)(?=^  [A-Za-z0-9_-]+:\n|\Z)", self.workflow, re.M | re.S)
+        self.assertIsNotNone(found, name)
+        return found.group(1)
+
+    @classmethod
+    def runs(cls, condition, arm_only, mode, built, kernel):
+        # The condition is `==`/`!=` over quoted strings joined by `&&`/`||`
+        # with parentheses. Rewritten into that Python subset, parsed, and
+        # walked -- never executed. Anything richer (a function call, a bare
+        # `!`) is refused, and so fails the test: read the new condition by hand.
+        expr = condition.replace("&&", " and ").replace("||", " or ")
+        for name, value in ((f"needs.resolve.outputs.{kernel}", built),
+                            ("github.event.inputs.arm_only", arm_only),
+                            ("inputs.mode", mode)):
+            expr = expr.replace(name, repr(value))
+        return cls.walk(ast.parse(expr, mode="eval").body)
+
+    @classmethod
+    def walk(cls, node):
+        if isinstance(node, ast.BoolOp) and isinstance(node.op, (ast.And, ast.Or)):
+            values = [cls.walk(v) for v in node.values]
+            return all(values) if isinstance(node.op, ast.And) else any(values)
+        if (isinstance(node, ast.Compare) and len(node.ops) == 1 and isinstance(node.ops[0], (ast.Eq, ast.NotEq))
+                and all(isinstance(side, ast.Constant) and isinstance(side.value, str) for side in (node.left, *node.comparators))):
+            equal = node.left.value == node.comparators[0].value
+            return equal if isinstance(node.ops[0], ast.Eq) else not equal
+        raise AssertionError(f"not a condition this test can read: {ast.dump(node)}")
+
+    def test_release_mode_runs_both_legs_whatever_the_merge_lane_found(self):
+        required = rc.required_legs(POLICY, AGENT)
+        for job, leg, kernel in self.LEGS:
+            block = self.job(job)
+            condition = re.search(r"^    if: \$\{\{ (.*) \}\}$", block, re.M).group(1)
+            with self.subTest(leg=leg):
+                self.assertIn(leg, required)
+                self.assertIn(f"'leg/{leg}'", block)
+                for built in ("true", "false", ""):
+                    self.assertTrue(self.runs(condition, "", "release", built, kernel), built)
+
+    def test_the_merge_lane_skips_only_on_a_positive_not_built(self):
+        for job, leg, kernel in self.LEGS:
+            condition = re.search(r"^    if: \$\{\{ (.*) \}\}$", self.job(job), re.M).group(1)
+            with self.subTest(leg=leg):
+                self.assertFalse(self.runs(condition, "", "", "false", kernel))
+                # Found, or never looked (no token to list the run with): runs.
+                self.assertTrue(self.runs(condition, "", "", "true", kernel))
+                self.assertTrue(self.runs(condition, "", "", "", kernel))
+
+    def test_the_not_built_outputs_come_from_the_merge_lane_alone(self):
+        resolve = self.job("resolve")
+        for _, _, kernel in self.LEGS:
+            with self.subTest(kernel=kernel):
+                self.assertIn(f"{kernel}: ${{{{ steps.artifacts.outputs.{kernel} }}}}", resolve)
+        step = re.search(r"- name: Check the agent run actually produced artifacts\n\s+id: artifacts\n\s+if: (.*)\n", resolve)
+        self.assertIsNotNone(step)
+        self.assertEqual(step.group(1), "inputs.mode != 'release'")
+
+    def test_the_report_excuses_those_two_legs_and_no_other(self):
+        report = self.job("report")
+        excused = re.findall(r'^\s+"([a-z0-9-]+)=\$\(not_built ', report, re.M)
+        self.assertEqual(sorted(excused), ["illumos-amd64", "solaris-amd64"])
+        # The report never runs in release mode: validate-release.yml judges
+        # the leg jobs themselves, where a skip is `missing`.
+        self.assertIn("if: always() && inputs.mode != 'release'", report)
 
 
 class _Registry(http.server.BaseHTTPRequestHandler):
