@@ -196,7 +196,7 @@ one exception to "nothing private goes in it", and it is fenced:
   copy-back; libprobe's report directory is reduced to its status file.
   Uploads: agent's binary and `.p5p`; for libprobe, nothing.
 - **Nothing stays**: the private side deletes the run as soon as it has what it
-  needs (cancelling it first if it is still running). Three-day artifact
+  needs (cancelling it first if it is still running). One-day artifact
   retention is only a net.
 - `_PrivateSourceWorkflow`, `AgentSolarishGuardRails` and
   `LibprobeSolarishGuardRails` in `release-contract/tests/test_release_contract.py`

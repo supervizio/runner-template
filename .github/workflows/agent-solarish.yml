@@ -34,7 +34,7 @@ name: Agent illumos and Solaris
 #     `=== <stage>` markers and the verdict. The build logs the script keeps
 #     are removed before copy-back. Only the binary and the .p5p are uploaded.
 #   * The run does not outlive its use: agent deletes it right after
-#     downloading, success or not; the three-day artifact retention is a net.
+#     downloading, success or not; the one-day artifact retention is a net.
 # =============================================================================
 
 run-name: agent-solarish ${{ github.event.client_payload.request_id || inputs.request_id }}
@@ -216,7 +216,7 @@ jobs:
         with:
           name: supervizio-${{ matrix.platform }}
           path: artifacts/bin/supervizio-${{ matrix.platform }}
-          retention-days: 3
+          retention-days: 1
           if-no-files-found: error
 
       - name: Upload the package
@@ -224,5 +224,5 @@ jobs:
         with:
           name: supervizio-${{ matrix.platform }}-pkg
           path: artifacts/pkg/
-          retention-days: 3
+          retention-days: 1
           if-no-files-found: error
