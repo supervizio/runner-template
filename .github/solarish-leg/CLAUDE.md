@@ -1,4 +1,4 @@
-<!-- updated: 2026-09-29T12:00:00Z -->
+<!-- updated: 2026-09-30T00:00:00Z -->
 # .github/solarish-leg/
 
 `in-guest.sh` is what `e2e.yml`'s `e2e-illumos-amd64` (OmniOS r151054) and
@@ -41,3 +41,15 @@ directories did not exist when PATH was set -- set PATH after installing
 anything into a new directory. `/usr/gnu/bin` comes first for the GNU tools
 agent's scripts expect on Solaris. `envs:` names the environment the script
 reads (`SVZ_KEY`, `SVZ_OS`): ssh forwards nothing else.
+
+## libprobe-tests.sh
+
+What `libprobe-solarish.yml` runs in its OmniOS and Solaris guests: the bundle
+libprobe cross-built on its own runner (`bin/` and `plan.txt`, no source),
+stage by stage. Plan lines are `run <stage> <binary> [args]`, `report <stage>
+<binary> [args]` (stdout kept as `<stage>.json`) and `abi <stage> <checker>
+<binary> [args]` (the binary's output fed to the checker). Every stage's
+output goes to `<report>/<stage>.log`, which the workflow uploads for one day;
+the console gets `=== ` lines only. Every command reads `/dev/null`, never the
+plan being read; the plan's words are split, never globbed. POSIX `sh`, exits
+0, verdict in `<report>/status`.

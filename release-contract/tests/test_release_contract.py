@@ -1129,6 +1129,7 @@ class AgentPackagesGuardRails(unittest.TestCase):
         "supervizio-openbsd-amd64-pkg", "supervizio-openbsd-arm64-pkg",
         "supervizio-macos-amd64-pkg", "supervizio-macos-arm64-pkg",
         "supervizio-windows-choco",
+        "supervizio-illumos-amd64-pkg", "supervizio-solaris-amd64-pkg",
     }
 
     @classmethod
@@ -1171,8 +1172,9 @@ class AgentPackagesGuardRails(unittest.TestCase):
         for name, job in self.jobs.items():
             for block in re.findall(r"sparse-checkout: \|\n((?:\s{12}\S.*\n)+)", job):
                 paths = {p.strip() for p in block.splitlines()}
-                allowed = {"/setup/", "/setup/init/windows/", "/examples/config.yaml",
-                           "/e2e/test-install.ps1", "/.github/scripts/bsd-package-in-guest.sh"}
+                allowed = {"/setup/", "/setup/init/windows/", "/examples/config.yaml", "/LICENSE",
+                           "/e2e/test-install.ps1", "/.github/scripts/bsd-package-in-guest.sh",
+                           "/.github/scripts/solarish-package-in-guest.sh"}
                 self.assertLessEqual(paths, allowed, name)
             checkouts = self.code(job).count("uses: actions/checkout@")
             self.assertEqual(checkouts, self.code(job).count("sparse-checkout-cone-mode: false"), name)
@@ -1185,6 +1187,133 @@ class AgentPackagesGuardRails(unittest.TestCase):
     def test_artifact_names(self):
         names = set(re.findall(r'"pkg_artifact":"([^"]+)"', self.workflow))
         self.assertEqual(names, self.ARTIFACTS)
+
+
+class AgentSolarishPackaging(unittest.TestCase):
+    """agent's illumos and Solaris packages come from agent-packages.yml, from
+    binaries agent cross-built on its own runner: no job here compiles, and
+    the guest gets binaries and the packaging tree only."""
+
+    @classmethod
+    def setUpClass(cls):
+        with open(AgentPackagesGuardRails.PATH, encoding="utf-8") as fh:
+            cls.workflow = fh.read()
+        body = cls.workflow.partition("\njobs:\n")[2]
+        cls.jobs = dict(re.findall(r"^  ([A-Za-z0-9_-]+):\n(.*?)(?=^  [A-Za-z0-9_-]+:\n|\Z)", body, re.M | re.S))
+
+    def test_both_kernels_are_packaged_from_downloaded_binaries(self):
+        admit = self.jobs["admit"]
+        for platform, os_, release in (("illumos-amd64", "omnios", "r151054"), ("solaris-amd64", "solaris", "11.4")):
+            with self.subTest(platform=platform):
+                entry = re.search(r'\{"platform":"%s"[^}]*\}' % platform, admit)
+                self.assertIsNotNone(entry)
+                self.assertIn(f'"os":"{os_}"', entry.group(0))
+                self.assertIn(f'"release":"{release}"', entry.group(0))
+                self.assertIn(f'"artifact":"supervizio-{platform}"', entry.group(0))
+                self.assertIn(f'"tests_artifact":"solarish-tests-{platform}"', entry.group(0))
+        job = self.jobs["solarish"]
+        self.assertEqual(job.count("uses: actions/download-artifact@"), 2)
+        self.assertNotRegex(job, r"\bgo (build|test)\b|cargo |go\.dev/dl")
+
+    def test_the_guests_run_agents_packaging_script_and_only_packages_leave(self):
+        job = self.jobs["solarish"]
+        runs = re.findall(r"^\s+run: (.+)$", job, re.M)
+        guest = [r for r in runs if "solarish-package-in-guest.sh" in r]
+        self.assertEqual(guest, ["sh .github/scripts/solarish-package-in-guest.sh"] * 2)
+        self.assertEqual(set(re.findall(r"retention-days: (\d+)", job)), {"1"})
+        self.assertEqual(set(re.findall(r"uses: actions/upload-artifact@.*?\n(?:\s+.*\n)*?\s+path: (\S+)", job)), {"artifacts/pkg/"})
+
+
+class LibprobeSolarishGuardRails(unittest.TestCase):
+    """libprobe-solarish.yml is public and holds a credential to libprobe. It
+    downloads a bundle of binaries and a plan, never a checkout of libprobe,
+    and answers with its conclusion and a one-day report."""
+
+    PATH = os.path.join(ROOT, os.pardir, ".github", "workflows", "libprobe-solarish.yml")
+
+    @classmethod
+    def setUpClass(cls):
+        with open(cls.PATH, encoding="utf-8") as fh:
+            cls.workflow = fh.read()
+        head, _, body = cls.workflow.partition("\njobs:\n")
+        cls.head = head
+        cls.jobs = dict(re.findall(r"^  ([A-Za-z0-9_-]+):\n(.*?)(?=^  [A-Za-z0-9_-]+:\n|\Z)", body, re.M | re.S))
+
+    def code(self, text):
+        return "\n".join(line.split(" #", 1)[0] for line in text.splitlines() if not line.lstrip().startswith("#"))
+
+    def test_only_trusted_triggers(self):
+        on = re.search(r"^on:\n(.*?)(?=^\S)", self.head, re.M | re.S).group(1)
+        self.assertEqual(set(re.findall(r"^  ([a-z_]+):", on, re.M)), {"repository_dispatch", "workflow_dispatch"})
+        self.assertNotIn("pull_request", self.code(self.workflow))
+
+    def test_the_token_lives_in_the_environment_only(self):
+        self.assertEqual(set(re.findall(r"secrets\.([A-Za-z0-9_]+)", self.code(self.workflow))), {"CI_APP_PRIVATE_KEY"})
+        for name, job in self.jobs.items():
+            uses_token = "secrets.CI_APP_PRIVATE_KEY" in self.code(job)
+            self.assertEqual(uses_token, re.search(r"^    environment: private-source$", job, re.M) is not None, name)
+        # libprobe alone, and nothing but reading its artifacts.
+        guest = self.code(self.jobs["guest"])
+        self.assertIn("repositories: libprobe\n", guest)
+        self.assertEqual(re.findall(r"permission-([a-z-]+): (\w+)", guest), [("actions", "read")])
+
+    def test_admit_holds_nothing_and_gates_everything(self):
+        self.assertNotIn("secrets.", self.code(self.jobs["admit"]))
+        self.assertNotIn("environment:", self.jobs["admit"])
+        for name, job in self.jobs.items():
+            if name != "admit":
+                self.assertIsNotNone(re.search(r"^    needs: \[admit\]$", job, re.M), name)
+
+    def test_libprobe_is_never_checked_out(self):
+        code = self.code(self.workflow)
+        # The one checkout is this repository's own (the guest script).
+        for step in re.findall(r"uses: actions/checkout@[^\n]*\n((?:\s{10}\S.*\n|\s{12,}.*\n)*)", code):
+            self.assertNotIn("repository:", step)
+        self.assertEqual(code.count("repository: supervizio/libprobe"), 1)  # the download, only
+        self.assertRegex(code, r"uses: actions/download-artifact@[^\n]*\n(?:\s+.*\n)*?\s+repository: supervizio/libprobe")
+        self.assertNotRegex(code, r"\bcargo |rustup|go build")
+
+    def test_the_bundle_is_checked_before_a_guest_boots(self):
+        job = self.code(self.jobs["guest"])
+        check = job.index("unexpected files in the bundle")
+        self.assertLess(check, job.index("uses: vmactions/omnios-vm@"))
+        self.assertLess(check, job.index("uses: vmactions/solaris-vm@"))
+
+    def test_only_the_report_leaves_for_one_day(self):
+        paths = re.findall(r"uses: actions/upload-artifact@.*?\n(?:\s+.*\n)*?\s+path: (\S+)", self.workflow)
+        self.assertEqual(paths, ["libprobe-out/"])
+        self.assertEqual(set(re.findall(r"retention-days: (\d+)", self.workflow)), {"1"})
+
+
+class NoReleaseWithoutIllumosAndSolaris(unittest.TestCase):
+    """Neither repository can release without both kernels: agent's two legs
+    (the raw binary and the IPS archive under SMF) and libprobe's two ABI legs
+    are required, gating, and in every matrix a dispatch is checked against."""
+
+    LEGS = {
+        AGENT: ("illumos/amd64", "solaris/amd64"),
+        LIBPROBE: ("solarish/illumos-amd64", "solarish/solaris-amd64"),
+    }
+
+    def test_the_legs_are_required_and_gating(self):
+        for repo, ids in self.LEGS.items():
+            legs = {leg["id"]: leg for leg in POLICY["repositories"][repo]["legs"]}
+            for leg_id in ids:
+                with self.subTest(repo=repo, leg=leg_id):
+                    self.assertIn(leg_id, legs)
+                    self.assertEqual(legs[leg_id]["state"], "required")
+                    self.assertEqual(legs[leg_id]["merge_ci"], "gating")
+
+    def test_a_dispatch_that_omits_one_is_refused(self):
+        for repo, ids in self.LEGS.items():
+            for leg_id in ids:
+                with self.subTest(repo=repo, leg=leg_id):
+                    self.assertIn(leg_id, rc.required_legs(POLICY, repo))
+                    body = dispatch_body(repo)
+                    body["client_payload"]["required_matrix"] = [
+                        x for x in body["client_payload"]["required_matrix"] if x != leg_id]
+                    with self.assertRaisesRegex(rc.ContractError, "omits leg"):
+                        rc.validate_dispatch(body, POLICY)
 
 
 class _E2eWorkflowReader:

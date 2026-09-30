@@ -25,6 +25,8 @@ on:
       - ".github/workflows/agent-packages.yml"
       - ".github/workflows/external-e2e.yml"
       - ".github/workflows/validate-release-doorbell.yml"
+      - ".github/workflows/libprobe-solarish.yml"
+      - ".github/solarish-leg/**"
   push:
     branches: [main]
     paths:
@@ -35,6 +37,8 @@ on:
       - ".github/workflows/agent-packages.yml"
       - ".github/workflows/external-e2e.yml"
       - ".github/workflows/validate-release-doorbell.yml"
+      - ".github/workflows/libprobe-solarish.yml"
+      - ".github/solarish-leg/**"
   workflow_dispatch:
 
 permissions:
