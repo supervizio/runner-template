@@ -23,6 +23,8 @@ on:
       - ".github/workflows/e2e.yml"
       - ".github/scripts/**"
       - ".github/workflows/agent-packages.yml"
+      - ".github/workflows/external-e2e.yml"
+      - ".github/workflows/validate-release-doorbell.yml"
   push:
     branches: [main]
     paths:
@@ -31,6 +33,8 @@ on:
       - ".github/workflows/e2e.yml"
       - ".github/scripts/**"
       - ".github/workflows/agent-packages.yml"
+      - ".github/workflows/external-e2e.yml"
+      - ".github/workflows/validate-release-doorbell.yml"
   workflow_dispatch:
 
 permissions:
