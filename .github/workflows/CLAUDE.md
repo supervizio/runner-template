@@ -15,11 +15,11 @@ of it is what anyone works on.
 
 | File | Trigger | What it does |
 |------|---------|--------------|
-| `e2e.yml` | `repository_dispatch[run-e2e]`, `workflow_dispatch`, `workflow_call` | **agent's** E2E matrix — Docker, Linux guests, BSD, illumos, Solaris, Windows, macOS. Merge lane: installs the packages the agent run published and reports `e2e/*` commit statuses back to that SHA. Release mode (`workflow_call` from `validate-release.yml`, `mode: release`): the same jobs, named `leg/<id>`, on a release candidate's assets and test kit — see "e2e.yml in release mode" below. |
+| `e2e.yml` | `repository_dispatch[run-e2e]`, `workflow_dispatch`, `workflow_call` | **agent's** E2E matrix — Docker, Linux guests, BSD, illumos, Solaris, Windows, macOS. Merge lane: installs the packages the agent run published, runs the legs of the families that run built (the others report `not-built`, see "Only what the agent run built"), and reports `e2e/*` commit statuses back to that SHA. Release mode (`workflow_call` from `validate-release.yml`, `mode: release`): the same jobs, named `leg/<id>`, on a release candidate's assets and test kit — see "e2e.yml in release mode" below. |
 | `external-e2e.yml` | `repository_dispatch[run-external-e2e]`, `workflow_dispatch` | **libprobe's** lane. Rebuilds from source on the dispatched SHA; posts `e2e-public/<run>-<attempt>`, green iff the 6 native legs AND the 3 BSD **amd64** legs pass. BSD arm64 (no KVM, 1-2 h a leg) and the containers are advisory: shown in the table, never in the verdict. A BSD amd64 leg whose guest never became ready is retried once on a fresh runner; a leg that reached its tests never is. The BSD steps are written once (`&bsd-leg`) and aliased by all nine BSD jobs. |
 | `agent-packages.yml` | `repository_dispatch[build-agent-packages]`, `workflow_dispatch` | **agent's packaging**: the one producer of its FreeBSD, NetBSD, OpenBSD (amd64, arm64), macOS (amd64, arm64) and Chocolatey packages, each built and installed on its own system from binaries agent cross-compiled on its self-hosted runner. agent's `public-packages.yml` dispatches it (ci.yml `package-openbsd`, release.yml `build-bsd-packages` / `build-desktop-packages`), finds the run by its run-name and downloads the packages. See "agent's packages" below. |
 | `cleanup-external-e2e.yml` | `workflow_run` on both of the above | Deletes each dispatched run once it finishes, so no public trace of a private-source run remains. `repository_dispatch` runs only — a `workflow_dispatch` is someone debugging on purpose. |
-| `release-contract.yml` | PR and push on `release-contract/**` | Tests the release contract's validator on Linux, macOS, Windows and Python 3.9, and re-derives the manifest test vector with coreutils alone. See "The release contract" below. |
+| `release-contract.yml` | PR and push on `release-contract/**`, `e2e.yml`, `.github/scripts/**` | Tests the release contract's validator on Linux, macOS, Windows and Python 3.9, and re-derives the manifest test vector with coreutils alone. See "The release contract" below. |
 | `validate-release.yml` | `repository_dispatch[validate-release]`, `workflow_dispatch` | The **release** lane: validates a candidate's exact bytes, pulled by digest from the private repository's GHCR package. agent's legs are `e2e.yml` called in release mode. See "The release contract" below. |
 | `validate-release-doorbell.yml` | `workflow_run` on `validate-release` | Posts a commit status on the validated private commit so the private side wakes and builds the receipt. Holds the lane's only secret. |
 | `release-contract-proof.yml` | push to `main` on its own path, `workflow_dispatch` | Measures, on real GitHub objects, the behaviours the release contract relies on, and fails if one of them changes. Never runs on a branch push: its jobs hold `contents: write`. |
@@ -118,17 +118,38 @@ the 26.04 labels yet; `.github/actionlint.yaml` lists them.
 
   **When they run.** agent builds these two kernels (about 26 hosted minutes
   of a private repository) on every release, but for a pull request only when
-  it touches the paths agent lists in its `.github/solarish-paths.txt`. So in
-  the merge lane `resolve` reads the agent run's artifact list: a kernel with
-  neither its binary nor its `-pkg` there gets `illumos=false` /
-  `solaris=false`, its leg is skipped by its `if:`, posts no status, and
-  `report` records it as `not-built`, which passes (the aggregate description
-  names it). Every other skip is still a failure, and a kernel with half its
-  pair runs and fails on the missing half. No token to list the run with
-  leaves the output empty: the legs run. Release mode never consults any of
-  this -- both legs always run, and `validate-release.yml` judges them as
-  required legs. `SolarishLegsInReleaseMode` in
-  `release-contract/tests/test_release_contract.py` pins all three rules.
+  it touches the paths agent lists in its `.github/solarish-paths.txt` -- the
+  rule "Only what the agent run built" below applies to them as to every
+  family.
+
+## Only what the agent run built (merge lane)
+
+agent's `ci.yml` runs only the jobs a pull request can affect, so a run may
+carry the artifacts of some families only (linux, windows, darwin, freebsd,
+netbsd, openbsd, illumos, solaris). Its dispatch says which: `built` in the
+`client_payload` (a `workflow_dispatch` takes it as the `built` input).
+`resolve` hands the word and the run's artifact list to
+`.github/scripts/e2e_families.py`, which outputs one `<family>=true|false` each:
+
+- with a word, a family is `true` iff the word names it. A declared family with
+  no artifact still runs (its legs fail at their download: a broken producer);
+  an undeclared one with artifacts does not. A word naming an unknown family,
+  or none, fails `resolve`.
+- without a word, a family is `true` iff the run carries a
+  `supervizio-<family>-*` artifact; a run with none at all fails `resolve`.
+- no word and no token to list with: every output is empty, and every leg runs.
+- `linux=true` still requires `supervizio-linux-amd64` (the docker legs' floor).
+
+Every leg's `if:` has `inputs.mode == 'release' || needs.resolve.outputs.<its
+family> != 'false'`, so the legs of a family not built are skipped and post no
+status, and `report` runs each leg through `not_built RESULT FAMILY`: a leg
+`skipped` with its family `false` is `not-built`, which passes, and the
+aggregate description names them. Every other skip is still a failure.
+Release mode never consults any of this: the decision step does not run there,
+every family output is empty, every leg runs, and `validate-release.yml` judges
+them as required legs. `FamilyLegsNotBuilt`, `SolarishLegsInReleaseMode` and
+`E2eFamilies` in `release-contract/tests/test_release_contract.py` pin it all
+(`release-contract.yml` runs them when `e2e.yml` or `.github/scripts/` change).
 
 ## agent's packages (`agent-packages.yml`)
 
@@ -258,8 +279,8 @@ the called workflow, and nothing in release mode needs one:
 
 - `resolve` outputs an empty `sha`, so every status step (gated on
   `sha != ''`) is skipped; `report` does not run. Nor does its artifact
-  pre-check, so `illumos`/`solaris` are empty and the illumos and Solaris legs
-  run whatever the merge lane would have skipped (their `if:` also says
+  pre-check and family decision, so every family output is empty and every
+  leg runs whatever the merge lane would have skipped (their `if:` also says
   `inputs.mode == 'release' ||` first).
 - Each leg skips `Checkout agent code` and its `actions/download-artifact`
   step(s), and instead checks this repository out to `.release-lane` and runs

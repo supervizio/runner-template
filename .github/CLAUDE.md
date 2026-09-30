@@ -17,6 +17,7 @@ GitHub-specific configurations: workflows, templates, and instructions.
 │   └── release-candidate/  # e2e.yml release mode: pull a candidate's files by digest, place them
 ├── keys/               # PUBLIC OpenPGP keys qemu-vm verifies upstream images with (keys/CLAUDE.md)
 ├── nixos-leg/flake.nix # the NixOS system e2e.yml's nixos-nix legs boot (supervizio's flake, overridden)
+├── scripts/e2e_families.py # e2e.yml resolve (merge lane): which families the agent run built; the rest are not-built
 ├── solarish-leg/in-guest.sh # what e2e.yml's illumos and Solaris legs run in their guest
 ├── instructions/       # AI instructions (gitignored)
 ├── dependabot.yml      # Dependency updates
