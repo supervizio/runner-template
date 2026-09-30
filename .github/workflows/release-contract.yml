@@ -23,6 +23,8 @@ on:
       - ".github/workflows/e2e.yml"
       - ".github/scripts/**"
       - ".github/workflows/agent-packages.yml"
+      - ".github/workflows/external-e2e.yml"
+      - ".github/workflows/validate-release-doorbell.yml"
       - ".github/workflows/libprobe-solarish.yml"
       - ".github/solarish-leg/**"
   push:
@@ -33,6 +35,8 @@ on:
       - ".github/workflows/e2e.yml"
       - ".github/scripts/**"
       - ".github/workflows/agent-packages.yml"
+      - ".github/workflows/external-e2e.yml"
+      - ".github/workflows/validate-release-doorbell.yml"
       - ".github/workflows/libprobe-solarish.yml"
       - ".github/solarish-leg/**"
   workflow_dispatch:

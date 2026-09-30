@@ -1152,9 +1152,9 @@ class AgentPackagesGuardRails(unittest.TestCase):
 
     def test_the_token_lives_in_the_environment_only(self):
         secrets = set(re.findall(r"secrets\.([A-Za-z0-9_]+)", self.code(self.workflow)))
-        self.assertEqual(secrets, {"PRIVATE_SOURCE_TOKEN"})
+        self.assertEqual(secrets, {"CI_APP_PRIVATE_KEY"})
         for name, job in self.jobs.items():
-            uses_token = "secrets.PRIVATE_SOURCE_TOKEN" in self.code(job)
+            uses_token = "secrets.CI_APP_PRIVATE_KEY" in self.code(job)
             in_env = re.search(r"^    environment: private-source$", job, re.M) is not None
             self.assertEqual(uses_token, in_env, name)
             if uses_token:
@@ -1248,10 +1248,14 @@ class LibprobeSolarishGuardRails(unittest.TestCase):
         self.assertNotIn("pull_request", self.code(self.workflow))
 
     def test_the_token_lives_in_the_environment_only(self):
-        self.assertEqual(set(re.findall(r"secrets\.([A-Za-z0-9_]+)", self.code(self.workflow))), {"PRIVATE_SOURCE_TOKEN"})
+        self.assertEqual(set(re.findall(r"secrets\.([A-Za-z0-9_]+)", self.code(self.workflow))), {"CI_APP_PRIVATE_KEY"})
         for name, job in self.jobs.items():
-            uses_token = "secrets.PRIVATE_SOURCE_TOKEN" in self.code(job)
+            uses_token = "secrets.CI_APP_PRIVATE_KEY" in self.code(job)
             self.assertEqual(uses_token, re.search(r"^    environment: private-source$", job, re.M) is not None, name)
+        # libprobe alone, and nothing but reading its artifacts.
+        guest = self.code(self.jobs["guest"])
+        self.assertIn("repositories: libprobe\n", guest)
+        self.assertEqual(re.findall(r"permission-([a-z-]+): (\w+)", guest), [("actions", "read")])
 
     def test_admit_holds_nothing_and_gates_everything(self):
         self.assertNotIn("secrets.", self.code(self.jobs["admit"]))
@@ -1348,6 +1352,89 @@ class _E2eWorkflowReader:
             equal = node.left.value == node.comparators[0].value
             return equal if isinstance(node.ops[0], ast.Eq) else not equal
         raise AssertionError(f"not a condition this test can read: {ast.dump(node)}")
+
+
+class AppKeyStaysInTheEnvironment(unittest.TestCase):
+    """The kodflow-ci App's key is the only credential this public repository
+    holds on the private ones. It is read only by jobs of the `private-source`
+    environment (main only), each mints a token scoped to named repositories
+    and explicit permissions, and no personal-token secret comes back."""
+
+    WORKFLOWS = os.path.join(ROOT, os.pardir, ".github", "workflows")
+    PIN = "actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1"
+    RETIRED = ("AGENT_REPO_TOKEN", "LIBPROBE_REPO_TOKEN", "PRIVATE_SOURCE_TOKEN", "RUNNER_TEMPLATE_DISPATCH_TOKEN")
+    # e2e.yml's legs: the merge lane in the environment, release mode (which
+    # runs candidate bytes) in none.
+    CONDITIONAL = "environment: ${{ inputs.mode != 'release' && 'private-source' || '' }}"
+
+    @staticmethod
+    def code(text):
+        return "\n".join(line.split(" #", 1)[0] for line in text.splitlines() if not line.lstrip().startswith("#"))
+
+    def workflows(self):
+        for name in sorted(os.listdir(self.WORKFLOWS)):
+            if name.endswith((".yml", ".yaml")):
+                with open(os.path.join(self.WORKFLOWS, name), encoding="utf-8") as fh:
+                    yield name, fh.read()
+
+    def jobs(self, text):
+        body = text.partition("\njobs:\n")[2]
+        jobs = dict(re.findall(r"^  ([A-Za-z0-9_-]+):\n(.*?)(?=^  [A-Za-z0-9_-]+:\n|\Z)", body, re.M | re.S))
+        # `steps: *anchor` jobs (external-e2e.yml's BSD legs) run the anchored
+        # steps: resolve them, or those jobs would read as holding no key.
+        anchors = {}
+        for job in jobs.values():
+            m = re.search(r"^    steps: &([a-z-]+)\n(.*?)(?=^    \S|\Z)", job, re.M | re.S)
+            if m:
+                anchors[m.group(1)] = m.group(2)
+        for name, job in jobs.items():
+            m = re.search(r"^    steps: \*([a-z-]+)$", job, re.M)
+            if m:
+                jobs[name] = job + anchors[m.group(1)]
+        return jobs
+
+    def test_no_personal_token_secret(self):
+        for name, text in self.workflows():
+            for secret in self.RETIRED:
+                self.assertNotIn("secrets." + secret, self.code(text), name)
+
+    def test_the_key_is_read_only_in_the_environment(self):
+        seen = 0
+        for wf, text in self.workflows():
+            for name, job in self.jobs(text).items():
+                if "secrets.CI_APP_PRIVATE_KEY" not in self.code(job):
+                    continue
+                seen += 1
+                envs = re.findall(r"^    environment: .*$", job, re.M)
+                self.assertEqual(len(envs), 1, f"{wf}:{name} reads the App key outside an environment")
+                if wf == "e2e.yml":
+                    self.assertEqual(envs[0].strip(), self.CONDITIONAL, f"{wf}:{name}")
+                else:
+                    self.assertEqual(envs[0].strip(), "environment: private-source", f"{wf}:{name}")
+        self.assertGreaterEqual(seen, 40)
+
+    def test_every_token_is_scoped(self):
+        steps = 0
+        for wf, text in self.workflows():
+            for block in re.findall(r"uses: actions/create-github-app-token@.*?\n((?:\s{8,}\S.*\n)+)", text):
+                steps += 1
+                self.assertIn("owner: supervizio", block, wf)
+                # client-id, not the deprecated app-id.
+                self.assertIn("client-id: ${{ vars.CI_APP_CLIENT_ID }}", block, wf)
+                self.assertNotIn("app-id:", block, wf)
+                self.assertRegex(block, r"repositories: (agent|libprobe|agent,libprobe)\n", wf)
+                self.assertRegex(block, r"permission-[a-z]+: (read|write)", wf)
+                self.assertNotIn("permission-administration", block, wf)
+            self.assertEqual(text.count("uses: actions/create-github-app-token@"), text.count(self.PIN), wf)
+            self.assertNotIn("secrets.CI_APP_PRIVATE_KEY", self.code(text).replace(
+                "private-key: ${{ secrets.CI_APP_PRIVATE_KEY }}", ""), wf)
+        self.assertGreaterEqual(steps, 36)
+
+    def test_release_mode_never_mints_a_token(self):
+        with open(os.path.join(self.WORKFLOWS, "e2e.yml"), encoding="utf-8") as fh:
+            text = fh.read()
+        for block in re.findall(r"(- name: Token for supervizio/agent.*?\n(?:\s{8}\S.*\n)+)", text):
+            self.assertIn("if: inputs.mode != 'release'", block)
 
 
 class SolarishLegsInReleaseMode(_E2eWorkflowReader, unittest.TestCase):

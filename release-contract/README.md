@@ -80,7 +80,7 @@ owner's rule is that no binary is stored in this public repository**:
 | Candidate bridge | Why not |
 |---|---|
 | The private repository's own draft, read with a read-only token | Measured: a draft is invisible to anything without push access — `contents:read` gets 403, no token 404. The REST docs agree ("Only users with push access will receive listings for draft releases"). A token that can read the private draft can write the private repository's releases, and it would be stored here, in a public repository. |
-| Cross-repository Actions artifacts (the `AGENT_REPO_TOKEN` pattern of `e2e.yml`) | The public side must hold a credential on the private repository, and GitHub only scrubs from runner memory the secrets "not referenced in the workflow" ([compromised runners](https://docs.github.com/en/actions/concepts/security/compromised-runners)) — per workflow, not per job — so the legs running candidate code would share memory space with it. |
+| Cross-repository Actions artifacts (the pattern of `e2e.yml`'s merge lane) | The public side must hold a credential on the private repository, and GitHub only scrubs from runner memory the secrets "not referenced in the workflow" ([compromised runners](https://docs.github.com/en/actions/concepts/security/compromised-runners)) — per workflow, not per job — so the legs running candidate code would share memory space with it. |
 | Signed download URLs of the private draft's assets, in the payload | Measured: the redirect URL carries a JWT valid 300 seconds — shorter than a queue. |
 | A staging draft release of runner-template (this contract's first design) | Binaries in the public repository, and the same-run artifact that carried them to the legs was downloadable by any signed-in GitHub user while it existed. Abandoned by the owner. |
 | Public Garage with presigned URLs (brief §4.6) | Garage is private. |
@@ -161,8 +161,8 @@ receipt itself (`evidence`). What wakes it is a doorbell:
 `validate-release-doorbell.yml`, on `workflow_run` completion of a
 `repository_dispatch` run on `main`, posts a commit status
 `release-validation/<tag>/g<N>` on the validated private commit, `target_url` = the
-run, with the status token the merge lanes already hold (`AGENT_REPO_TOKEN`,
-`LIBPROBE_REPO_TOKEN`: commit statuses write on their repository). The private side
+run, with a kodflow-ci GitHub App token minted in the `private-source`
+environment (commit statuses write on agent and libprobe, nothing else). The private side
 listens with `on: status`. A forged or stale doorbell can wake it; nothing it says
 is believed, so it cannot promote anything. It lives in its own workflow so that no
 workflow that runs candidate bytes references a secret. Consequence:

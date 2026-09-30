@@ -55,12 +55,14 @@ name: Agent packages
 # SECURITY MODEL (a public workflow holding a credential to a private repo):
 #   * repository_dispatch and workflow_dispatch only. Never pull_request or
 #     pull_request_target: a fork's code can never run next to the token.
-#   * The token, PRIVATE_SOURCE_TOKEN (fine-grained: Contents read + Actions
-#     read on supervizio/agent), lives in the `private-source` ENVIRONMENT,
-#     whose deployment branches are `main` only. It is read by the two steps
-#     that need it (checkout, download), never exported to the job, never
-#     persisted in the checkout (persist-credentials: false), never synced
-#     into a guest.
+#   * No personal token. The jobs that read agent run in the `private-source`
+#     ENVIRONMENT (deployment branches: `main` only), the only place the
+#     kodflow-ci GitHub App's key (CI_APP_PRIVATE_KEY, with vars.CI_APP_CLIENT_ID) can
+#     be read, and mint there a token for supervizio/agent alone, contents:
+#     read + actions: read, revoked when the job ends. Only the two steps that
+#     need it read it (checkout, download); it is never exported to the job,
+#     never persisted in the checkout (persist-credentials: false), never
+#     synced into a guest.
 #   * The requested commit, run id and request id are validated in `admit`
 #     before any job holds the token; the repository is not an input at all.
 #   * Only packages leave: each upload is the package directory, nothing of
@@ -214,12 +216,26 @@ jobs:
       matrix:
         include: ${{ fromJSON(needs.admit.outputs.bsd) }}
     steps:
+      # A kodflow-ci App token for supervizio/agent alone, minted here because
+      # this job runs in the private-source environment (the only place the
+      # App's key can be read), revoked when the job ends.
+      - name: Token for supervizio/agent (kodflow-ci App)
+        id: app
+        uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3.2.0
+        with:
+          client-id: ${{ vars.CI_APP_CLIENT_ID }}
+          private-key: ${{ secrets.CI_APP_PRIVATE_KEY }}
+          owner: supervizio
+          repositories: agent
+          permission-contents: read
+          permission-actions: read
+
       - name: Sparse checkout of agent's packaging tree
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           repository: supervizio/agent
           ref: ${{ env.SOURCE_SHA }}
-          token: ${{ secrets.PRIVATE_SOURCE_TOKEN }}
+          token: ${{ steps.app.outputs.token }}
           # The workspace is synced wholesale into the guest: a persisted
           # credential would travel with it.
           persist-credentials: false
@@ -236,7 +252,7 @@ jobs:
           path: bin
           repository: supervizio/agent
           run-id: ${{ env.SOURCE_RUN_ID }}
-          github-token: ${{ secrets.PRIVATE_SOURCE_TOKEN }}
+          github-token: ${{ steps.app.outputs.token }}
 
       - name: Check the binary arrived
         env:
@@ -337,12 +353,26 @@ jobs:
       matrix:
         include: ${{ fromJSON(needs.admit.outputs.solarish) }}
     steps:
+      # A kodflow-ci App token for supervizio/agent alone, minted here because
+      # this job runs in the private-source environment (the only place the
+      # App's key can be read), revoked when the job ends.
+      - name: Token for supervizio/agent (kodflow-ci App)
+        id: app
+        uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3.2.0
+        with:
+          client-id: ${{ vars.CI_APP_CLIENT_ID }}
+          private-key: ${{ secrets.CI_APP_PRIVATE_KEY }}
+          owner: supervizio
+          repositories: agent
+          permission-contents: read
+          permission-actions: read
+
       - name: Sparse checkout of agent's packaging tree
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           repository: supervizio/agent
           ref: ${{ env.SOURCE_SHA }}
-          token: ${{ secrets.PRIVATE_SOURCE_TOKEN }}
+          token: ${{ steps.app.outputs.token }}
           # The workspace is synced wholesale into the guest.
           persist-credentials: false
           sparse-checkout-cone-mode: false
@@ -360,7 +390,7 @@ jobs:
           path: bin
           repository: supervizio/agent
           run-id: ${{ env.SOURCE_RUN_ID }}
-          github-token: ${{ secrets.PRIVATE_SOURCE_TOKEN }}
+          github-token: ${{ steps.app.outputs.token }}
 
       - name: Download the cross-built Go test binaries from the agent run
         uses: actions/download-artifact@70fc10c6e5e1ce46ad2ea6f2b72d43f7d47b13c3 # v8.0.0
@@ -369,7 +399,7 @@ jobs:
           path: tests
           repository: supervizio/agent
           run-id: ${{ env.SOURCE_RUN_ID }}
-          github-token: ${{ secrets.PRIVATE_SOURCE_TOKEN }}
+          github-token: ${{ steps.app.outputs.token }}
 
       # Binaries only: an ELF that is not x86-64 for this kernel's loader, or
       # anything else in the downloads, is refused before a guest boots.
@@ -460,12 +490,26 @@ jobs:
       matrix:
         include: ${{ fromJSON(needs.admit.outputs.desktop) }}
     steps:
+      # A kodflow-ci App token for supervizio/agent alone, minted here because
+      # this job runs in the private-source environment (the only place the
+      # App's key can be read), revoked when the job ends.
+      - name: Token for supervizio/agent (kodflow-ci App)
+        id: app
+        uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3.2.0
+        with:
+          client-id: ${{ vars.CI_APP_CLIENT_ID }}
+          private-key: ${{ secrets.CI_APP_PRIVATE_KEY }}
+          owner: supervizio
+          repositories: agent
+          permission-contents: read
+          permission-actions: read
+
       - name: Sparse checkout of agent's packaging tree
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           repository: supervizio/agent
           ref: ${{ env.SOURCE_SHA }}
-          token: ${{ secrets.PRIVATE_SOURCE_TOKEN }}
+          token: ${{ steps.app.outputs.token }}
           persist-credentials: false
           sparse-checkout-cone-mode: false
           sparse-checkout: |
@@ -480,7 +524,7 @@ jobs:
           path: bin
           repository: supervizio/agent
           run-id: ${{ env.SOURCE_RUN_ID }}
-          github-token: ${{ secrets.PRIVATE_SOURCE_TOKEN }}
+          github-token: ${{ steps.app.outputs.token }}
 
       - name: Package, and prove the package installs (macOS)
         if: matrix.os == 'macos'
@@ -590,12 +634,26 @@ jobs:
     timeout-minutes: 30
     continue-on-error: true
     steps:
+      # A kodflow-ci App token for supervizio/agent alone, minted here because
+      # this job runs in the private-source environment (the only place the
+      # App's key can be read), revoked when the job ends.
+      - name: Token for supervizio/agent (kodflow-ci App)
+        id: app
+        uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3.2.0
+        with:
+          client-id: ${{ vars.CI_APP_CLIENT_ID }}
+          private-key: ${{ secrets.CI_APP_PRIVATE_KEY }}
+          owner: supervizio
+          repositories: agent
+          permission-contents: read
+          permission-actions: read
+
       - name: Sparse checkout of agent's packaging tree
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           repository: supervizio/agent
           ref: ${{ env.SOURCE_SHA }}
-          token: ${{ secrets.PRIVATE_SOURCE_TOKEN }}
+          token: ${{ steps.app.outputs.token }}
           persist-credentials: false
           sparse-checkout-cone-mode: false
           sparse-checkout: |
@@ -609,7 +667,7 @@ jobs:
           path: bin
           repository: supervizio/agent
           run-id: ${{ env.SOURCE_RUN_ID }}
-          github-token: ${{ secrets.PRIVATE_SOURCE_TOKEN }}
+          github-token: ${{ steps.app.outputs.token }}
 
       - name: Stage the zip, then the full SCM install cycle
         shell: pwsh

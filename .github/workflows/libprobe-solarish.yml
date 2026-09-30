@@ -22,9 +22,11 @@ name: libprobe illumos and Solaris
 # the same as agent-packages.yml's:
 #   * repository_dispatch and workflow_dispatch only. Never pull_request or
 #     pull_request_target: a fork's code never runs next to the token.
-#   * PRIVATE_SOURCE_TOKEN lives in the `private-source` environment
-#     (deployment branches: main). Only the download step reads it. It needs
-#     Actions: read on supervizio/libprobe.
+#   * No personal token. The guest job runs in the `private-source`
+#     environment (deployment branches: main), the only place the kodflow-ci
+#     GitHub App's key (CI_APP_PRIVATE_KEY, with vars.CI_APP_CLIENT_ID) can be
+#     read, and mints there a token for supervizio/libprobe alone, actions:
+#     read, revoked when the job ends. Only the download step reads it.
 #   * `admit` validates every payload field before any job holding the token
 #     starts; the repository is not an input.
 #   * The console gets the guest's `=== ` stage lines and the verdict. The
@@ -107,6 +109,20 @@ jobs:
       matrix:
         include: ${{ fromJSON(needs.admit.outputs.include) }}
     steps:
+      # A kodflow-ci App token for supervizio/libprobe alone, minted here because
+      # this job runs in the private-source environment (the only place the
+      # App's key can be read), revoked when the job ends.
+      - name: Token for supervizio/libprobe (kodflow-ci App)
+        id: app
+        uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3.2.0
+        with:
+          client-id: ${{ vars.CI_APP_CLIENT_ID }}
+          private-key: ${{ secrets.CI_APP_PRIVATE_KEY }}
+          owner: supervizio
+          repositories: libprobe
+          permission-actions: read
+
+
       # This repository only: the guest script. Nothing of libprobe's.
       - name: Check out the guest script
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -123,7 +139,7 @@ jobs:
           path: bundle
           repository: supervizio/libprobe
           run-id: ${{ env.SOURCE_RUN_ID }}
-          github-token: ${{ secrets.PRIVATE_SOURCE_TOKEN }}
+          github-token: ${{ steps.app.outputs.token }}
 
       # Binaries and a plan, nothing else: a source file in the bundle is
       # refused before a guest boots.

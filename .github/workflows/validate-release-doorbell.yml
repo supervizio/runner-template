@@ -18,8 +18,9 @@ name: validate-release-doorbell
 # This is the only place a secret is referenced for the release lane, and it
 # is kept out of validate-release.yml on purpose: no job that downloads or
 # executes candidate bytes runs in a workflow that holds a credential. The
-# tokens are the ones e2e.yml / external-e2e.yml already hold (commit statuses
-# write on their own repository); nothing here checks out or runs any code.
+# credential is a kodflow-ci GitHub App token minted in the `private-source`
+# environment (main only), statuses: write on agent and libprobe and nothing
+# else, revoked when the job ends; nothing here checks out or runs any code.
 # =============================================================================
 
 on:
@@ -38,9 +39,20 @@ jobs:
       github.event.workflow_run.event == 'repository_dispatch' &&
       github.event.workflow_run.head_branch == 'main'
     runs-on: ubuntu-26.04
+    environment: private-source
     timeout-minutes: 5
     permissions: {}
     steps:
+      - name: Token for the private commits' statuses (kodflow-ci App)
+        id: app
+        uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3.2.0
+        with:
+          client-id: ${{ vars.CI_APP_CLIENT_ID }}
+          private-key: ${{ secrets.CI_APP_PRIVATE_KEY }}
+          owner: supervizio
+          repositories: agent,libprobe
+          permission-statuses: write
+
       - name: Post the status on the validated commit
         env:
           TITLE: ${{ github.event.workflow_run.display_title }}
@@ -48,8 +60,7 @@ jobs:
           RUN_URL: ${{ github.event.workflow_run.html_url }}
           RUN_ID: ${{ github.event.workflow_run.id }}
           RUN_ATTEMPT: ${{ github.event.workflow_run.run_attempt }}
-          AGENT_TOKEN: ${{ secrets.AGENT_REPO_TOKEN }}
-          LIBPROBE_TOKEN: ${{ secrets.LIBPROBE_REPO_TOKEN }}
+          TOKEN: ${{ steps.app.outputs.token }}
         run: |
           set -euo pipefail
           # The title is `validate-release <repo> <tag> g<N> <commit> <digest>`
@@ -62,8 +73,7 @@ jobs:
           [[ "$commit" =~ ^[0-9a-f]{40}$ ]] || { echo "::error::bad commit"; exit 1; }
           [[ "$digest" =~ ^sha256:[0-9a-f]{64}$ ]] || { echo "::error::bad digest"; exit 1; }
           case "$repo" in
-            supervizio/agent) token="$AGENT_TOKEN" ;;
-            supervizio/libprobe) token="$LIBPROBE_TOKEN" ;;
+            supervizio/agent|supervizio/libprobe) token="$TOKEN" ;;
             *) echo "::error::refusing repository '$repo'"; exit 1 ;;
           esac
           [ -n "$token" ] || { echo "::error::no status token for $repo: the private side will only learn of this run by timing out"; exit 1; }

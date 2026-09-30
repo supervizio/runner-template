@@ -22,7 +22,7 @@ of it is what anyone works on.
 | `cleanup-external-e2e.yml` | `workflow_run` on both of the above | Deletes each dispatched run once it finishes, so no public trace of a private-source run remains. `repository_dispatch` runs only — a `workflow_dispatch` is someone debugging on purpose. |
 | `release-contract.yml` | PR and push on `release-contract/**`, `e2e.yml`, `.github/scripts/**` | Tests the release contract's validator on Linux, macOS, Windows and Python 3.9, and re-derives the manifest test vector with coreutils alone. See "The release contract" below. |
 | `validate-release.yml` | `repository_dispatch[validate-release]`, `workflow_dispatch` | The **release** lane: validates a candidate's exact bytes, pulled by digest from the private repository's GHCR package. agent's legs are `e2e.yml` called in release mode. See "The release contract" below. |
-| `validate-release-doorbell.yml` | `workflow_run` on `validate-release` | Posts a commit status on the validated private commit so the private side wakes and builds the receipt. Holds the lane's only secret. |
+| `validate-release-doorbell.yml` | `workflow_run` on `validate-release` | Posts a commit status on the validated private commit so the private side wakes and builds the receipt. The lane's only credential (a kodflow-ci App token, in the `private-source` environment). |
 | `release-contract-proof.yml` | push to `main` on its own path, `workflow_dispatch` | Measures, on real GitHub objects, the behaviours the release contract relies on, and fails if one of them changes. Never runs on a branch push: its jobs hold `contents: write`. |
 | `qemu-vm-selftest.yml` | push on its own paths | Exercises `.github/actions/qemu-vm` against the upstream cloud images the Linux legs use, before those legs depend on it. |
 | `openbsd-abi-proof.yml` | push on its own path | Runs the OpenBSD link shape across releases and link modes, to answer which OpenBSD binary runs where by executing it. |
@@ -188,10 +188,11 @@ built it before uploading it.
   is checked out. The scripts are read at the packaged commit rather than
   vendored here, so build-pkg.sh and the tree it packages cannot drift apart.
 - **Guard-rails.** No `pull_request` or `pull_request_target` trigger. The only
-  credential is `PRIVATE_SOURCE_TOKEN` (fine-grained, read-only: Contents and
-  Actions on `supervizio/agent`), stored in the **`private-source`
-  environment**, never at repository level; that environment's deployment
-  branches are `main` only, so a branch run stops at its first private read.
+  credential is a kodflow-ci App token (read-only: Contents and Actions on
+  `supervizio/agent`), minted in jobs of the **`private-source` environment**,
+  the only place its key is stored; that environment's deployment branches are
+  `main` only, so a branch run stops at its first private read. See "The
+  kodflow-ci App" below.
   `admit` validates every payload field before any job holding the token
   starts. Only package directories are uploaded, and no step prints a file of
   the checkout.
@@ -202,6 +203,31 @@ built it before uploading it.
   is only a safety net for a deletion that never happened. The run is not in
   `cleanup-external-e2e.yml`, which deletes on completion, before agent could
   download anything.
+
+## The kodflow-ci App: the only credential on private repositories
+
+No personal token is used here. Every job that reads `supervizio/agent` or
+`supervizio/libprobe`, or posts a commit status on them, runs in the
+**`private-source` environment** (deployment branches: `main` only), where the
+App's client ID (`vars.CI_APP_CLIENT_ID`) and key (`secrets.CI_APP_PRIVATE_KEY`) are stored,
+and nowhere else. Its first step mints an installation token with
+`actions/create-github-app-token` (pinned by SHA), scoped to the one repository
+and the permissions that job uses, revoked by the action's post step:
+
+| Workflow | Repository | Permissions |
+|----------|------------|-------------|
+| `e2e.yml` (merge lane only) | agent | contents: read, actions: read, statuses: write |
+| `external-e2e.yml` | libprobe | contents: read, statuses: write |
+| `agent-packages.yml` | agent | contents: read, actions: read |
+| `validate-release-doorbell.yml` | agent, libprobe | statuses: write |
+
+Consequence: a branch run of these jobs stops at the environment (main only),
+so the merge lane can no longer be proven by a branch `workflow_dispatch`; it is
+proven on `main`, or by `validate-release` in release mode, which needs no
+credential. `AppKeyStaysInTheEnvironment` in
+`release-contract/tests/test_release_contract.py` fails if any job reads the key
+outside that environment, if a personal-token secret comes back, or if a token
+step drops its repository or permission scope.
 
 ## Upstream images: pinned hash or signature
 
@@ -263,9 +289,10 @@ the script; they do not re-implement a rule.
   harness in whichever booted. A guest host in `HARNESS_HOSTS` that no step
   boots fails `test_release_contract.py`.
 - **`validate-release-doorbell.yml`** posts `release-validation/<tag>/g<N>` on the
-  private commit when a `repository_dispatch` run on `main` completes, with the
-  merge lanes' status tokens. It is the lane's only secret, kept out of the
-  workflow that runs candidate bytes. The private side never believes it: it
+  private commit when a `repository_dispatch` run on `main` completes, with a
+  kodflow-ci App token (statuses: write on agent and libprobe) minted in the
+  `private-source` environment. It is the lane's only credential, kept out of
+  the workflow that runs candidate bytes. The private side never believes it: it
   rebuilds the receipt from the run.
 - To try the lane by hand: `workflow_dispatch` with the whole dispatch body and
   `policy: tests/proof-policy.json` (for agent, three integrity-only legs; for
@@ -288,6 +315,13 @@ request is `pending-merge`, never `required`.
 `validate-release.yml`'s `e2e` job calls `e2e.yml` with `mode: release`, the
 dispatch body, the policy, and **no `secrets:`** — every secret reads empty in
 the called workflow, and nothing in release mode needs one:
+
+- Every leg's `environment:` is `inputs.mode != 'release' && 'private-source'
+  || ''`: the merge lane runs in the environment that holds the App's key,
+  release mode in none (an expression evaluating to `''` runs the job with no
+  environment and creates no deployment; measured on 2026-09-30). So a job that
+  runs candidate bytes can never read the key, and each leg's App-token step is
+  `if: inputs.mode != 'release'`.
 
 - `resolve` outputs an empty `sha`, so every status step (gated on
   `sha != ''`) is skipped; `report` does not run. Nor does its artifact
@@ -314,9 +348,11 @@ the called workflow, and nothing in release mode needs one:
 - `permissions` gained `packages: read` for the pull. It cannot depend on the
   mode; in the merge lane it is unused.
 
-To prove the merge lane is unchanged after touching this: `workflow_dispatch`
-`e2e.yml` on the branch with an agent CI run whose artifacts have not expired
-(they live one day), no `sha`, then delete the run.
+To prove the merge lane is unchanged after touching this: a branch
+`workflow_dispatch` no longer can (its legs stop at the main-only
+`private-source` environment, see "The kodflow-ci App"); dispatch `e2e.yml` on
+`main` after merge with an agent CI run whose artifacts have not expired (they
+live one day), no `sha`, then delete the run.
 
 ## Two things that have cost real time here
 
