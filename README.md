@@ -68,7 +68,7 @@ ends.
 
 | Where | What | Purpose |
 |-------|------|---------|
-| environment `private-source`, variable | `CI_APP_ID` | the App's ID |
+| environment `private-source`, variable | `CI_APP_CLIENT_ID` | the App's client ID (`client-id` of `create-github-app-token`; `app-id` is deprecated) |
 | environment `private-source`, secret | `CI_APP_PRIVATE_KEY` | the App's private key; never at repository level |
 
 The App must be installed on `supervizio/agent` and `supervizio/libprobe`

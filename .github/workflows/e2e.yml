@@ -103,7 +103,7 @@ jobs:
         if: inputs.mode != 'release'
         uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3.2.0
         with:
-          app-id: ${{ vars.CI_APP_ID }}
+          client-id: ${{ vars.CI_APP_CLIENT_ID }}
           private-key: ${{ secrets.CI_APP_PRIVATE_KEY }}
           owner: supervizio
           repositories: agent
@@ -289,7 +289,7 @@ jobs:
         if: inputs.mode != 'release'
         uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3.2.0
         with:
-          app-id: ${{ vars.CI_APP_ID }}
+          client-id: ${{ vars.CI_APP_CLIENT_ID }}
           private-key: ${{ secrets.CI_APP_PRIVATE_KEY }}
           owner: supervizio
           repositories: agent
@@ -550,7 +550,7 @@ jobs:
         if: inputs.mode != 'release'
         uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3.2.0
         with:
-          app-id: ${{ vars.CI_APP_ID }}
+          client-id: ${{ vars.CI_APP_CLIENT_ID }}
           private-key: ${{ secrets.CI_APP_PRIVATE_KEY }}
           owner: supervizio
           repositories: agent
@@ -757,7 +757,7 @@ jobs:
         if: inputs.mode != 'release'
         uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3.2.0
         with:
-          app-id: ${{ vars.CI_APP_ID }}
+          client-id: ${{ vars.CI_APP_CLIENT_ID }}
           private-key: ${{ secrets.CI_APP_PRIVATE_KEY }}
           owner: supervizio
           repositories: agent
@@ -894,7 +894,7 @@ jobs:
         if: inputs.mode != 'release'
         uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3.2.0
         with:
-          app-id: ${{ vars.CI_APP_ID }}
+          client-id: ${{ vars.CI_APP_CLIENT_ID }}
           private-key: ${{ secrets.CI_APP_PRIVATE_KEY }}
           owner: supervizio
           repositories: agent
@@ -1112,7 +1112,7 @@ jobs:
         if: inputs.mode != 'release'
         uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3.2.0
         with:
-          app-id: ${{ vars.CI_APP_ID }}
+          client-id: ${{ vars.CI_APP_CLIENT_ID }}
           private-key: ${{ secrets.CI_APP_PRIVATE_KEY }}
           owner: supervizio
           repositories: agent
@@ -1272,7 +1272,7 @@ jobs:
         if: inputs.mode != 'release'
         uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3.2.0
         with:
-          app-id: ${{ vars.CI_APP_ID }}
+          client-id: ${{ vars.CI_APP_CLIENT_ID }}
           private-key: ${{ secrets.CI_APP_PRIVATE_KEY }}
           owner: supervizio
           repositories: agent
@@ -1428,7 +1428,7 @@ jobs:
         if: inputs.mode != 'release'
         uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3.2.0
         with:
-          app-id: ${{ vars.CI_APP_ID }}
+          client-id: ${{ vars.CI_APP_CLIENT_ID }}
           private-key: ${{ secrets.CI_APP_PRIVATE_KEY }}
           owner: supervizio
           repositories: agent
@@ -1587,7 +1587,7 @@ jobs:
         if: inputs.mode != 'release'
         uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3.2.0
         with:
-          app-id: ${{ vars.CI_APP_ID }}
+          client-id: ${{ vars.CI_APP_CLIENT_ID }}
           private-key: ${{ secrets.CI_APP_PRIVATE_KEY }}
           owner: supervizio
           repositories: agent
@@ -1753,7 +1753,7 @@ jobs:
         if: inputs.mode != 'release'
         uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3.2.0
         with:
-          app-id: ${{ vars.CI_APP_ID }}
+          client-id: ${{ vars.CI_APP_CLIENT_ID }}
           private-key: ${{ secrets.CI_APP_PRIVATE_KEY }}
           owner: supervizio
           repositories: agent
@@ -1917,7 +1917,7 @@ jobs:
         if: inputs.mode != 'release'
         uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3.2.0
         with:
-          app-id: ${{ vars.CI_APP_ID }}
+          client-id: ${{ vars.CI_APP_CLIENT_ID }}
           private-key: ${{ secrets.CI_APP_PRIVATE_KEY }}
           owner: supervizio
           repositories: agent
@@ -2097,7 +2097,7 @@ jobs:
         if: inputs.mode != 'release'
         uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3.2.0
         with:
-          app-id: ${{ vars.CI_APP_ID }}
+          client-id: ${{ vars.CI_APP_CLIENT_ID }}
           private-key: ${{ secrets.CI_APP_PRIVATE_KEY }}
           owner: supervizio
           repositories: agent
@@ -2307,7 +2307,7 @@ jobs:
         if: inputs.mode != 'release'
         uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3.2.0
         with:
-          app-id: ${{ vars.CI_APP_ID }}
+          client-id: ${{ vars.CI_APP_CLIENT_ID }}
           private-key: ${{ secrets.CI_APP_PRIVATE_KEY }}
           owner: supervizio
           repositories: agent
@@ -2514,7 +2514,7 @@ jobs:
         if: inputs.mode != 'release'
         uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3.2.0
         with:
-          app-id: ${{ vars.CI_APP_ID }}
+          client-id: ${{ vars.CI_APP_CLIENT_ID }}
           private-key: ${{ secrets.CI_APP_PRIVATE_KEY }}
           owner: supervizio
           repositories: agent
@@ -2705,7 +2705,7 @@ jobs:
         if: inputs.mode != 'release'
         uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3.2.0
         with:
-          app-id: ${{ vars.CI_APP_ID }}
+          client-id: ${{ vars.CI_APP_CLIENT_ID }}
           private-key: ${{ secrets.CI_APP_PRIVATE_KEY }}
           owner: supervizio
           repositories: agent
@@ -2897,7 +2897,7 @@ jobs:
         if: inputs.mode != 'release'
         uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3.2.0
         with:
-          app-id: ${{ vars.CI_APP_ID }}
+          client-id: ${{ vars.CI_APP_CLIENT_ID }}
           private-key: ${{ secrets.CI_APP_PRIVATE_KEY }}
           owner: supervizio
           repositories: agent
@@ -3101,7 +3101,7 @@ jobs:
         if: inputs.mode != 'release'
         uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3.2.0
         with:
-          app-id: ${{ vars.CI_APP_ID }}
+          client-id: ${{ vars.CI_APP_CLIENT_ID }}
           private-key: ${{ secrets.CI_APP_PRIVATE_KEY }}
           owner: supervizio
           repositories: agent
@@ -3338,7 +3338,7 @@ jobs:
         if: inputs.mode != 'release'
         uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3.2.0
         with:
-          app-id: ${{ vars.CI_APP_ID }}
+          client-id: ${{ vars.CI_APP_CLIENT_ID }}
           private-key: ${{ secrets.CI_APP_PRIVATE_KEY }}
           owner: supervizio
           repositories: agent
@@ -3633,7 +3633,7 @@ jobs:
         if: inputs.mode != 'release'
         uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3.2.0
         with:
-          app-id: ${{ vars.CI_APP_ID }}
+          client-id: ${{ vars.CI_APP_CLIENT_ID }}
           private-key: ${{ secrets.CI_APP_PRIVATE_KEY }}
           owner: supervizio
           repositories: agent
@@ -3977,7 +3977,7 @@ jobs:
         if: inputs.mode != 'release'
         uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3.2.0
         with:
-          app-id: ${{ vars.CI_APP_ID }}
+          client-id: ${{ vars.CI_APP_CLIENT_ID }}
           private-key: ${{ secrets.CI_APP_PRIVATE_KEY }}
           owner: supervizio
           repositories: agent
@@ -4304,7 +4304,7 @@ jobs:
         if: inputs.mode != 'release'
         uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3.2.0
         with:
-          app-id: ${{ vars.CI_APP_ID }}
+          client-id: ${{ vars.CI_APP_CLIENT_ID }}
           private-key: ${{ secrets.CI_APP_PRIVATE_KEY }}
           owner: supervizio
           repositories: agent
@@ -4796,7 +4796,7 @@ jobs:
         if: inputs.mode != 'release'
         uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3.2.0
         with:
-          app-id: ${{ vars.CI_APP_ID }}
+          client-id: ${{ vars.CI_APP_CLIENT_ID }}
           private-key: ${{ secrets.CI_APP_PRIVATE_KEY }}
           owner: supervizio
           repositories: agent
@@ -5121,7 +5121,7 @@ jobs:
         if: inputs.mode != 'release'
         uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3.2.0
         with:
-          app-id: ${{ vars.CI_APP_ID }}
+          client-id: ${{ vars.CI_APP_CLIENT_ID }}
           private-key: ${{ secrets.CI_APP_PRIVATE_KEY }}
           owner: supervizio
           repositories: agent
@@ -5287,7 +5287,7 @@ jobs:
         if: inputs.mode != 'release'
         uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3.2.0
         with:
-          app-id: ${{ vars.CI_APP_ID }}
+          client-id: ${{ vars.CI_APP_CLIENT_ID }}
           private-key: ${{ secrets.CI_APP_PRIVATE_KEY }}
           owner: supervizio
           repositories: agent
@@ -5411,7 +5411,7 @@ jobs:
         if: inputs.mode != 'release'
         uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3.2.0
         with:
-          app-id: ${{ vars.CI_APP_ID }}
+          client-id: ${{ vars.CI_APP_CLIENT_ID }}
           private-key: ${{ secrets.CI_APP_PRIVATE_KEY }}
           owner: supervizio
           repositories: agent
@@ -5597,7 +5597,7 @@ jobs:
         if: inputs.mode != 'release'
         uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3.2.0
         with:
-          app-id: ${{ vars.CI_APP_ID }}
+          client-id: ${{ vars.CI_APP_CLIENT_ID }}
           private-key: ${{ secrets.CI_APP_PRIVATE_KEY }}
           owner: supervizio
           repositories: agent
@@ -5951,7 +5951,7 @@ jobs:
         if: inputs.mode != 'release'
         uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3.2.0
         with:
-          app-id: ${{ vars.CI_APP_ID }}
+          client-id: ${{ vars.CI_APP_CLIENT_ID }}
           private-key: ${{ secrets.CI_APP_PRIVATE_KEY }}
           owner: supervizio
           repositories: agent
@@ -6134,7 +6134,7 @@ jobs:
         if: inputs.mode != 'release'
         uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3.2.0
         with:
-          app-id: ${{ vars.CI_APP_ID }}
+          client-id: ${{ vars.CI_APP_CLIENT_ID }}
           private-key: ${{ secrets.CI_APP_PRIVATE_KEY }}
           owner: supervizio
           repositories: agent
@@ -6377,7 +6377,7 @@ jobs:
         if: inputs.mode != 'release'
         uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3.2.0
         with:
-          app-id: ${{ vars.CI_APP_ID }}
+          client-id: ${{ vars.CI_APP_CLIENT_ID }}
           private-key: ${{ secrets.CI_APP_PRIVATE_KEY }}
           owner: supervizio
           repositories: agent
@@ -6662,7 +6662,7 @@ jobs:
         if: inputs.mode != 'release'
         uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3.2.0
         with:
-          app-id: ${{ vars.CI_APP_ID }}
+          client-id: ${{ vars.CI_APP_CLIENT_ID }}
           private-key: ${{ secrets.CI_APP_PRIVATE_KEY }}
           owner: supervizio
           repositories: agent
@@ -6804,7 +6804,7 @@ jobs:
         if: inputs.mode != 'release'
         uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3.2.0
         with:
-          app-id: ${{ vars.CI_APP_ID }}
+          client-id: ${{ vars.CI_APP_CLIENT_ID }}
           private-key: ${{ secrets.CI_APP_PRIVATE_KEY }}
           owner: supervizio
           repositories: agent
@@ -6957,7 +6957,7 @@ jobs:
         if: inputs.mode != 'release'
         uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3.2.0
         with:
-          app-id: ${{ vars.CI_APP_ID }}
+          client-id: ${{ vars.CI_APP_CLIENT_ID }}
           private-key: ${{ secrets.CI_APP_PRIVATE_KEY }}
           owner: supervizio
           repositories: agent

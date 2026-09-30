@@ -25,7 +25,7 @@ name: External E2E (dispatched)
 #   * repository_dispatch-only trigger; no pull_request / pull_request_target.
 #   * No personal token. Each job that reads libprobe or posts its status runs
 #     in the `private-source` environment (deployment branches: main only) and
-#     mints a kodflow-ci GitHub App token there (vars.CI_APP_ID, secret
+#     mints a kodflow-ci GitHub App token there (vars.CI_APP_CLIENT_ID, secret
 #     CI_APP_PRIVATE_KEY, both environment-scoped) for supervizio/libprobe
 #     alone, contents: read + statuses: write, revoked when the job ends.
 #     Checks out the private source; posts the result back as a commit status
@@ -103,7 +103,7 @@ jobs:
         id: app
         uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3.2.0
         with:
-          app-id: ${{ vars.CI_APP_ID }}
+          client-id: ${{ vars.CI_APP_CLIENT_ID }}
           private-key: ${{ secrets.CI_APP_PRIVATE_KEY }}
           owner: supervizio
           repositories: libprobe
@@ -176,7 +176,7 @@ jobs:
         id: app
         uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3.2.0
         with:
-          app-id: ${{ vars.CI_APP_ID }}
+          client-id: ${{ vars.CI_APP_CLIENT_ID }}
           private-key: ${{ secrets.CI_APP_PRIVATE_KEY }}
           owner: supervizio
           repositories: libprobe
@@ -264,7 +264,7 @@ jobs:
         id: app
         uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3.2.0
         with:
-          app-id: ${{ vars.CI_APP_ID }}
+          client-id: ${{ vars.CI_APP_CLIENT_ID }}
           private-key: ${{ secrets.CI_APP_PRIVATE_KEY }}
           owner: supervizio
           repositories: libprobe
@@ -489,7 +489,7 @@ jobs:
         id: app
         uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3.2.0
         with:
-          app-id: ${{ vars.CI_APP_ID }}
+          client-id: ${{ vars.CI_APP_CLIENT_ID }}
           private-key: ${{ secrets.CI_APP_PRIVATE_KEY }}
           owner: supervizio
           repositories: libprobe
@@ -596,7 +596,7 @@ jobs:
         id: app
         uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3.2.0
         with:
-          app-id: ${{ vars.CI_APP_ID }}
+          client-id: ${{ vars.CI_APP_CLIENT_ID }}
           private-key: ${{ secrets.CI_APP_PRIVATE_KEY }}
           owner: supervizio
           repositories: libprobe

@@ -46,7 +46,7 @@ name: Agent packages
 #     pull_request_target: a fork's code can never run next to the token.
 #   * No personal token. The jobs that read agent run in the `private-source`
 #     ENVIRONMENT (deployment branches: `main` only), the only place the
-#     kodflow-ci GitHub App's key (CI_APP_PRIVATE_KEY, with vars.CI_APP_ID) can
+#     kodflow-ci GitHub App's key (CI_APP_PRIVATE_KEY, with vars.CI_APP_CLIENT_ID) can
 #     be read, and mint there a token for supervizio/agent alone, contents:
 #     read + actions: read, revoked when the job ends. Only the two steps that
 #     need it read it (checkout, download); it is never exported to the job,
@@ -201,7 +201,7 @@ jobs:
         id: app
         uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3.2.0
         with:
-          app-id: ${{ vars.CI_APP_ID }}
+          client-id: ${{ vars.CI_APP_CLIENT_ID }}
           private-key: ${{ secrets.CI_APP_PRIVATE_KEY }}
           owner: supervizio
           repositories: agent
@@ -331,7 +331,7 @@ jobs:
         id: app
         uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3.2.0
         with:
-          app-id: ${{ vars.CI_APP_ID }}
+          client-id: ${{ vars.CI_APP_CLIENT_ID }}
           private-key: ${{ secrets.CI_APP_PRIVATE_KEY }}
           owner: supervizio
           repositories: agent
@@ -475,7 +475,7 @@ jobs:
         id: app
         uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3.2.0
         with:
-          app-id: ${{ vars.CI_APP_ID }}
+          client-id: ${{ vars.CI_APP_CLIENT_ID }}
           private-key: ${{ secrets.CI_APP_PRIVATE_KEY }}
           owner: supervizio
           repositories: agent

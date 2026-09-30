@@ -197,7 +197,7 @@ built it before uploading it.
 No personal token is used here. Every job that reads `supervizio/agent` or
 `supervizio/libprobe`, or posts a commit status on them, runs in the
 **`private-source` environment** (deployment branches: `main` only), where the
-App's ID (`vars.CI_APP_ID`) and key (`secrets.CI_APP_PRIVATE_KEY`) are stored,
+App's client ID (`vars.CI_APP_CLIENT_ID`) and key (`secrets.CI_APP_PRIVATE_KEY`) are stored,
 and nowhere else. Its first step mints an installation token with
 `actions/create-github-app-token` (pinned by SHA), scoped to the one repository
 and the permissions that job uses, revoked by the action's post step:

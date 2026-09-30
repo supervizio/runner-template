@@ -1290,6 +1290,9 @@ class AppKeyStaysInTheEnvironment(unittest.TestCase):
             for block in re.findall(r"uses: actions/create-github-app-token@.*?\n((?:\s{8,}\S.*\n)+)", text):
                 steps += 1
                 self.assertIn("owner: supervizio", block, wf)
+                # client-id, not the deprecated app-id.
+                self.assertIn("client-id: ${{ vars.CI_APP_CLIENT_ID }}", block, wf)
+                self.assertNotIn("app-id:", block, wf)
                 self.assertRegex(block, r"repositories: (agent|libprobe|agent,libprobe)\n", wf)
                 self.assertRegex(block, r"permission-[a-z]+: (read|write)", wf)
                 self.assertNotIn("permission-administration", block, wf)
