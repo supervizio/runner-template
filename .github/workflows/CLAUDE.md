@@ -17,6 +17,7 @@ of it is what anyone works on.
 |------|---------|--------------|
 | `e2e.yml` | `repository_dispatch[run-e2e]`, `workflow_dispatch`, `workflow_call` | **agent's** E2E matrix — Docker, Linux guests, BSD, illumos, Solaris, Windows, macOS. Merge lane: installs the packages the agent run published, runs the legs of the families that run built (the others report `not-built`, see "Only what the agent run built"), and reports `e2e/*` commit statuses back to that SHA. Release mode (`workflow_call` from `validate-release.yml`, `mode: release`): the same jobs, named `leg/<id>`, on a release candidate's assets and test kit — see "e2e.yml in release mode" below. |
 | `external-e2e.yml` | `repository_dispatch[run-external-e2e]`, `workflow_dispatch` | **libprobe's** lane. Rebuilds from source on the dispatched SHA; posts `e2e-public/<run>-<attempt>`, green iff the 6 native legs AND the 3 BSD **amd64** legs pass. BSD arm64 (no KVM, 1-2 h a leg) and the containers are advisory: shown in the table, never in the verdict. A BSD amd64 leg whose guest never became ready is retried once on a fresh runner; a leg that reached its tests never is. The BSD steps are written once (`&bsd-leg`) and aliased by all nine BSD jobs. |
+| `agent-packages.yml` | `repository_dispatch[build-agent-packages]`, `workflow_dispatch` | **agent's packaging**: the one producer of its FreeBSD, NetBSD, OpenBSD (amd64, arm64), macOS (amd64, arm64) and Chocolatey packages, each built and installed on its own system from binaries agent cross-compiled on its self-hosted runner. agent's `public-packages.yml` dispatches it (ci.yml `package-openbsd`, release.yml `build-bsd-packages` / `build-desktop-packages`), finds the run by its run-name and downloads the packages. See "agent's packages" below. |
 | `cleanup-external-e2e.yml` | `workflow_run` on both of the above | Deletes each dispatched run once it finishes, so no public trace of a private-source run remains. `repository_dispatch` runs only — a `workflow_dispatch` is someone debugging on purpose. |
 | `release-contract.yml` | PR and push on `release-contract/**`, `e2e.yml`, `.github/scripts/**` | Tests the release contract's validator on Linux, macOS, Windows and Python 3.9, and re-derives the manifest test vector with coreutils alone. See "The release contract" below. |
 | `validate-release.yml` | `repository_dispatch[validate-release]`, `workflow_dispatch` | The **release** lane: validates a candidate's exact bytes, pulled by digest from the private repository's GHCR package. agent's legs are `e2e.yml` called in release mode. See "The release contract" below. |
@@ -149,6 +150,46 @@ every family output is empty, every leg runs, and `validate-release.yml` judges
 them as required legs. `FamilyLegsNotBuilt`, `SolarishLegsInReleaseMode` and
 `E2eFamilies` in `release-contract/tests/test_release_contract.py` pin it all
 (`release-contract.yml` runs them when `e2e.yml` or `.github/scripts/` change).
+
+## agent's packages (`agent-packages.yml`)
+
+agent's private repository no longer spends a hosted minute on packaging. Its
+self-hosted runner cross-compiles every binary; `agent-packages.yml` runs only
+the packaging tool that needs its own OS, and installs each package where it
+built it before uploading it.
+
+- **Request.** agent's `public-packages.yml` (on `supervizio-runner`)
+  dispatches `build-agent-packages` with `request_id` (`<run id>-<attempt>-<label>`),
+  `sha`, `run_id`, `version_num` and `only`. The run is named
+  `agent-packages <request_id>` (`run-name:`); agent lists this workflow's
+  `repository_dispatch` runs, takes the one with that title, waits for it to
+  complete and downloads its artifacts. The verdict is the run's conclusion:
+  nothing here writes to agent.
+- **Artifacts** keep the names agent's release job reads:
+  `supervizio-{freebsd,netbsd}-pkg`, `supervizio-openbsd-{amd64,arm64}-pkg`,
+  `supervizio-macos-{amd64,arm64}-pkg`, `supervizio-windows-choco`. The
+  `windows-arm64` job uploads nothing and is `continue-on-error`.
+- **What it reads from agent**: the binaries of the requesting run, and a
+  sparse checkout of `setup/`, `examples/config.yaml`, `e2e/test-install.ps1`
+  and `.github/scripts/bsd-package-in-guest.sh` at `sha`. Everything but the
+  guest wrapper already ships in each release's `e2e-kit.tar.gz`. No Go source
+  is checked out. The scripts are read at the packaged commit rather than
+  vendored here, so build-pkg.sh and the tree it packages cannot drift apart.
+- **Guard-rails.** No `pull_request` or `pull_request_target` trigger. The only
+  credential is `PRIVATE_SOURCE_TOKEN` (fine-grained, read-only: Contents and
+  Actions on `supervizio/agent`), stored in the **`private-source`
+  environment**, never at repository level; that environment's deployment
+  branches are `main` only, so a branch run stops at its first private read.
+  `admit` validates every payload field before any job holding the token
+  starts. Only package directories are uploaded, and no step prints a file of
+  the checkout.
+- **Nothing stays.** agent's `public-packages.yml` deletes the run
+  (`DELETE /actions/runs/<id>`) as soon as it has downloaded the packages,
+  whatever the outcome, and fails if the run is still there: a public run of
+  agent's packaging left behind is a defect. The three-day artifact retention
+  is only a safety net for a deletion that never happened. The run is not in
+  `cleanup-external-e2e.yml`, which deletes on completion, before agent could
+  download anything.
 
 ## Upstream images: pinned hash or signature
 
