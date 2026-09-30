@@ -58,7 +58,7 @@ name: Agent packages
 #     which agent reads from the public API. The token stays read-only.
 #   * The run does not outlive its use: agent deletes it right after
 #     downloading the packages (public-packages.yml), success or not. The
-#     three-day artifact retention below is only a net under that.
+#     one-day artifact retention below is only a net under that.
 # =============================================================================
 
 run-name: agent-packages ${{ github.event.client_payload.request_id || inputs.request_id }}
@@ -288,7 +288,7 @@ jobs:
         with:
           name: ${{ matrix.pkg_artifact }}
           path: artifacts/pkg/
-          retention-days: 3
+          retention-days: 1
           if-no-files-found: error
 
   # ---------------------------------------------------------------------------
@@ -420,7 +420,7 @@ jobs:
         with:
           name: ${{ matrix.pkg_artifact }}
           path: artifacts/pkg/
-          retention-days: 3
+          retention-days: 1
           if-no-files-found: error
 
   # The arm64 twin of the Windows entry, through the INSTALL route an arm64
