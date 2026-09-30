@@ -17,11 +17,13 @@ on:
     paths:
       - "release-contract/**"
       - ".github/workflows/release-contract.yml"
+      - ".github/workflows/agent-packages.yml"
   push:
     branches: [main]
     paths:
       - "release-contract/**"
       - ".github/workflows/release-contract.yml"
+      - ".github/workflows/agent-packages.yml"
   workflow_dispatch:
 
 permissions:

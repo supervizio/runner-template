@@ -1115,6 +1115,78 @@ class CalledWorkflowLegs(unittest.TestCase):
                 self.assertEqual(rc.results_from_jobs(jobs, ["macos/arm64"]), {"macos/arm64": "missing"})
 
 
+class AgentPackagesGuardRails(unittest.TestCase):
+    """agent-packages.yml is a PUBLIC workflow holding a credential to a private
+    repository, and it produces release assets (agent's BSD, macOS and choco
+    packages). What keeps a fork's code away from that credential, and the
+    credential away from anything that does not need it, is pinned here."""
+
+    PATH = os.path.join(ROOT, os.pardir, ".github", "workflows", "agent-packages.yml")
+    # The names agent's release job reads: a rename here ships a release
+    # without that package.
+    ARTIFACTS = {
+        "supervizio-freebsd-pkg", "supervizio-netbsd-pkg",
+        "supervizio-openbsd-amd64-pkg", "supervizio-openbsd-arm64-pkg",
+        "supervizio-macos-amd64-pkg", "supervizio-macos-arm64-pkg",
+        "supervizio-windows-choco",
+    }
+
+    @classmethod
+    def setUpClass(cls):
+        with open(cls.PATH, encoding="utf-8") as fh:
+            cls.workflow = fh.read()
+        head, _, body = cls.workflow.partition("\njobs:\n")
+        cls.head = head
+        cls.jobs = dict(re.findall(r"^  ([A-Za-z0-9_-]+):\n(.*?)(?=^  [A-Za-z0-9_-]+:\n|\Z)", body, re.M | re.S))
+
+    def code(self, text):
+        # Comments may name what the workflow refuses; only code counts.
+        return "\n".join(line.split(" #", 1)[0] for line in text.splitlines() if not line.lstrip().startswith("#"))
+
+    def test_only_trusted_triggers(self):
+        on = re.search(r"^on:\n(.*?)(?=^\S)", self.head, re.M | re.S).group(1)
+        triggers = set(re.findall(r"^  ([a-z_]+):", on, re.M))
+        self.assertEqual(triggers, {"repository_dispatch", "workflow_dispatch"})
+        self.assertNotIn("pull_request", self.code(self.workflow))
+
+    def test_the_token_lives_in_the_environment_only(self):
+        secrets = set(re.findall(r"secrets\.([A-Za-z0-9_]+)", self.code(self.workflow)))
+        self.assertEqual(secrets, {"PRIVATE_SOURCE_TOKEN"})
+        for name, job in self.jobs.items():
+            uses_token = "secrets.PRIVATE_SOURCE_TOKEN" in self.code(job)
+            in_env = re.search(r"^    environment: private-source$", job, re.M) is not None
+            self.assertEqual(uses_token, in_env, name)
+            if uses_token:
+                self.assertIn("persist-credentials: false", job, name)
+
+    def test_admit_holds_nothing_and_gates_everything(self):
+        admit = self.jobs["admit"]
+        self.assertNotIn("secrets.", self.code(admit))
+        self.assertNotIn("environment:", admit)
+        for name, job in self.jobs.items():
+            if name != "admit":
+                self.assertIsNotNone(re.search(r"^    needs: \[admit\]$", job, re.M), name)
+
+    def test_no_go_source_is_checked_out(self):
+        for name, job in self.jobs.items():
+            for block in re.findall(r"sparse-checkout: \|\n((?:\s{12}\S.*\n)+)", job):
+                paths = {p.strip() for p in block.splitlines()}
+                allowed = {"/setup/", "/setup/init/windows/", "/examples/config.yaml",
+                           "/e2e/test-install.ps1", "/.github/scripts/bsd-package-in-guest.sh"}
+                self.assertLessEqual(paths, allowed, name)
+            checkouts = self.code(job).count("uses: actions/checkout@")
+            self.assertEqual(checkouts, self.code(job).count("sparse-checkout-cone-mode: false"), name)
+
+    def test_only_packages_leave(self):
+        paths = re.findall(r"uses: actions/upload-artifact@.*?\n(?:\s+.*\n)*?\s+path: (\S+)", self.workflow)
+        self.assertTrue(paths)
+        self.assertEqual(set(paths), {"artifacts/pkg/"})
+
+    def test_artifact_names(self):
+        names = set(re.findall(r'"pkg_artifact":"([^"]+)"', self.workflow))
+        self.assertEqual(names, self.ARTIFACTS)
+
+
 class SolarishLegsInReleaseMode(unittest.TestCase):
     """agent builds illumos and Solaris for a pull request only when it touches
     their paths, so e2e.yml's merge lane skips those two legs when the agent run
