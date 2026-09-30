@@ -186,7 +186,7 @@ built it before uploading it.
 - **Nothing stays.** agent's `public-packages.yml` deletes the run
   (`DELETE /actions/runs/<id>`) as soon as it has downloaded the packages,
   whatever the outcome, and fails if the run is still there: a public run of
-  agent's packaging left behind is a defect. The three-day artifact retention
+  agent's packaging left behind is a defect. The one-day artifact retention (the minimum)
   is only a safety net for a deletion that never happened. The run is not in
   `cleanup-external-e2e.yml`, which deletes on completion, before agent could
   download anything.
