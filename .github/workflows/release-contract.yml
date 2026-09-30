@@ -18,12 +18,16 @@ on:
       - "release-contract/**"
       - ".github/workflows/release-contract.yml"
       - ".github/workflows/agent-packages.yml"
+      - ".github/workflows/agent-solarish.yml"
+      - ".github/workflows/libprobe-solarish.yml"
   push:
     branches: [main]
     paths:
       - "release-contract/**"
       - ".github/workflows/release-contract.yml"
       - ".github/workflows/agent-packages.yml"
+      - ".github/workflows/agent-solarish.yml"
+      - ".github/workflows/libprobe-solarish.yml"
   workflow_dispatch:
 
 permissions:

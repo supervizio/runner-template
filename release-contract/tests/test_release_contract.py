@@ -1187,6 +1187,75 @@ class AgentPackagesGuardRails(unittest.TestCase):
         self.assertEqual(names, self.ARTIFACTS)
 
 
+class _PrivateSourceWorkflow:
+    """What every public workflow that reads a private supervizio repository
+    with PRIVATE_SOURCE_TOKEN must hold (agent-solarish.yml,
+    libprobe-solarish.yml): trusted triggers only, the token in the
+    `private-source` environment only, a credential-free `admit` gating every
+    job, the guest's output kept inside the guest."""
+
+    NAME = ""
+
+    @classmethod
+    def setUpClass(cls):
+        with open(os.path.join(ROOT, os.pardir, ".github", "workflows", cls.NAME), encoding="utf-8") as fh:
+            cls.workflow = fh.read()
+        head, _, body = cls.workflow.partition("\njobs:\n")
+        cls.head = head
+        cls.jobs = dict(re.findall(r"^  ([A-Za-z0-9_-]+):\n(.*?)(?=^  [A-Za-z0-9_-]+:\n|\Z)", body, re.M | re.S))
+
+    def code(self, text):
+        return "\n".join(line.split(" #", 1)[0] for line in text.splitlines() if not line.lstrip().startswith("#"))
+
+    def test_only_trusted_triggers(self):
+        on = re.search(r"^on:\n(.*?)(?=^\S)", self.head, re.M | re.S).group(1)
+        self.assertEqual(set(re.findall(r"^  ([a-z_]+):", on, re.M)), {"repository_dispatch", "workflow_dispatch"})
+        self.assertNotIn("pull_request", self.code(self.workflow))
+
+    def test_the_token_lives_in_the_environment_only(self):
+        self.assertEqual(set(re.findall(r"secrets\.([A-Za-z0-9_]+)", self.code(self.workflow))), {"PRIVATE_SOURCE_TOKEN"})
+        for name, job in self.jobs.items():
+            uses_token = "secrets.PRIVATE_SOURCE_TOKEN" in self.code(job)
+            self.assertEqual(uses_token, re.search(r"^    environment: private-source$", job, re.M) is not None, name)
+            if uses_token:
+                self.assertIn("persist-credentials: false", job, name)
+
+    def test_admit_holds_nothing_and_gates_everything(self):
+        self.assertNotIn("secrets.", self.code(self.jobs["admit"]))
+        self.assertNotIn("environment:", self.jobs["admit"])
+        for name, job in self.jobs.items():
+            if name != "admit":
+                self.assertIsNotNone(re.search(r"^    needs: \[admit\]$", job, re.M), name)
+
+    def test_the_guest_output_stays_in_the_guest(self):
+        # Every guest step sends the script's output to a file under /var/tmp
+        # (outside the synced workspace) and prints only the stage markers.
+        runs = re.findall(r"uses: vmactions/[a-z]+-vm@.*?\n(?:\s+.*\n)*?\s+run: \|\n((?:\s{12}\S.*\n)+)", self.workflow)
+        self.assertEqual(len(runs), 2)
+        for run in runs:
+            first = run.strip().splitlines()[0]
+            self.assertRegex(first, r"^sh \.github/scripts/\S+\.sh >/var/tmp/\S+\.log 2>&1$")
+            self.assertIn("grep '^=== '", run)
+
+
+class AgentSolarishGuardRails(_PrivateSourceWorkflow, unittest.TestCase):
+    NAME = "agent-solarish.yml"
+
+    def test_only_binaries_and_archives_leave(self):
+        paths = set(re.findall(r"uses: actions/upload-artifact@.*?\n(?:\s+.*\n)*?\s+path: (.+)", self.workflow))
+        self.assertEqual(paths, {"artifacts/bin/supervizio-${{ matrix.platform }}", "artifacts/pkg/"})
+
+    def test_the_libprobe_fetch_is_silent(self):
+        self.assertRegex(self.workflow, r"bash setup/fetch-libprobe\.sh .* >/dev/null 2>&1")
+
+
+class LibprobeSolarishGuardRails(_PrivateSourceWorkflow, unittest.TestCase):
+    NAME = "libprobe-solarish.yml"
+
+    def test_nothing_is_uploaded(self):
+        self.assertNotIn("upload-artifact", self.code(self.workflow))
+
+
 class SolarishLegsInReleaseMode(unittest.TestCase):
     """agent builds illumos and Solaris for a pull request only when it touches
     their paths, so e2e.yml's merge lane skips those two legs when the agent run

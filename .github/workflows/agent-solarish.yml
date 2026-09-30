@@ -1,0 +1,228 @@
+name: Agent illumos and Solaris
+
+# =============================================================================
+# THE ONE PRODUCER OF agent's illumos AND Solaris BYTES: the binary, built
+# natively with cgo in a guest of each kernel, and its IPS archive (.p5p),
+# installed and run under SMF in that same guest before it leaves.
+#
+# NATIVE, NOT CROSS (measured by agent, not assumed): the only published
+# illumos sysroot cannot build Go's runtime/cgo, libprobe binds symbols its
+# libsocket lacks, and the IPS tools (pkgsend, pkgrepo, pkgrecv, pkgdepend) run
+# only on these kernels. So the guest is booted either way.
+#
+# WHO CALLS IT. agent's `.github/workflows/public-packages.yml` (producer
+# `solarish`), for ci.yml's `package-solarish` and release.yml's
+# `build-solarish-packages`: CI and a release get these bytes from this one
+# file. agent dispatches `build-agent-solarish`, finds this run by its
+# run-name, downloads the binaries and archives, and deletes the run.
+#
+# THIS WORKFLOW BUILDS PRIVATE SOURCES ON A PUBLIC RUNNER. The owner of
+# supervizio/agent decided it (the private repository's hosted minutes are
+# billed, its pods have no KVM). What keeps that safe:
+#   * repository_dispatch and workflow_dispatch only. Never pull_request or
+#     pull_request_target: a fork's code never runs next to the token.
+#   * PRIVATE_SOURCE_TOKEN (fine-grained, read-only: Contents + Actions on
+#     supervizio/agent and supervizio/libprobe) lives in the `private-source`
+#     environment, deployment branches `main` only. Only the checkout and the
+#     libprobe fetch read it; persist-credentials is off, and the guest (which
+#     gets the whole workspace) never holds it.
+#   * `admit` validates every payload field before any job holding the token
+#     starts. The repository is not an input.
+#   * NOTHING OF THE SOURCES LEAVES. The libprobe fetch is silent. The guest's
+#     whole output (compiler, tests, packaging, SMF) goes to a file inside the
+#     guest that is never copied back; the log shows only the script's own
+#     `=== <stage>` markers and the verdict. The build logs the script keeps
+#     are removed before copy-back. Only the binary and the .p5p are uploaded.
+#   * The run does not outlive its use: agent deletes it right after
+#     downloading, success or not; the three-day artifact retention is a net.
+# =============================================================================
+
+run-name: agent-solarish ${{ github.event.client_payload.request_id || inputs.request_id }}
+
+on:
+  repository_dispatch:
+    types: [build-agent-solarish]
+  # For trying it on a branch. The environment's branch policy keeps the token
+  # off every branch but main, so a branch run stops at its checkout.
+  workflow_dispatch:
+    inputs:
+      request_id:
+        description: "<agent run id>-<attempt>-<label>; the run-name agent looks for"
+        required: true
+      sha:
+        description: agent commit to build (40 hex)
+        required: true
+      run_id:
+        description: agent run asking (the request id starts with it)
+        required: true
+      version:
+        description: Version stamped into the binary and the package (v prefix allowed)
+        required: false
+        default: "0.0.0-dev"
+      only:
+        description: Space-separated subset of illumos-amd64 solaris-amd64. Empty = both.
+        required: false
+        default: ""
+
+permissions:
+  contents: read
+
+concurrency:
+  group: agent-solarish-${{ github.event.client_payload.request_id || inputs.request_id }}
+  cancel-in-progress: true
+
+env:
+  REQUEST_ID: ${{ github.event.client_payload.request_id || inputs.request_id }}
+  SOURCE_SHA: ${{ github.event.client_payload.sha || inputs.sha }}
+  SOURCE_RUN_ID: ${{ github.event.client_payload.run_id || inputs.run_id }}
+  SVZ_BUILD_VERSION: ${{ github.event.client_payload.version || inputs.version || '0.0.0-dev' }}
+  ONLY: ${{ github.event.client_payload.only || inputs.only }}
+
+jobs:
+  # No credential here: every payload field is checked before a job that holds
+  # one may start. Read through env, never interpolated into the script.
+  admit:
+    name: Admit the request
+    runs-on: ubuntu-26.04
+    outputs:
+      include: ${{ steps.plan.outputs.include }}
+    steps:
+      - name: Validate the request
+        id: plan
+        run: |
+          set -euo pipefail
+          [[ "$REQUEST_ID" =~ ^[0-9]{1,20}-[0-9]{1,4}-[a-z]{1,20}$ ]] || { echo "::error::request_id must be <run id>-<attempt>-<label>"; exit 1; }
+          [[ "$SOURCE_SHA" =~ ^[0-9a-f]{40}$ ]] || { echo "::error::sha must be a full 40-hex commit"; exit 1; }
+          [[ "$SOURCE_RUN_ID" =~ ^[0-9]{1,20}$ ]] || { echo "::error::run_id must be numeric"; exit 1; }
+          [ "${REQUEST_ID%%-*}" = "$SOURCE_RUN_ID" ] || { echo "::error::request_id does not start with run_id"; exit 1; }
+          [[ "$SVZ_BUILD_VERSION" =~ ^v?[0-9]+\.[0-9]+\.[0-9]+([.+~-][0-9A-Za-z.]+)?$ ]] || { echo "::error::version '$SVZ_BUILD_VERSION' is not a version"; exit 1; }
+          # The guest images carry gcc: OmniOS r151054 (the illumos LTS) and
+          # Solaris 11.4 CBE.
+          all='[
+            {"platform":"illumos-amd64","goos":"illumos","os":"omnios","release":"r151054-build"},
+            {"platform":"solaris-amd64","goos":"solaris","os":"solaris","release":"11.4-gcc"}
+          ]'
+          if [ -n "${ONLY// /}" ]; then
+            want="$(printf '%s' "$ONLY" | tr -s '[:space:]' '\n' | sed '/^$/d' | sort -u | jq -R . | jq -sc .)"
+            sel="$(jq -c --argjson w "$want" '[.[] | select(.platform as $p | $w | index($p))]' <<<"$all")"
+            [ "$(jq length <<<"$sel")" -eq "$(jq length <<<"$want")" ] || { echo "::error::only names a platform this workflow does not build"; exit 1; }
+          else
+            sel="$(jq -c . <<<"$all")"
+          fi
+          echo "include=$sel" >> "$GITHUB_OUTPUT"
+          echo "request $REQUEST_ID: agent@$SOURCE_SHA, version $SVZ_BUILD_VERSION, $(jq -r 'map(.platform) | join(" ")' <<<"$sel")"
+
+  build:
+    name: ${{ matrix.platform }} (native, guest)
+    needs: [admit]
+    runs-on: ubuntu-26.04
+    environment: private-source
+    timeout-minutes: 60
+    strategy:
+      fail-fast: false
+      matrix:
+        include: ${{ fromJSON(needs.admit.outputs.include) }}
+    steps:
+      - name: Check out agent
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: supervizio/agent
+          ref: ${{ env.SOURCE_SHA }}
+          token: ${{ secrets.PRIVATE_SOURCE_TOKEN }}
+          # The workspace is synced wholesale into the guest.
+          persist-credentials: false
+
+      # Silent: its output names nothing secret, but nothing of this checkout's
+      # tooling is printed here. A failure says only that it failed.
+      - name: Fetch the pinned libprobe (${{ matrix.platform }})
+        env:
+          GH_TOKEN: ${{ secrets.PRIVATE_SOURCE_TOKEN }}
+          PLATFORM: ${{ matrix.platform }}
+        run: |
+          set -euo pipefail
+          bash setup/fetch-libprobe.sh "$(tr -d '[:space:]' < LIBPROBE_VERSION)" "$PLATFORM" >/dev/null 2>&1 \
+            || { echo "::error::could not fetch libprobe $(tr -d '[:space:]' < LIBPROBE_VERSION) for $PLATFORM"; exit 1; }
+          [ -s "dist/lib/$PLATFORM/libprobe.a" ] || { echo "::error::no libprobe.a for $PLATFORM"; exit 1; }
+          echo "libprobe $(tr -d '[:space:]' < LIBPROBE_VERSION) staged for $PLATFORM"
+
+      # The Go archive and its sha256 are agent's own pin
+      # (.github/solarish-go.json, kept equal to src/go.mod by agent's tests),
+      # so the toolchain moves with the tree it builds.
+      - name: Fetch Go for ${{ matrix.goos }}
+        env:
+          GOOS_NAME: ${{ matrix.goos }}
+        run: |
+          set -euo pipefail
+          ver="$(jq -r '.version' .github/solarish-go.json)"
+          sum="$(jq -r --arg g "$GOOS_NAME" '.sha256[$g]' .github/solarish-go.json)"
+          [[ "$ver" =~ ^[0-9]+\.[0-9]+(\.[0-9]+)?$ ]] && [[ "$sum" =~ ^[0-9a-f]{64}$ ]] || { echo "::error::.github/solarish-go.json has no usable pin for $GOOS_NAME"; exit 1; }
+          mkdir -p .guest
+          curl -fsSL --retry 3 -o .guest/go.tar.gz "https://go.dev/dl/go${ver}.${GOOS_NAME}-amd64.tar.gz"
+          echo "${sum}  .guest/go.tar.gz" | sha256sum -c -
+
+      # `uses:` takes no expression: one step per kernel, one command. The
+      # guest's whole output goes to a file OUTSIDE the synced workspace, so
+      # copy-back never brings it out; only the `=== ` stage markers are
+      # printed. The logs the script keeps in the workspace are removed before
+      # copy-back. ssh forwards no environment: `envs:` names what it reads.
+      - name: Build and package inside OmniOS ${{ matrix.release }}
+        if: matrix.os == 'omnios'
+        uses: vmactions/omnios-vm@9576f0b6d15e7696548409baa533bc0a339caf42 # v1.3.7
+        env:
+          SVZ_GOOS: ${{ matrix.goos }}
+          SVZ_PLATFORM: ${{ matrix.platform }}
+          SVZ_VERSION: ${{ env.SVZ_BUILD_VERSION }}
+        with:
+          release: ${{ matrix.release }}
+          copyback: true
+          envs: SVZ_GOOS SVZ_PLATFORM SVZ_VERSION
+          run: |
+            sh .github/scripts/solarish-build-in-guest.sh >/var/tmp/svz-guest.log 2>&1
+            grep '^=== ' /var/tmp/svz-guest.log || true
+            rm -rf artifacts/logs .guest
+
+      - name: Build and package inside Oracle Solaris ${{ matrix.release }}
+        if: matrix.os == 'solaris'
+        uses: vmactions/solaris-vm@87d3c436511cef802cd1637f86f73b1a97715c8c # v1.4.1
+        env:
+          SVZ_GOOS: ${{ matrix.goos }}
+          SVZ_PLATFORM: ${{ matrix.platform }}
+          SVZ_VERSION: ${{ env.SVZ_BUILD_VERSION }}
+        with:
+          release: ${{ matrix.release }}
+          copyback: true
+          envs: SVZ_GOOS SVZ_PLATFORM SVZ_VERSION
+          run: |
+            sh .github/scripts/solarish-build-in-guest.sh >/var/tmp/svz-guest.log 2>&1
+            grep '^=== ' /var/tmp/svz-guest.log || true
+            rm -rf artifacts/logs .guest
+
+      # The guest exits 0 so its artifacts come back even from a red run; the
+      # verdict is taken here. A missing file is a failure.
+      - name: Verdict
+        env:
+          PLATFORM: ${{ matrix.platform }}
+          GOOS_NAME: ${{ matrix.goos }}
+        run: |
+          set -euo pipefail
+          test -f artifacts/status || { echo "::error::the guest wrote no verdict"; exit 1; }
+          [ "$(cat artifacts/status)" = 0 ] || { echo "::error::a guest stage failed (the FAILED marker above names it; its output stays in the guest)"; exit 1; }
+          [ -s "artifacts/bin/supervizio-$PLATFORM" ] || { echo "::error::no binary"; exit 1; }
+          [ -s "artifacts/pkg/supervizio-$GOOS_NAME-amd64.p5p" ] || { echo "::error::no .p5p"; exit 1; }
+          ls -l artifacts/bin artifacts/pkg
+
+      - name: Upload the binary
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: supervizio-${{ matrix.platform }}
+          path: artifacts/bin/supervizio-${{ matrix.platform }}
+          retention-days: 3
+          if-no-files-found: error
+
+      - name: Upload the package
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: supervizio-${{ matrix.platform }}-pkg
+          path: artifacts/pkg/
+          retention-days: 3
+          if-no-files-found: error
