@@ -31,9 +31,12 @@ archive) and `solaris` (the Solaris 11.4 archive), or the containers
 `container-ubuntu`, `container-alpine`, `container-scratch`. A guest host needs
 a boot step in `.github/workflows/validate-release.yml`, and a leg's platform a
 `case` arm in `harness/libprobe/run.sh`: `tests/test_release_contract.py` fails
-on either gap. `solarish/illumos-amd64` and `solarish/solaris-amd64` have no
-merge-lane twin here: libprobe's own CI runs its source in those two guests,
-because that compiles private code this repository never checks out.
+on either gap. The merge-lane twin of `solarish/illumos-amd64` and
+`solarish/solaris-amd64` is `.github/workflows/libprobe-solarish.yml`: libprobe
+cross-builds its test binaries on its own runner, and those two guests run
+them here, never its sources. `tests/test_release_contract.py`
+(`NoReleaseWithoutIllumosAndSolaris`) keeps both kernels required for both
+repositories.
 
 ## Changing the contract
 

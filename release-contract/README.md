@@ -373,9 +373,10 @@ and libprobe's own CI for illumos and Solaris):
 `native/{linux,windows,macos}-{amd64,arm64}` and `bsd/{freebsd,openbsd,netbsd}-amd64`
 (gating in merge CI since #110), `container/{ubuntu,alpine,scratch}` (advisory in
 merge CI, gating for a release), `bsd/{freebsd,openbsd,netbsd}-arm64` (advisory in
-both), `solarish/{illumos,solaris}-amd64` (gating in libprobe's own merge CI, which
-runs the source in an OmniOS and a Solaris guest because that compiles private
-code; nothing here runs them for a merge). In the release lane each runs the
+both), `solarish/{illumos,solaris}-amd64` (gating in libprobe's merge CI, which
+cross-builds its test binaries on its own runner and has this repository's
+`libprobe-solarish.yml` run them in an OmniOS and a Solaris guest: binaries
+only, never its sources). In the release lane each runs the
 **`abi` scenario**, the ABI/runtime harness of brief §4.1 (`harness/libprobe/`),
 on its own platform's published archive — never a rebuild:
 

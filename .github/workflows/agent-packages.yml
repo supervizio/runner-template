@@ -17,6 +17,13 @@ name: Agent packages
 #   windows-amd64   choco pack, then the full SCM install cycle, windows-2025
 #   windows-arm64   the .zip layout through the SCM cycle, windows-11-arm
 #                   (advisory: it produces nothing and never fails the run)
+#   illumos-amd64   the IPS archive (.p5p) in an OmniOS r151054 guest
+#   solaris-amd64   the IPS archive (.p5p) in an Oracle Solaris 11.4 guest
+#                   (pkgsend, pkgrepo, pkgrecv and pkgdepend exist only on
+#                   these kernels). Before packaging, the guest runs the
+#                   binary (--version, --probe) and agent's cross-built Go
+#                   test binaries of its illumos/Solaris-specific packages;
+#                   after, it installs the archive and checks SMF runs it.
 #
 # Every package is installed where it was built, as a user would, before it is
 # uploaded (pkg_add / pkg install through setup/install.sh, installer(8), the
@@ -24,19 +31,23 @@ name: Agent packages
 #
 # WHO CALLS IT. agent's `.github/workflows/public-packages.yml`, and nothing
 # else: ci.yml's `package-openbsd` (both OpenBSD arches, every pull request
-# that builds OpenBSD) and release.yml's `build-bsd-packages` and
+# that builds OpenBSD) and `package-solarish`, and release.yml's
+# `build-bsd-packages`, `build-solarish-packages` and
 # `build-desktop-packages`. CI and a release therefore receive their packages
 # from this one file, never from two producers under one name. agent
 # dispatches `build-agent-packages`, finds this run by its run-name (the
 # request id it chose), waits for it, and downloads the packages from it.
 #
 # WHAT IT READS FROM agent, and nothing more:
-#   * the cross-built binaries, downloaded from the agent run that asked;
+#   * the cross-built binaries, downloaded from the agent run that asked, and
+#     for illumos/Solaris the `go test -c` binaries (`solarish-tests-*`);
 #   * a SPARSE checkout of the requesting commit: `setup/`,
-#     `examples/config.yaml`, `e2e/test-install.ps1` and
-#     `.github/scripts/bsd-package-in-guest.sh`. All but the last already ship
-#     in every release as `e2e-kit.tar.gz`; the last is the packaging wrapper
-#     the guests run. None of agent's Go sources are ever checked out here.
+#     `examples/config.yaml`, `LICENSE`, `e2e/test-install.ps1`,
+#     `.github/scripts/bsd-package-in-guest.sh` and
+#     `.github/scripts/solarish-package-in-guest.sh`. All but the last two
+#     already ship in every release as `e2e-kit.tar.gz`; those two are the
+#     packaging wrappers the guests run. None of agent's Go sources are ever
+#     checked out here.
 #   These scripts are not vendored into this repository on purpose: they
 #   package the tree they sit in, so they are read at the commit being
 #   packaged, and a copy here would drift from the build-pkg.sh it wraps.
@@ -53,7 +64,9 @@ name: Agent packages
 #   * The requested commit, run id and request id are validated in `admit`
 #     before any job holds the token; the repository is not an input at all.
 #   * Only packages leave: each upload is the package directory, nothing of
-#     the checkout. No step prints a source file.
+#     the checkout. No step prints a source file. The illumos/Solaris guest
+#     keeps its detailed output inside the guest (/var/tmp, never synced
+#     back); the log shows its `=== ` stage lines and the verdict only.
 #   * Nothing here writes to agent: the verdict is this run's conclusion,
 #     which agent reads from the public API. The token stays read-only.
 #   * The run does not outlive its use: agent deletes it right after
@@ -89,8 +102,8 @@ on:
       only:
         description: >-
           Space-separated subset of freebsd-amd64 netbsd-amd64 openbsd-amd64
-          openbsd-arm64 macos-amd64 macos-arm64 windows-amd64 windows-arm64.
-          Empty = all of them.
+          openbsd-arm64 macos-amd64 macos-arm64 windows-amd64 windows-arm64
+          illumos-amd64 solaris-amd64. Empty = all of them.
         required: false
         default: ""
 
@@ -120,6 +133,7 @@ jobs:
     outputs:
       bsd: ${{ steps.plan.outputs.bsd }}
       desktop: ${{ steps.plan.outputs.desktop }}
+      solarish: ${{ steps.plan.outputs.solarish }}
       windows_arm64: ${{ steps.plan.outputs.windows_arm64 }}
     steps:
       - name: Validate the request, split it by runner family
@@ -148,7 +162,13 @@ jobs:
             {"platform":"macos-arm64","os":"macos","arch":"arm64","runner":"macos-15","artifact":"supervizio-darwin-arm64","pkg_artifact":"supervizio-macos-arm64-pkg"},
             {"platform":"windows-amd64","os":"windows","arch":"amd64","runner":"windows-2025","artifact":"supervizio-windows-amd64","pkg_artifact":"supervizio-windows-choco"}
           ]'
-          known="$(jq -rn --argjson a "$bsd" --argjson b "$desktop" '($a + $b | map(.platform)) + ["windows-arm64"] | .[]')"
+          # The plain images, as e2e.yml's illumos and Solaris legs boot them:
+          # nothing is compiled here, so no gcc variant is needed.
+          solarish='[
+            {"platform":"illumos-amd64","goos":"illumos","os":"omnios","release":"r151054","artifact":"supervizio-illumos-amd64","tests_artifact":"solarish-tests-illumos-amd64","pkg_artifact":"supervizio-illumos-amd64-pkg"},
+            {"platform":"solaris-amd64","goos":"solaris","os":"solaris","release":"11.4","artifact":"supervizio-solaris-amd64","tests_artifact":"solarish-tests-solaris-amd64","pkg_artifact":"supervizio-solaris-amd64-pkg"}
+          ]'
+          known="$(jq -rn --argjson a "$bsd" --argjson b "$desktop" --argjson c "$solarish" '($a + $b + $c | map(.platform)) + ["windows-arm64"] | .[]')"
           if [ -n "${ONLY// /}" ]; then
             want="$(printf '%s' "$ONLY" | tr -s '[:space:]' '\n' | sed '/^$/d' | sort -u)"
           else
@@ -162,10 +182,12 @@ jobs:
           wantj="$(printf '%s\n' "$want" | jq -R . | jq -sc .)"
           sel_bsd="$(jq -c --argjson w "$wantj" '[.[] | select(.platform as $p | $w | index($p))]' <<<"$bsd")"
           sel_desktop="$(jq -c --argjson w "$wantj" '[.[] | select(.platform as $p | $w | index($p))]' <<<"$desktop")"
+          sel_solarish="$(jq -c --argjson w "$wantj" '[.[] | select(.platform as $p | $w | index($p))]' <<<"$solarish")"
           warm="$(jq -r --argjson w "$wantj" '$w | index("windows-arm64") != null' <<<'null')"
           {
             echo "bsd=$sel_bsd"
             echo "desktop=$sel_desktop"
+            echo "solarish=$sel_solarish"
             echo "windows_arm64=$warm"
           } >> "$GITHUB_OUTPUT"
           echo "request $REQUEST_ID: agent@$SOURCE_SHA, run $SOURCE_RUN_ID, version $VERSION_NUM"
@@ -282,6 +304,136 @@ jobs:
           # jq, because the script runs setup/install.sh.
           prepare: pkg_add -I jq
           run: sh .github/scripts/bsd-package-in-guest.sh
+
+      - name: Upload the package
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: ${{ matrix.pkg_artifact }}
+          path: artifacts/pkg/
+          retention-days: 1
+          if-no-files-found: error
+
+  # ---------------------------------------------------------------------------
+  # illumos and Oracle Solaris 11.4: the IPS archive, from the binary agent
+  # cross-compiled with cgo on its own runner against its private sysroot
+  # (agent .github/solarish-cross/). Nothing is compiled here. The guest
+  # script is agent's own: it runs the binary and agent's cross-built Go test
+  # binaries on the kernel, builds the .p5p with build-pkg.sh, installs it,
+  # checks SMF runs it and uninstalls it. Its detailed output stays in the
+  # guest (/var/tmp): only the `=== ` stage lines and the verdict reach this
+  # log, and only the archive is uploaded.
+  # ---------------------------------------------------------------------------
+  solarish:
+    name: ${{ matrix.platform }} package
+    needs: [admit]
+    if: ${{ needs.admit.outputs.solarish != '[]' }}
+    runs-on: ubuntu-26.04
+    environment: private-source
+    # Boot, the tests, packaging, one SMF cycle: about 10 minutes, measured
+    # on the native lane this replaces with a compile on top.
+    timeout-minutes: 45
+    strategy:
+      fail-fast: false
+      matrix:
+        include: ${{ fromJSON(needs.admit.outputs.solarish) }}
+    steps:
+      - name: Sparse checkout of agent's packaging tree
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: supervizio/agent
+          ref: ${{ env.SOURCE_SHA }}
+          token: ${{ secrets.PRIVATE_SOURCE_TOKEN }}
+          # The workspace is synced wholesale into the guest.
+          persist-credentials: false
+          sparse-checkout-cone-mode: false
+          # LICENSE: the package ships it (build-pkg.sh's license action).
+          sparse-checkout: |
+            /setup/
+            /examples/config.yaml
+            /LICENSE
+            /.github/scripts/solarish-package-in-guest.sh
+
+      - name: Download the cross-built binary from the agent run
+        uses: actions/download-artifact@70fc10c6e5e1ce46ad2ea6f2b72d43f7d47b13c3 # v8.0.0
+        with:
+          name: ${{ matrix.artifact }}
+          path: bin
+          repository: supervizio/agent
+          run-id: ${{ env.SOURCE_RUN_ID }}
+          github-token: ${{ secrets.PRIVATE_SOURCE_TOKEN }}
+
+      - name: Download the cross-built Go test binaries from the agent run
+        uses: actions/download-artifact@70fc10c6e5e1ce46ad2ea6f2b72d43f7d47b13c3 # v8.0.0
+        with:
+          name: ${{ matrix.tests_artifact }}
+          path: tests
+          repository: supervizio/agent
+          run-id: ${{ env.SOURCE_RUN_ID }}
+          github-token: ${{ secrets.PRIVATE_SOURCE_TOKEN }}
+
+      # Binaries only: an ELF that is not x86-64 for this kernel's loader, or
+      # anything else in the downloads, is refused before a guest boots.
+      - name: Check what arrived is binaries, for this kernel
+        env:
+          ARTIFACT: ${{ matrix.artifact }}
+        run: |
+          set -euo pipefail
+          BIN="bin/$ARTIFACT"
+          [ -f "$BIN" ] || { echo "::error::no $ARTIFACT in the agent run" >&2; exit 1; }
+          mv "$BIN" supervizio-target
+          rm -rf bin
+          chmod +x supervizio-target
+          file supervizio-target | grep -q 'ELF 64-bit LSB executable, x86-64' || { file supervizio-target; echo "::error::$ARTIFACT is not an x86-64 ELF executable" >&2; exit 1; }
+          n=0
+          for t in tests/*; do
+            [ -f "$t" ] || continue
+            case "$t" in *.test) ;; *) echo "::error::unexpected file in the test binaries: $t" >&2; exit 1 ;; esac
+            file "$t" | grep -q 'ELF 64-bit LSB executable, x86-64' || { echo "::error::$t is not an x86-64 ELF executable" >&2; exit 1; }
+            n=$((n + 1))
+          done
+          [ "$n" -gt 0 ] || { echo "::error::no Go test binary in the agent run" >&2; exit 1; }
+          ls -l supervizio-target
+          echo "$n Go test binaries"
+
+      # `uses:` takes no expression: one step per kernel, one script.
+      - name: Test, package, install under SMF inside OmniOS ${{ matrix.release }}
+        if: matrix.os == 'omnios'
+        uses: vmactions/omnios-vm@9576f0b6d15e7696548409baa533bc0a339caf42 # v1.3.7
+        env:
+          SVZ_GOOS: ${{ matrix.goos }}
+          SVZ_PLATFORM: ${{ matrix.platform }}
+          SVZ_VERSION: ${{ env.VERSION_NUM }}
+        with:
+          release: ${{ matrix.release }}
+          copyback: true
+          # ssh forwards no environment: what the script reads is named here.
+          envs: SVZ_GOOS SVZ_PLATFORM SVZ_VERSION
+          run: sh .github/scripts/solarish-package-in-guest.sh
+
+      - name: Test, package, install under SMF inside Oracle Solaris ${{ matrix.release }}
+        if: matrix.os == 'solaris'
+        uses: vmactions/solaris-vm@87d3c436511cef802cd1637f86f73b1a97715c8c # v1.4.1
+        env:
+          SVZ_GOOS: ${{ matrix.goos }}
+          SVZ_PLATFORM: ${{ matrix.platform }}
+          SVZ_VERSION: ${{ env.VERSION_NUM }}
+        with:
+          release: ${{ matrix.release }}
+          copyback: true
+          envs: SVZ_GOOS SVZ_PLATFORM SVZ_VERSION
+          run: sh .github/scripts/solarish-package-in-guest.sh
+
+      # The guest exits 0 so its package comes back even from a red run; the
+      # verdict is taken here. A missing file is a failure.
+      - name: Verdict
+        env:
+          GOOS_NAME: ${{ matrix.goos }}
+        run: |
+          set -euo pipefail
+          test -f artifacts/status || { echo "::error::the guest wrote no verdict"; exit 1; }
+          [ "$(cat artifacts/status)" = 0 ] || { echo "::error::a guest stage failed (the FAILED line above names it)"; exit 1; }
+          [ -s "artifacts/pkg/supervizio-$GOOS_NAME-amd64.p5p" ] || { echo "::error::no supervizio-$GOOS_NAME-amd64.p5p"; exit 1; }
+          ls -l artifacts/pkg
 
       - name: Upload the package
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1

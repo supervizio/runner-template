@@ -17,7 +17,8 @@ of it is what anyone works on.
 |------|---------|--------------|
 | `e2e.yml` | `repository_dispatch[run-e2e]`, `workflow_dispatch`, `workflow_call` | **agent's** E2E matrix — Docker, Linux guests, BSD, illumos, Solaris, Windows, macOS. Merge lane: installs the packages the agent run published, runs the legs of the families that run built (the others report `not-built`, see "Only what the agent run built"), and reports `e2e/*` commit statuses back to that SHA. Release mode (`workflow_call` from `validate-release.yml`, `mode: release`): the same jobs, named `leg/<id>`, on a release candidate's assets and test kit — see "e2e.yml in release mode" below. |
 | `external-e2e.yml` | `repository_dispatch[run-external-e2e]`, `workflow_dispatch` | **libprobe's** lane. Rebuilds from source on the dispatched SHA; posts `e2e-public/<run>-<attempt>`, green iff the 6 native legs AND the 3 BSD **amd64** legs pass. BSD arm64 (no KVM, 1-2 h a leg) and the containers are advisory: shown in the table, never in the verdict. A BSD amd64 leg whose guest never became ready is retried once on a fresh runner; a leg that reached its tests never is. The BSD steps are written once (`&bsd-leg`) and aliased by all nine BSD jobs. |
-| `agent-packages.yml` | `repository_dispatch[build-agent-packages]`, `workflow_dispatch` | **agent's packaging**: the one producer of its FreeBSD, NetBSD, OpenBSD (amd64, arm64), macOS (amd64, arm64) and Chocolatey packages, each built and installed on its own system from binaries agent cross-compiled on its self-hosted runner. agent's `public-packages.yml` dispatches it (ci.yml `package-openbsd`, release.yml `build-bsd-packages` / `build-desktop-packages`), finds the run by its run-name and downloads the packages. See "agent's packages" below. |
+| `agent-packages.yml` | `repository_dispatch[build-agent-packages]`, `workflow_dispatch` | **agent's packaging**: the one producer of its FreeBSD, NetBSD, OpenBSD (amd64, arm64), macOS (amd64, arm64), Chocolatey, illumos and Solaris (IPS) packages, each built and installed on its own system from binaries agent cross-compiled on its self-hosted runner. agent's `public-packages.yml` dispatches it (ci.yml `package-openbsd` / `package-solarish`, release.yml `build-bsd-packages` / `build-solarish-packages` / `build-desktop-packages`), finds the run by its run-name and downloads the packages. See "agent's packages" below. |
+| `libprobe-solarish.yml` | `repository_dispatch[run-libprobe-solarish]`, `workflow_dispatch` | **libprobe's illumos and Solaris runtime suite**, from binaries libprobe cross-built on its self-hosted runner: an OmniOS r151054 and a Solaris 11.4 guest run the bundle's plan (`.github/solarish-leg/libprobe-tests.sh`); the verdict is the run's conclusion, the stage logs a one-day artifact. libprobe's `solarish-guest.yml` dispatches it, downloads the report and deletes the run. Same guard-rails as `agent-packages.yml`. |
 | `cleanup-external-e2e.yml` | `workflow_run` on both of the above | Deletes each dispatched run once it finishes, so no public trace of a private-source run remains. `repository_dispatch` runs only — a `workflow_dispatch` is someone debugging on purpose. |
 | `release-contract.yml` | PR and push on `release-contract/**`, `e2e.yml`, `.github/scripts/**` | Tests the release contract's validator on Linux, macOS, Windows and Python 3.9, and re-derives the manifest test vector with coreutils alone. See "The release contract" below. |
 | `validate-release.yml` | `repository_dispatch[validate-release]`, `workflow_dispatch` | The **release** lane: validates a candidate's exact bytes, pulled by digest from the private repository's GHCR package. agent's legs are `e2e.yml` called in release mode. See "The release contract" below. |
@@ -102,9 +103,10 @@ the 26.04 labels yet; `.github/actionlint.yaml` lists them.
 - **illumos and Solaris: `e2e-illumos-amd64`, `e2e-solaris-amd64`** (release
   legs `illumos/amd64`, `solaris/amd64`). A stock OmniOS r151054 and a stock
   Oracle Solaris 11.4 guest (`vmactions/omnios-vm`, `vmactions/solaris-vm`, no
-  compiler), jq from each OS's own repository. The binary and the `.p5p` are
-  agent's native build and IPS archive (agent's `solarish-package.yml`, CI
-  artifacts `supervizio-{illumos,solaris}-amd64[-pkg]`, release assets
+  compiler), jq from each OS's own repository. The binary is agent's cgo
+  cross build (its `build-solarish-cross`) and the `.p5p` the archive
+  `agent-packages.yml` built from it (CI artifacts
+  `supervizio-{illumos,solaris}-amd64[-pkg]`, release assets
   `supervizio-{illumos,solaris}-amd64[.p5p]`). `.github/solarish-leg/in-guest.sh`
   installs the raw binary through install.sh (which grafts the SMF manifest),
   then the archive through install.sh (pkg(5), whose actuator registers the
@@ -116,9 +118,9 @@ the 26.04 labels yet; `.github/actionlint.yaml` lists them.
   `go.work`, `.dockerignore`), never agent's sources. Status contexts
   `e2e/illumos/omnios-amd64`, `e2e/solaris/amd64`.
 
-  **When they run.** agent builds these two kernels (about 26 hosted minutes
-  of a private repository) on every release, but for a pull request only when
-  it touches the paths agent lists in its `.github/solarish-paths.txt` -- the
+  **When they run.** agent builds these two kernels on every release, but for
+  a pull request only when it touches the paths agent lists in its
+  `.github/solarish-paths.txt` -- the
   rule "Only what the agent run built" below applies to them as to every
   family.
 
@@ -167,12 +169,22 @@ built it before uploading it.
   nothing here writes to agent.
 - **Artifacts** keep the names agent's release job reads:
   `supervizio-{freebsd,netbsd}-pkg`, `supervizio-openbsd-{amd64,arm64}-pkg`,
-  `supervizio-macos-{amd64,arm64}-pkg`, `supervizio-windows-choco`. The
-  `windows-arm64` job uploads nothing and is `continue-on-error`.
+  `supervizio-macos-{amd64,arm64}-pkg`, `supervizio-windows-choco`,
+  `supervizio-{illumos,solaris}-amd64-pkg`. The `windows-arm64` job uploads
+  nothing and is `continue-on-error`.
+- **illumos and Solaris** (`solarish` job): a stock OmniOS r151054 and a stock
+  Solaris 11.4 guest (the images e2e.yml's legs boot; nothing is compiled)
+  run agent's `solarish-package-in-guest.sh` on the cross-built binary and
+  agent's `go test -c` binaries (`solarish-tests-<platform>`, refused unless
+  every file is an x86-64 ELF): `--version`, `--probe`, the tests, the IPS
+  archive, install, SMF online and still running, uninstall. The guest's logs
+  stay in the guest; the log shows its `=== ` lines and the verdict. Only the
+  `.p5p` is uploaded.
 - **What it reads from agent**: the binaries of the requesting run, and a
-  sparse checkout of `setup/`, `examples/config.yaml`, `e2e/test-install.ps1`
-  and `.github/scripts/bsd-package-in-guest.sh` at `sha`. Everything but the
-  guest wrapper already ships in each release's `e2e-kit.tar.gz`. No Go source
+  sparse checkout of `setup/`, `examples/config.yaml`, `LICENSE`,
+  `e2e/test-install.ps1`, `.github/scripts/bsd-package-in-guest.sh` and
+  `.github/scripts/solarish-package-in-guest.sh` at `sha`. Everything but the
+  guest wrappers already ships in each release's `e2e-kit.tar.gz`. No Go source
   is checked out. The scripts are read at the packaged commit rather than
   vendored here, so build-pkg.sh and the tree it packages cannot drift apart.
 - **Guard-rails.** No `pull_request` or `pull_request_target` trigger. The only
