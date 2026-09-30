@@ -73,6 +73,7 @@ jobs:
   resolve:
     name: Resolve Inputs
     runs-on: ubuntu-26.04
+    environment: ${{ inputs.mode != 'release' && 'private-source' || '' }}
     outputs:
       ref: ${{ steps.resolve.outputs.ref }}
       run_id: ${{ steps.resolve.outputs.run_id }}
@@ -94,6 +95,22 @@ jobs:
       illumos: ${{ steps.artifacts.outputs.illumos }}
       solaris: ${{ steps.artifacts.outputs.solaris }}
     steps:
+      # A kodflow-ci App token for supervizio/agent alone, minted here because
+      # this job runs in the private-source environment (the only place the
+      # App's key can be read), revoked when the job ends.
+      - name: Token for supervizio/agent (kodflow-ci App)
+        id: app
+        if: inputs.mode != 'release'
+        uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3.2.0
+        with:
+          app-id: ${{ vars.CI_APP_ID }}
+          private-key: ${{ secrets.CI_APP_PRIVATE_KEY }}
+          owner: supervizio
+          repositories: agent
+          permission-contents: read
+          permission-actions: read
+          permission-statuses: write
+
       - name: Resolve dispatch parameters
         id: resolve
         env:
@@ -191,7 +208,7 @@ jobs:
         id: artifacts
         if: inputs.mode != 'release'
         env:
-          GH_TOKEN: ${{ secrets.AGENT_REPO_TOKEN }}
+          GH_TOKEN: ${{ steps.app.outputs.token }}
           SRC_REPO: ${{ steps.resolve.outputs.source_repo }}
           SRC_RUN: ${{ steps.resolve.outputs.run_id }}
           # The dispatch's word, read by the script from env, never pasted
@@ -204,7 +221,7 @@ jobs:
           listed=false
           names=""
           if [ -z "${GH_TOKEN:-}" ]; then
-            echo "::warning::AGENT_REPO_TOKEN not set - cannot pre-check artifacts, letting the legs try"
+            echo "::warning::no kodflow-ci App token - cannot pre-check artifacts, letting the legs try"
           else
             # An expired artifact stays LISTED, with expired=true, and its
             # download fails. Counting it as present let an old run through here
@@ -245,6 +262,7 @@ jobs:
     needs: [resolve]
     if: ${{ github.event.inputs.arm_only != 'true' && (inputs.mode == 'release' || needs.resolve.outputs.linux != 'false') }}
     runs-on: ubuntu-26.04
+    environment: ${{ inputs.mode != 'release' && 'private-source' || '' }}
     timeout-minutes: 10
     strategy:
       fail-fast: false
@@ -263,13 +281,29 @@ jobs:
             artifact: supervizio-linux-amd64-musl
             description: "Scratch (static binary, no OS)"
     steps:
+      # A kodflow-ci App token for supervizio/agent alone, minted here because
+      # this job runs in the private-source environment (the only place the
+      # App's key can be read), revoked when the job ends.
+      - name: Token for supervizio/agent (kodflow-ci App)
+        id: app
+        if: inputs.mode != 'release'
+        uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3.2.0
+        with:
+          app-id: ${{ vars.CI_APP_ID }}
+          private-key: ${{ secrets.CI_APP_PRIVATE_KEY }}
+          owner: supervizio
+          repositories: agent
+          permission-contents: read
+          permission-actions: read
+          permission-statuses: write
+
       - name: Report status (pending)
         if: needs.resolve.outputs.sha != ''
         continue-on-error: true
         env:
-          GH_TOKEN: ${{ secrets.AGENT_REPO_TOKEN }}
+          GH_TOKEN: ${{ steps.app.outputs.token }}
         run: |
-          [ -z "$GH_TOKEN" ] && { echo "AGENT_REPO_TOKEN not set, skipping"; exit 0; }
+          [ -z "$GH_TOKEN" ] && { echo "no kodflow-ci App token, skipping"; exit 0; }
           curl -sf -X POST \
             -H "Authorization: Bearer $GH_TOKEN" \
             -H "Accept: application/vnd.github+json" \
@@ -282,7 +316,7 @@ jobs:
         with:
           repository: ${{ needs.resolve.outputs.source_repo }}
           ref: ${{ needs.resolve.outputs.ref }}
-          token: ${{ secrets.AGENT_REPO_TOKEN }}
+          token: ${{ steps.app.outputs.token }}
           # The workspace is synced wholesale into guests and read by later
           # steps; a persisted credential would travel with it as a base64
           # AUTHORIZATION header that Actions log-masking does not cover.
@@ -325,7 +359,7 @@ jobs:
           run-id: ${{ needs.resolve.outputs.run_id }}
           # Needs actions:read on the agent repo, on top of the contents:read
           # this token already carries for the checkout above.
-          github-token: ${{ secrets.AGENT_REPO_TOKEN }}
+          github-token: ${{ steps.app.outputs.token }}
 
       - name: Verify the binary arrived
         run: |
@@ -456,9 +490,9 @@ jobs:
         if: always() && needs.resolve.outputs.sha != ''
         continue-on-error: true
         env:
-          GH_TOKEN: ${{ secrets.AGENT_REPO_TOKEN }}
+          GH_TOKEN: ${{ steps.app.outputs.token }}
         run: |
-          [ -z "$GH_TOKEN" ] && { echo "AGENT_REPO_TOKEN not set, skipping"; exit 0; }
+          [ -z "$GH_TOKEN" ] && { echo "no kodflow-ci App token, skipping"; exit 0; }
           STATE="success"
           DESC="Passed"
           if [ "${{ job.status }}" != "success" ]; then
@@ -483,6 +517,7 @@ jobs:
     # and a native aarch64 toolchain. The binary is built natively here rather
     # than pulled from the lab zot store (unreachable from a hosted runner).
     runs-on: ubuntu-26.04-arm
+    environment: ${{ inputs.mode != 'release' && 'private-source' || '' }}
     timeout-minutes: 30
     strategy:
       fail-fast: false
@@ -507,13 +542,29 @@ jobs:
             binary_name: supervizio
             description: "Scratch ARM64 (static binary, no OS)"
     steps:
+      # A kodflow-ci App token for supervizio/agent alone, minted here because
+      # this job runs in the private-source environment (the only place the
+      # App's key can be read), revoked when the job ends.
+      - name: Token for supervizio/agent (kodflow-ci App)
+        id: app
+        if: inputs.mode != 'release'
+        uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3.2.0
+        with:
+          app-id: ${{ vars.CI_APP_ID }}
+          private-key: ${{ secrets.CI_APP_PRIVATE_KEY }}
+          owner: supervizio
+          repositories: agent
+          permission-contents: read
+          permission-actions: read
+          permission-statuses: write
+
       - name: Report status (pending)
         if: needs.resolve.outputs.sha != ''
         continue-on-error: true
         env:
-          GH_TOKEN: ${{ secrets.AGENT_REPO_TOKEN }}
+          GH_TOKEN: ${{ steps.app.outputs.token }}
         run: |
-          [ -z "$GH_TOKEN" ] && { echo "AGENT_REPO_TOKEN not set, skipping"; exit 0; }
+          [ -z "$GH_TOKEN" ] && { echo "no kodflow-ci App token, skipping"; exit 0; }
           curl -sf -X POST \
             -H "Authorization: Bearer $GH_TOKEN" \
             -H "Accept: application/vnd.github+json" \
@@ -526,7 +577,7 @@ jobs:
         with:
           repository: ${{ needs.resolve.outputs.source_repo }}
           ref: ${{ needs.resolve.outputs.ref }}
-          token: ${{ secrets.AGENT_REPO_TOKEN }}
+          token: ${{ steps.app.outputs.token }}
           # The workspace is synced wholesale into guests and read by later
           # steps; a persisted credential would travel with it as a base64
           # AUTHORIZATION header that Actions log-masking does not cover.
@@ -569,7 +620,7 @@ jobs:
           path: bin
           repository: ${{ needs.resolve.outputs.source_repo }}
           run-id: ${{ needs.resolve.outputs.run_id }}
-          github-token: ${{ secrets.AGENT_REPO_TOKEN }}
+          github-token: ${{ steps.app.outputs.token }}
 
       - name: Verify and place the binary
         run: |
@@ -664,9 +715,9 @@ jobs:
         if: always() && needs.resolve.outputs.sha != ''
         continue-on-error: true
         env:
-          GH_TOKEN: ${{ secrets.AGENT_REPO_TOKEN }}
+          GH_TOKEN: ${{ steps.app.outputs.token }}
         run: |
-          [ -z "$GH_TOKEN" ] && { echo "AGENT_REPO_TOKEN not set, skipping"; exit 0; }
+          [ -z "$GH_TOKEN" ] && { echo "no kodflow-ci App token, skipping"; exit 0; }
           STATE="success"
           DESC="Passed"
           if [ "${{ job.status }}" != "success" ]; then
@@ -694,14 +745,31 @@ jobs:
     # this leg has a deadline either way, which is an argument for renting one
     # rather than maintaining one.
     runs-on: macos-15-intel
+    environment: ${{ inputs.mode != 'release' && 'private-source' || '' }}
     timeout-minutes: 15
     if: ${{ github.event.inputs.arm_only != 'true' && (inputs.mode == 'release' || needs.resolve.outputs.darwin != 'false') }}
     steps:
+      # A kodflow-ci App token for supervizio/agent alone, minted here because
+      # this job runs in the private-source environment (the only place the
+      # App's key can be read), revoked when the job ends.
+      - name: Token for supervizio/agent (kodflow-ci App)
+        id: app
+        if: inputs.mode != 'release'
+        uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3.2.0
+        with:
+          app-id: ${{ vars.CI_APP_ID }}
+          private-key: ${{ secrets.CI_APP_PRIVATE_KEY }}
+          owner: supervizio
+          repositories: agent
+          permission-contents: read
+          permission-actions: read
+          permission-statuses: write
+
       - name: Report status (pending)
         if: needs.resolve.outputs.sha != ''
         continue-on-error: true
         env:
-          GH_TOKEN: ${{ secrets.AGENT_REPO_TOKEN }}
+          GH_TOKEN: ${{ steps.app.outputs.token }}
         run: |
           [ -z "$GH_TOKEN" ] && exit 0
           curl -sf -X POST -H "Authorization: Bearer $GH_TOKEN" -H "Accept: application/vnd.github+json" \
@@ -714,7 +782,7 @@ jobs:
         with:
           repository: ${{ needs.resolve.outputs.source_repo }}
           ref: ${{ needs.resolve.outputs.ref }}
-          token: ${{ secrets.AGENT_REPO_TOKEN }}
+          token: ${{ steps.app.outputs.token }}
           persist-credentials: false
 
       # Release mode (validate-release.yml): no checkout of the private tree
@@ -749,7 +817,7 @@ jobs:
           path: bin
           repository: ${{ needs.resolve.outputs.source_repo }}
           run-id: ${{ needs.resolve.outputs.run_id }}
-          github-token: ${{ secrets.AGENT_REPO_TOKEN }}
+          github-token: ${{ steps.app.outputs.token }}
 
       - name: Prepare binary
         run: |
@@ -801,7 +869,7 @@ jobs:
         if: always() && needs.resolve.outputs.sha != ''
         continue-on-error: true
         env:
-          GH_TOKEN: ${{ secrets.AGENT_REPO_TOKEN }}
+          GH_TOKEN: ${{ steps.app.outputs.token }}
         run: |
           [ -z "$GH_TOKEN" ] && exit 0
           STATE="success"; DESC="Passed"
@@ -815,15 +883,32 @@ jobs:
     needs: [resolve]
     if: ${{ inputs.mode == 'release' || needs.resolve.outputs.darwin != 'false' }}
     runs-on: macos-15
+    environment: ${{ inputs.mode != 'release' && 'private-source' || '' }}
     timeout-minutes: 10
     steps:
+      # A kodflow-ci App token for supervizio/agent alone, minted here because
+      # this job runs in the private-source environment (the only place the
+      # App's key can be read), revoked when the job ends.
+      - name: Token for supervizio/agent (kodflow-ci App)
+        id: app
+        if: inputs.mode != 'release'
+        uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3.2.0
+        with:
+          app-id: ${{ vars.CI_APP_ID }}
+          private-key: ${{ secrets.CI_APP_PRIVATE_KEY }}
+          owner: supervizio
+          repositories: agent
+          permission-contents: read
+          permission-actions: read
+          permission-statuses: write
+
       - name: Report status (pending)
         if: needs.resolve.outputs.sha != ''
         continue-on-error: true
         env:
-          GH_TOKEN: ${{ secrets.AGENT_REPO_TOKEN }}
+          GH_TOKEN: ${{ steps.app.outputs.token }}
         run: |
-          [ -z "$GH_TOKEN" ] && { echo "AGENT_REPO_TOKEN not set, skipping"; exit 0; }
+          [ -z "$GH_TOKEN" ] && { echo "no kodflow-ci App token, skipping"; exit 0; }
           curl -sf -X POST \
             -H "Authorization: Bearer $GH_TOKEN" \
             -H "Accept: application/vnd.github+json" \
@@ -836,7 +921,7 @@ jobs:
         with:
           repository: ${{ needs.resolve.outputs.source_repo }}
           ref: ${{ needs.resolve.outputs.ref }}
-          token: ${{ secrets.AGENT_REPO_TOKEN }}
+          token: ${{ steps.app.outputs.token }}
           # The workspace is synced wholesale into guests and read by later
           # steps; a persisted credential would travel with it as a base64
           # AUTHORIZATION header that Actions log-masking does not cover.
@@ -877,7 +962,7 @@ jobs:
           path: bin
           repository: ${{ needs.resolve.outputs.source_repo }}
           run-id: ${{ needs.resolve.outputs.run_id }}
-          github-token: ${{ secrets.AGENT_REPO_TOKEN }}
+          github-token: ${{ steps.app.outputs.token }}
 
       - name: Verify and place the binary
         run: |
@@ -968,9 +1053,9 @@ jobs:
         if: always() && needs.resolve.outputs.sha != ''
         continue-on-error: true
         env:
-          GH_TOKEN: ${{ secrets.AGENT_REPO_TOKEN }}
+          GH_TOKEN: ${{ steps.app.outputs.token }}
         run: |
-          [ -z "$GH_TOKEN" ] && { echo "AGENT_REPO_TOKEN not set, skipping"; exit 0; }
+          [ -z "$GH_TOKEN" ] && { echo "no kodflow-ci App token, skipping"; exit 0; }
           STATE="success"
           DESC="Passed"
           if [ "${{ job.status }}" != "success" ]; then
@@ -1000,6 +1085,7 @@ jobs:
     # Still pinned rather than windows-latest, which drifts on GitHub's
     # schedule and would change coverage with no diff.
     runs-on: windows-2025
+    environment: ${{ inputs.mode != 'release' && 'private-source' || '' }}
     timeout-minutes: 20
     # The three other VM legs carry this guard; this one did not, so an
     # arm_only dispatch used to acquire a bench VM while vm-cleanup was
@@ -1018,11 +1104,27 @@ jobs:
         # call pwsh explicitly where PowerShell is actually wanted.
         shell: bash
     steps:
+      # A kodflow-ci App token for supervizio/agent alone, minted here because
+      # this job runs in the private-source environment (the only place the
+      # App's key can be read), revoked when the job ends.
+      - name: Token for supervizio/agent (kodflow-ci App)
+        id: app
+        if: inputs.mode != 'release'
+        uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3.2.0
+        with:
+          app-id: ${{ vars.CI_APP_ID }}
+          private-key: ${{ secrets.CI_APP_PRIVATE_KEY }}
+          owner: supervizio
+          repositories: agent
+          permission-contents: read
+          permission-actions: read
+          permission-statuses: write
+
       - name: Report status (pending)
         if: needs.resolve.outputs.sha != ''
         continue-on-error: true
         env:
-          GH_TOKEN: ${{ secrets.AGENT_REPO_TOKEN }}
+          GH_TOKEN: ${{ steps.app.outputs.token }}
         run: |
           [ -z "$GH_TOKEN" ] && exit 0
           curl -sf -X POST -H "Authorization: Bearer $GH_TOKEN" -H "Accept: application/vnd.github+json" \
@@ -1035,7 +1137,7 @@ jobs:
         with:
           repository: ${{ needs.resolve.outputs.source_repo }}
           ref: ${{ needs.resolve.outputs.ref }}
-          token: ${{ secrets.AGENT_REPO_TOKEN }}
+          token: ${{ steps.app.outputs.token }}
           path: agent
           persist-credentials: false
 
@@ -1087,7 +1189,7 @@ jobs:
           path: bin
           repository: ${{ needs.resolve.outputs.source_repo }}
           run-id: ${{ needs.resolve.outputs.run_id }}
-          github-token: ${{ secrets.AGENT_REPO_TOKEN }}
+          github-token: ${{ steps.app.outputs.token }}
 
       - name: Verify the binary arrived
         run: |
@@ -1123,7 +1225,7 @@ jobs:
         if: always() && needs.resolve.outputs.sha != ''
         continue-on-error: true
         env:
-          GH_TOKEN: ${{ secrets.AGENT_REPO_TOKEN }}
+          GH_TOKEN: ${{ steps.app.outputs.token }}
         run: |
           [ -z "$GH_TOKEN" ] && exit 0
           STATE="success"; DESC="Passed"
@@ -1143,6 +1245,7 @@ jobs:
     # Windows 11 rather than Server, because GitHub offers no arm64 Server
     # image -- a deliberate difference from the amd64 leg, not an oversight.
     runs-on: windows-11-arm
+    environment: ${{ inputs.mode != 'release' && 'private-source' || '' }}
     timeout-minutes: 20
     # The three other VM legs carry this guard; this one did not, so an
     # arm_only dispatch used to acquire a bench VM while vm-cleanup was
@@ -1161,11 +1264,27 @@ jobs:
         # call pwsh explicitly where PowerShell is actually wanted.
         shell: bash
     steps:
+      # A kodflow-ci App token for supervizio/agent alone, minted here because
+      # this job runs in the private-source environment (the only place the
+      # App's key can be read), revoked when the job ends.
+      - name: Token for supervizio/agent (kodflow-ci App)
+        id: app
+        if: inputs.mode != 'release'
+        uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3.2.0
+        with:
+          app-id: ${{ vars.CI_APP_ID }}
+          private-key: ${{ secrets.CI_APP_PRIVATE_KEY }}
+          owner: supervizio
+          repositories: agent
+          permission-contents: read
+          permission-actions: read
+          permission-statuses: write
+
       - name: Report status (pending)
         if: needs.resolve.outputs.sha != ''
         continue-on-error: true
         env:
-          GH_TOKEN: ${{ secrets.AGENT_REPO_TOKEN }}
+          GH_TOKEN: ${{ steps.app.outputs.token }}
         run: |
           [ -z "$GH_TOKEN" ] && exit 0
           curl -sf -X POST -H "Authorization: Bearer $GH_TOKEN" -H "Accept: application/vnd.github+json" \
@@ -1178,7 +1297,7 @@ jobs:
         with:
           repository: ${{ needs.resolve.outputs.source_repo }}
           ref: ${{ needs.resolve.outputs.ref }}
-          token: ${{ secrets.AGENT_REPO_TOKEN }}
+          token: ${{ steps.app.outputs.token }}
           path: agent
           persist-credentials: false
 
@@ -1230,7 +1349,7 @@ jobs:
           path: bin
           repository: ${{ needs.resolve.outputs.source_repo }}
           run-id: ${{ needs.resolve.outputs.run_id }}
-          github-token: ${{ secrets.AGENT_REPO_TOKEN }}
+          github-token: ${{ steps.app.outputs.token }}
 
       - name: Verify the binary arrived
         run: |
@@ -1266,7 +1385,7 @@ jobs:
         if: always() && needs.resolve.outputs.sha != ''
         continue-on-error: true
         env:
-          GH_TOKEN: ${{ secrets.AGENT_REPO_TOKEN }}
+          GH_TOKEN: ${{ steps.app.outputs.token }}
         run: |
           [ -z "$GH_TOKEN" ] && exit 0
           STATE="success"; DESC="Passed"
@@ -1292,6 +1411,7 @@ jobs:
     name: ${{ inputs.mode == 'release' && 'leg/linux/amd64/artix-dinit' || 'E2E Linux artix-dinit' }}
     needs: [resolve]
     runs-on: ubuntu-26.04
+    environment: ${{ inputs.mode != 'release' && 'private-source' || '' }}
     timeout-minutes: 30
     if: ${{ github.event.inputs.arm_only != 'true' && (inputs.mode == 'release' || needs.resolve.outputs.linux != 'false') }}
     env:
@@ -1300,11 +1420,27 @@ jobs:
       # package.
       ARTIX: artixlinux/artixlinux@sha256:874c6127fd51fec8455274f7a4b22b04ecd5db35886677f3e780339f71f20a9b
     steps:
+      # A kodflow-ci App token for supervizio/agent alone, minted here because
+      # this job runs in the private-source environment (the only place the
+      # App's key can be read), revoked when the job ends.
+      - name: Token for supervizio/agent (kodflow-ci App)
+        id: app
+        if: inputs.mode != 'release'
+        uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3.2.0
+        with:
+          app-id: ${{ vars.CI_APP_ID }}
+          private-key: ${{ secrets.CI_APP_PRIVATE_KEY }}
+          owner: supervizio
+          repositories: agent
+          permission-contents: read
+          permission-actions: read
+          permission-statuses: write
+
       - name: Report status (pending)
         if: needs.resolve.outputs.sha != ''
         continue-on-error: true
         env:
-          GH_TOKEN: ${{ secrets.AGENT_REPO_TOKEN }}
+          GH_TOKEN: ${{ steps.app.outputs.token }}
         run: |
           [ -z "$GH_TOKEN" ] && exit 0
           curl -sf -X POST -H "Authorization: Bearer $GH_TOKEN" -H "Accept: application/vnd.github+json" \
@@ -1317,7 +1453,7 @@ jobs:
         with:
           repository: ${{ needs.resolve.outputs.source_repo }}
           ref: ${{ needs.resolve.outputs.ref }}
-          token: ${{ secrets.AGENT_REPO_TOKEN }}
+          token: ${{ steps.app.outputs.token }}
           persist-credentials: false
 
       # Release mode (validate-release.yml): no checkout of the private tree
@@ -1348,7 +1484,7 @@ jobs:
           path: pkg
           repository: ${{ needs.resolve.outputs.source_repo }}
           run-id: ${{ needs.resolve.outputs.run_id }}
-          github-token: ${{ secrets.AGENT_REPO_TOKEN }}
+          github-token: ${{ steps.app.outputs.token }}
 
       - name: Resolve and normalise the package
         run: |
@@ -1426,7 +1562,7 @@ jobs:
         if: always() && needs.resolve.outputs.sha != ''
         continue-on-error: true
         env:
-          GH_TOKEN: ${{ secrets.AGENT_REPO_TOKEN }}
+          GH_TOKEN: ${{ steps.app.outputs.token }}
         run: |
           [ -z "$GH_TOKEN" ] && exit 0
           STATE="success"; DESC="Passed"
@@ -1439,14 +1575,31 @@ jobs:
     name: ${{ inputs.mode == 'release' && 'leg/linux/amd64/debian-sysvinit' || 'E2E Linux debian-sysvinit' }}
     needs: [resolve]
     runs-on: ubuntu-26.04
+    environment: ${{ inputs.mode != 'release' && 'private-source' || '' }}
     timeout-minutes: 30
     if: ${{ github.event.inputs.arm_only != 'true' && (inputs.mode == 'release' || needs.resolve.outputs.linux != 'false') }}
     steps:
+      # A kodflow-ci App token for supervizio/agent alone, minted here because
+      # this job runs in the private-source environment (the only place the
+      # App's key can be read), revoked when the job ends.
+      - name: Token for supervizio/agent (kodflow-ci App)
+        id: app
+        if: inputs.mode != 'release'
+        uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3.2.0
+        with:
+          app-id: ${{ vars.CI_APP_ID }}
+          private-key: ${{ secrets.CI_APP_PRIVATE_KEY }}
+          owner: supervizio
+          repositories: agent
+          permission-contents: read
+          permission-actions: read
+          permission-statuses: write
+
       - name: Report status (pending)
         if: needs.resolve.outputs.sha != ''
         continue-on-error: true
         env:
-          GH_TOKEN: ${{ secrets.AGENT_REPO_TOKEN }}
+          GH_TOKEN: ${{ steps.app.outputs.token }}
         run: |
           [ -z "$GH_TOKEN" ] && exit 0
           curl -sf -X POST -H "Authorization: Bearer $GH_TOKEN" -H "Accept: application/vnd.github+json" \
@@ -1459,7 +1612,7 @@ jobs:
         with:
           repository: ${{ needs.resolve.outputs.source_repo }}
           ref: ${{ needs.resolve.outputs.ref }}
-          token: ${{ secrets.AGENT_REPO_TOKEN }}
+          token: ${{ steps.app.outputs.token }}
           persist-credentials: false
 
       # Release mode (validate-release.yml): no checkout of the private tree
@@ -1490,7 +1643,7 @@ jobs:
           path: pkg
           repository: ${{ needs.resolve.outputs.source_repo }}
           run-id: ${{ needs.resolve.outputs.run_id }}
-          github-token: ${{ secrets.AGENT_REPO_TOKEN }}
+          github-token: ${{ steps.app.outputs.token }}
 
       - name: Resolve and normalise the package
         run: |
@@ -1574,7 +1727,7 @@ jobs:
         if: always() && needs.resolve.outputs.sha != ''
         continue-on-error: true
         env:
-          GH_TOKEN: ${{ secrets.AGENT_REPO_TOKEN }}
+          GH_TOKEN: ${{ steps.app.outputs.token }}
         run: |
           [ -z "$GH_TOKEN" ] && exit 0
           STATE="success"; DESC="Passed"
@@ -1588,14 +1741,31 @@ jobs:
     name: ${{ inputs.mode == 'release' && 'leg/linux/amd64/alpine-openrc' || 'E2E Linux alpine-openrc' }}
     needs: [resolve]
     runs-on: ubuntu-26.04
+    environment: ${{ inputs.mode != 'release' && 'private-source' || '' }}
     timeout-minutes: 30
     if: ${{ github.event.inputs.arm_only != 'true' && (inputs.mode == 'release' || needs.resolve.outputs.linux != 'false') }}
     steps:
+      # A kodflow-ci App token for supervizio/agent alone, minted here because
+      # this job runs in the private-source environment (the only place the
+      # App's key can be read), revoked when the job ends.
+      - name: Token for supervizio/agent (kodflow-ci App)
+        id: app
+        if: inputs.mode != 'release'
+        uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3.2.0
+        with:
+          app-id: ${{ vars.CI_APP_ID }}
+          private-key: ${{ secrets.CI_APP_PRIVATE_KEY }}
+          owner: supervizio
+          repositories: agent
+          permission-contents: read
+          permission-actions: read
+          permission-statuses: write
+
       - name: Report status (pending)
         if: needs.resolve.outputs.sha != ''
         continue-on-error: true
         env:
-          GH_TOKEN: ${{ secrets.AGENT_REPO_TOKEN }}
+          GH_TOKEN: ${{ steps.app.outputs.token }}
         run: |
           [ -z "$GH_TOKEN" ] && exit 0
           curl -sf -X POST -H "Authorization: Bearer $GH_TOKEN" -H "Accept: application/vnd.github+json" \
@@ -1608,7 +1778,7 @@ jobs:
         with:
           repository: ${{ needs.resolve.outputs.source_repo }}
           ref: ${{ needs.resolve.outputs.ref }}
-          token: ${{ secrets.AGENT_REPO_TOKEN }}
+          token: ${{ steps.app.outputs.token }}
           persist-credentials: false
 
       # Release mode (validate-release.yml): no checkout of the private tree
@@ -1643,7 +1813,7 @@ jobs:
           path: pkg
           repository: ${{ needs.resolve.outputs.source_repo }}
           run-id: ${{ needs.resolve.outputs.run_id }}
-          github-token: ${{ secrets.AGENT_REPO_TOKEN }}
+          github-token: ${{ steps.app.outputs.token }}
 
       # nfpm emits VERSION-qualified, packager-native names
       # (supervizio_0.0.0_amd64.deb, supervizio-0.0.0-1.x86_64.rpm). Only
@@ -1722,7 +1892,7 @@ jobs:
         if: always() && needs.resolve.outputs.sha != ''
         continue-on-error: true
         env:
-          GH_TOKEN: ${{ secrets.AGENT_REPO_TOKEN }}
+          GH_TOKEN: ${{ steps.app.outputs.token }}
         run: |
           [ -z "$GH_TOKEN" ] && exit 0
           STATE="success"; DESC="Passed"
@@ -1735,14 +1905,31 @@ jobs:
     name: ${{ inputs.mode == 'release' && 'leg/linux/amd64/debian-systemd' || 'E2E Linux debian-systemd' }}
     needs: [resolve]
     runs-on: ubuntu-26.04
+    environment: ${{ inputs.mode != 'release' && 'private-source' || '' }}
     timeout-minutes: 30
     if: ${{ github.event.inputs.arm_only != 'true' && (inputs.mode == 'release' || needs.resolve.outputs.linux != 'false') }}
     steps:
+      # A kodflow-ci App token for supervizio/agent alone, minted here because
+      # this job runs in the private-source environment (the only place the
+      # App's key can be read), revoked when the job ends.
+      - name: Token for supervizio/agent (kodflow-ci App)
+        id: app
+        if: inputs.mode != 'release'
+        uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3.2.0
+        with:
+          app-id: ${{ vars.CI_APP_ID }}
+          private-key: ${{ secrets.CI_APP_PRIVATE_KEY }}
+          owner: supervizio
+          repositories: agent
+          permission-contents: read
+          permission-actions: read
+          permission-statuses: write
+
       - name: Report status (pending)
         if: needs.resolve.outputs.sha != ''
         continue-on-error: true
         env:
-          GH_TOKEN: ${{ secrets.AGENT_REPO_TOKEN }}
+          GH_TOKEN: ${{ steps.app.outputs.token }}
         run: |
           [ -z "$GH_TOKEN" ] && exit 0
           curl -sf -X POST -H "Authorization: Bearer $GH_TOKEN" -H "Accept: application/vnd.github+json" \
@@ -1755,7 +1942,7 @@ jobs:
         with:
           repository: ${{ needs.resolve.outputs.source_repo }}
           ref: ${{ needs.resolve.outputs.ref }}
-          token: ${{ secrets.AGENT_REPO_TOKEN }}
+          token: ${{ steps.app.outputs.token }}
           persist-credentials: false
 
       # Release mode (validate-release.yml): no checkout of the private tree
@@ -1790,7 +1977,7 @@ jobs:
           path: pkg
           repository: ${{ needs.resolve.outputs.source_repo }}
           run-id: ${{ needs.resolve.outputs.run_id }}
-          github-token: ${{ secrets.AGENT_REPO_TOKEN }}
+          github-token: ${{ steps.app.outputs.token }}
 
       # nfpm emits VERSION-qualified, packager-native names
       # (supervizio_0.0.0_amd64.deb, supervizio-0.0.0-1.x86_64.rpm). Only
@@ -1885,7 +2072,7 @@ jobs:
         if: always() && needs.resolve.outputs.sha != ''
         continue-on-error: true
         env:
-          GH_TOKEN: ${{ secrets.AGENT_REPO_TOKEN }}
+          GH_TOKEN: ${{ steps.app.outputs.token }}
         run: |
           [ -z "$GH_TOKEN" ] && exit 0
           STATE="success"; DESC="Passed"
@@ -1898,14 +2085,31 @@ jobs:
     name: ${{ inputs.mode == 'release' && 'leg/linux/amd64/rocky-systemd' || 'E2E Linux rocky-systemd' }}
     needs: [resolve]
     runs-on: ubuntu-26.04
+    environment: ${{ inputs.mode != 'release' && 'private-source' || '' }}
     timeout-minutes: 30
     if: ${{ github.event.inputs.arm_only != 'true' && (inputs.mode == 'release' || needs.resolve.outputs.linux != 'false') }}
     steps:
+      # A kodflow-ci App token for supervizio/agent alone, minted here because
+      # this job runs in the private-source environment (the only place the
+      # App's key can be read), revoked when the job ends.
+      - name: Token for supervizio/agent (kodflow-ci App)
+        id: app
+        if: inputs.mode != 'release'
+        uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3.2.0
+        with:
+          app-id: ${{ vars.CI_APP_ID }}
+          private-key: ${{ secrets.CI_APP_PRIVATE_KEY }}
+          owner: supervizio
+          repositories: agent
+          permission-contents: read
+          permission-actions: read
+          permission-statuses: write
+
       - name: Report status (pending)
         if: needs.resolve.outputs.sha != ''
         continue-on-error: true
         env:
-          GH_TOKEN: ${{ secrets.AGENT_REPO_TOKEN }}
+          GH_TOKEN: ${{ steps.app.outputs.token }}
         run: |
           [ -z "$GH_TOKEN" ] && exit 0
           curl -sf -X POST -H "Authorization: Bearer $GH_TOKEN" -H "Accept: application/vnd.github+json" \
@@ -1923,7 +2127,7 @@ jobs:
         with:
           repository: ${{ needs.resolve.outputs.source_repo }}
           ref: ${{ needs.resolve.outputs.ref }}
-          token: ${{ secrets.AGENT_REPO_TOKEN }}
+          token: ${{ steps.app.outputs.token }}
           path: agent
           persist-credentials: false
 
@@ -1959,7 +2163,7 @@ jobs:
           path: pkg
           repository: ${{ needs.resolve.outputs.source_repo }}
           run-id: ${{ needs.resolve.outputs.run_id }}
-          github-token: ${{ secrets.AGENT_REPO_TOKEN }}
+          github-token: ${{ steps.app.outputs.token }}
 
       # nfpm emits VERSION-qualified, packager-native names
       # (supervizio_0.0.0_amd64.deb, supervizio-0.0.0-1.x86_64.rpm). Only
@@ -2067,7 +2271,7 @@ jobs:
         if: always() && needs.resolve.outputs.sha != ''
         continue-on-error: true
         env:
-          GH_TOKEN: ${{ secrets.AGENT_REPO_TOKEN }}
+          GH_TOKEN: ${{ steps.app.outputs.token }}
         run: |
           [ -z "$GH_TOKEN" ] && exit 0
           STATE="success"; DESC="Passed"
@@ -2091,14 +2295,31 @@ jobs:
     name: ${{ inputs.mode == 'release' && 'leg/linux/amd64/opensuse-zypper' || 'E2E Linux opensuse-zypper' }}
     needs: [resolve]
     runs-on: ubuntu-26.04
+    environment: ${{ inputs.mode != 'release' && 'private-source' || '' }}
     timeout-minutes: 30
     if: ${{ github.event.inputs.arm_only != 'true' && (inputs.mode == 'release' || needs.resolve.outputs.linux != 'false') }}
     steps:
+      # A kodflow-ci App token for supervizio/agent alone, minted here because
+      # this job runs in the private-source environment (the only place the
+      # App's key can be read), revoked when the job ends.
+      - name: Token for supervizio/agent (kodflow-ci App)
+        id: app
+        if: inputs.mode != 'release'
+        uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3.2.0
+        with:
+          app-id: ${{ vars.CI_APP_ID }}
+          private-key: ${{ secrets.CI_APP_PRIVATE_KEY }}
+          owner: supervizio
+          repositories: agent
+          permission-contents: read
+          permission-actions: read
+          permission-statuses: write
+
       - name: Report status (pending)
         if: needs.resolve.outputs.sha != ''
         continue-on-error: true
         env:
-          GH_TOKEN: ${{ secrets.AGENT_REPO_TOKEN }}
+          GH_TOKEN: ${{ steps.app.outputs.token }}
         run: |
           [ -z "$GH_TOKEN" ] && exit 0
           curl -sf -X POST -H "Authorization: Bearer $GH_TOKEN" -H "Accept: application/vnd.github+json" \
@@ -2116,7 +2337,7 @@ jobs:
         with:
           repository: ${{ needs.resolve.outputs.source_repo }}
           ref: ${{ needs.resolve.outputs.ref }}
-          token: ${{ secrets.AGENT_REPO_TOKEN }}
+          token: ${{ steps.app.outputs.token }}
           path: agent
           persist-credentials: false
 
@@ -2148,7 +2369,7 @@ jobs:
           path: pkg
           repository: ${{ needs.resolve.outputs.source_repo }}
           run-id: ${{ needs.resolve.outputs.run_id }}
-          github-token: ${{ secrets.AGENT_REPO_TOKEN }}
+          github-token: ${{ steps.app.outputs.token }}
 
       # nfpm emits VERSION-qualified, packager-native names
       # (supervizio_0.0.0_amd64.deb, supervizio-0.0.0-1.x86_64.rpm). Only
@@ -2254,7 +2475,7 @@ jobs:
         if: always() && needs.resolve.outputs.sha != ''
         continue-on-error: true
         env:
-          GH_TOKEN: ${{ secrets.AGENT_REPO_TOKEN }}
+          GH_TOKEN: ${{ steps.app.outputs.token }}
         run: |
           [ -z "$GH_TOKEN" ] && exit 0
           STATE="success"; DESC="Passed"
@@ -2281,14 +2502,31 @@ jobs:
     name: ${{ inputs.mode == 'release' && 'leg/linux/amd64/arch-pacman' || 'E2E Linux arch-pacman' }}
     needs: [resolve]
     runs-on: ubuntu-26.04
+    environment: ${{ inputs.mode != 'release' && 'private-source' || '' }}
     timeout-minutes: 30
     if: ${{ github.event.inputs.arm_only != 'true' && (inputs.mode == 'release' || needs.resolve.outputs.linux != 'false') }}
     steps:
+      # A kodflow-ci App token for supervizio/agent alone, minted here because
+      # this job runs in the private-source environment (the only place the
+      # App's key can be read), revoked when the job ends.
+      - name: Token for supervizio/agent (kodflow-ci App)
+        id: app
+        if: inputs.mode != 'release'
+        uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3.2.0
+        with:
+          app-id: ${{ vars.CI_APP_ID }}
+          private-key: ${{ secrets.CI_APP_PRIVATE_KEY }}
+          owner: supervizio
+          repositories: agent
+          permission-contents: read
+          permission-actions: read
+          permission-statuses: write
+
       - name: Report status (pending)
         if: needs.resolve.outputs.sha != ''
         continue-on-error: true
         env:
-          GH_TOKEN: ${{ secrets.AGENT_REPO_TOKEN }}
+          GH_TOKEN: ${{ steps.app.outputs.token }}
         run: |
           [ -z "$GH_TOKEN" ] && exit 0
           curl -sf -X POST -H "Authorization: Bearer $GH_TOKEN" -H "Accept: application/vnd.github+json" \
@@ -2306,7 +2544,7 @@ jobs:
         with:
           repository: ${{ needs.resolve.outputs.source_repo }}
           ref: ${{ needs.resolve.outputs.ref }}
-          token: ${{ secrets.AGENT_REPO_TOKEN }}
+          token: ${{ steps.app.outputs.token }}
           path: agent
           persist-credentials: false
 
@@ -2338,7 +2576,7 @@ jobs:
           path: pkg
           repository: ${{ needs.resolve.outputs.source_repo }}
           run-id: ${{ needs.resolve.outputs.run_id }}
-          github-token: ${{ secrets.AGENT_REPO_TOKEN }}
+          github-token: ${{ steps.app.outputs.token }}
 
       # nfpm emits VERSION-qualified, packager-native names
       # (supervizio_0.0.0_amd64.deb, supervizio-0.0.0-1.x86_64.rpm). Only
@@ -2430,7 +2668,7 @@ jobs:
         if: always() && needs.resolve.outputs.sha != ''
         continue-on-error: true
         env:
-          GH_TOKEN: ${{ secrets.AGENT_REPO_TOKEN }}
+          GH_TOKEN: ${{ steps.app.outputs.token }}
         run: |
           [ -z "$GH_TOKEN" ] && exit 0
           STATE="success"; DESC="Passed"
@@ -2455,14 +2693,31 @@ jobs:
     name: ${{ inputs.mode == 'release' && 'leg/linux/amd64/alpine-runit' || 'E2E Linux alpine-runit' }}
     needs: [resolve]
     runs-on: ubuntu-26.04
+    environment: ${{ inputs.mode != 'release' && 'private-source' || '' }}
     timeout-minutes: 30
     if: ${{ github.event.inputs.arm_only != 'true' && (inputs.mode == 'release' || needs.resolve.outputs.linux != 'false') }}
     steps:
+      # A kodflow-ci App token for supervizio/agent alone, minted here because
+      # this job runs in the private-source environment (the only place the
+      # App's key can be read), revoked when the job ends.
+      - name: Token for supervizio/agent (kodflow-ci App)
+        id: app
+        if: inputs.mode != 'release'
+        uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3.2.0
+        with:
+          app-id: ${{ vars.CI_APP_ID }}
+          private-key: ${{ secrets.CI_APP_PRIVATE_KEY }}
+          owner: supervizio
+          repositories: agent
+          permission-contents: read
+          permission-actions: read
+          permission-statuses: write
+
       - name: Report status (pending)
         if: needs.resolve.outputs.sha != ''
         continue-on-error: true
         env:
-          GH_TOKEN: ${{ secrets.AGENT_REPO_TOKEN }}
+          GH_TOKEN: ${{ steps.app.outputs.token }}
         run: |
           [ -z "$GH_TOKEN" ] && exit 0
           curl -sf -X POST -H "Authorization: Bearer $GH_TOKEN" -H "Accept: application/vnd.github+json" \
@@ -2475,7 +2730,7 @@ jobs:
         with:
           repository: ${{ needs.resolve.outputs.source_repo }}
           ref: ${{ needs.resolve.outputs.ref }}
-          token: ${{ secrets.AGENT_REPO_TOKEN }}
+          token: ${{ steps.app.outputs.token }}
           persist-credentials: false
 
       # Release mode (validate-release.yml): no checkout of the private tree
@@ -2506,7 +2761,7 @@ jobs:
           path: pkg
           repository: ${{ needs.resolve.outputs.source_repo }}
           run-id: ${{ needs.resolve.outputs.run_id }}
-          github-token: ${{ secrets.AGENT_REPO_TOKEN }}
+          github-token: ${{ steps.app.outputs.token }}
 
       # nfpm emits VERSION-qualified, packager-native names
       # (supervizio_0.0.0_amd64.deb, supervizio-0.0.0-1.x86_64.rpm). Only
@@ -2605,7 +2860,7 @@ jobs:
         if: always() && needs.resolve.outputs.sha != ''
         continue-on-error: true
         env:
-          GH_TOKEN: ${{ secrets.AGENT_REPO_TOKEN }}
+          GH_TOKEN: ${{ steps.app.outputs.token }}
         run: |
           [ -z "$GH_TOKEN" ] && exit 0
           STATE="success"; DESC="Passed"
@@ -2630,14 +2885,31 @@ jobs:
     name: ${{ inputs.mode == 'release' && 'leg/linux/amd64/alpine-s6' || 'E2E Linux alpine-s6' }}
     needs: [resolve]
     runs-on: ubuntu-26.04
+    environment: ${{ inputs.mode != 'release' && 'private-source' || '' }}
     timeout-minutes: 30
     if: ${{ github.event.inputs.arm_only != 'true' && (inputs.mode == 'release' || needs.resolve.outputs.linux != 'false') }}
     steps:
+      # A kodflow-ci App token for supervizio/agent alone, minted here because
+      # this job runs in the private-source environment (the only place the
+      # App's key can be read), revoked when the job ends.
+      - name: Token for supervizio/agent (kodflow-ci App)
+        id: app
+        if: inputs.mode != 'release'
+        uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3.2.0
+        with:
+          app-id: ${{ vars.CI_APP_ID }}
+          private-key: ${{ secrets.CI_APP_PRIVATE_KEY }}
+          owner: supervizio
+          repositories: agent
+          permission-contents: read
+          permission-actions: read
+          permission-statuses: write
+
       - name: Report status (pending)
         if: needs.resolve.outputs.sha != ''
         continue-on-error: true
         env:
-          GH_TOKEN: ${{ secrets.AGENT_REPO_TOKEN }}
+          GH_TOKEN: ${{ steps.app.outputs.token }}
         run: |
           [ -z "$GH_TOKEN" ] && exit 0
           curl -sf -X POST -H "Authorization: Bearer $GH_TOKEN" -H "Accept: application/vnd.github+json" \
@@ -2650,7 +2922,7 @@ jobs:
         with:
           repository: ${{ needs.resolve.outputs.source_repo }}
           ref: ${{ needs.resolve.outputs.ref }}
-          token: ${{ secrets.AGENT_REPO_TOKEN }}
+          token: ${{ steps.app.outputs.token }}
           persist-credentials: false
 
       # Release mode (validate-release.yml): no checkout of the private tree
@@ -2681,7 +2953,7 @@ jobs:
           path: pkg
           repository: ${{ needs.resolve.outputs.source_repo }}
           run-id: ${{ needs.resolve.outputs.run_id }}
-          github-token: ${{ secrets.AGENT_REPO_TOKEN }}
+          github-token: ${{ steps.app.outputs.token }}
 
       # nfpm emits VERSION-qualified, packager-native names
       # (supervizio_0.0.0_amd64.deb, supervizio-0.0.0-1.x86_64.rpm). Only
@@ -2780,7 +3052,7 @@ jobs:
         if: always() && needs.resolve.outputs.sha != ''
         continue-on-error: true
         env:
-          GH_TOKEN: ${{ secrets.AGENT_REPO_TOKEN }}
+          GH_TOKEN: ${{ steps.app.outputs.token }}
         run: |
           [ -z "$GH_TOKEN" ] && exit 0
           STATE="success"; DESC="Passed"
@@ -2813,6 +3085,7 @@ jobs:
     name: ${{ inputs.mode == 'release' && 'leg/linux/amd64/void-xbps' || 'E2E Linux void-xbps' }}
     needs: [resolve]
     runs-on: ubuntu-26.04
+    environment: ${{ inputs.mode != 'release' && 'private-source' || '' }}
     timeout-minutes: 30
     if: ${{ github.event.inputs.arm_only != 'true' && (inputs.mode == 'release' || needs.resolve.outputs.linux != 'false') }}
     env:
@@ -2820,11 +3093,27 @@ jobs:
       # package. The same index digest the arm64 void-xbps entry pins.
       VOID: ghcr.io/void-linux/void-glibc-full@sha256:c23266033da422c47d350ae3f7bb4fdfecf543cc7693a90d1f343960f9767c57 # void-glibc-full:20260901R1
     steps:
+      # A kodflow-ci App token for supervizio/agent alone, minted here because
+      # this job runs in the private-source environment (the only place the
+      # App's key can be read), revoked when the job ends.
+      - name: Token for supervizio/agent (kodflow-ci App)
+        id: app
+        if: inputs.mode != 'release'
+        uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3.2.0
+        with:
+          app-id: ${{ vars.CI_APP_ID }}
+          private-key: ${{ secrets.CI_APP_PRIVATE_KEY }}
+          owner: supervizio
+          repositories: agent
+          permission-contents: read
+          permission-actions: read
+          permission-statuses: write
+
       - name: Report status (pending)
         if: needs.resolve.outputs.sha != ''
         continue-on-error: true
         env:
-          GH_TOKEN: ${{ secrets.AGENT_REPO_TOKEN }}
+          GH_TOKEN: ${{ steps.app.outputs.token }}
         run: |
           [ -z "$GH_TOKEN" ] && exit 0
           curl -sf -X POST -H "Authorization: Bearer $GH_TOKEN" -H "Accept: application/vnd.github+json" \
@@ -2837,7 +3126,7 @@ jobs:
         with:
           repository: ${{ needs.resolve.outputs.source_repo }}
           ref: ${{ needs.resolve.outputs.ref }}
-          token: ${{ secrets.AGENT_REPO_TOKEN }}
+          token: ${{ steps.app.outputs.token }}
           persist-credentials: false
 
       # Release mode (validate-release.yml): no checkout of the private tree
@@ -2868,7 +3157,7 @@ jobs:
           path: pkg
           repository: ${{ needs.resolve.outputs.source_repo }}
           run-id: ${{ needs.resolve.outputs.run_id }}
-          github-token: ${{ secrets.AGENT_REPO_TOKEN }}
+          github-token: ${{ steps.app.outputs.token }}
 
       # xbps-create names the file <pkgver>.<arch>.xbps
       # (supervizio-0.0.0_1.x86_64.xbps); only agent's release.yml renames it
@@ -2974,7 +3263,7 @@ jobs:
         if: always() && needs.resolve.outputs.sha != ''
         continue-on-error: true
         env:
-          GH_TOKEN: ${{ secrets.AGENT_REPO_TOKEN }}
+          GH_TOKEN: ${{ steps.app.outputs.token }}
         run: |
           [ -z "$GH_TOKEN" ] && exit 0
           STATE="success"; DESC="Passed"
@@ -3023,6 +3312,7 @@ jobs:
     needs: [resolve]
     if: ${{ inputs.mode == 'release' || needs.resolve.outputs.linux != 'false' }}
     runs-on: ${{ matrix.arch == 'arm64' && 'ubuntu-26.04-arm' || 'ubuntu-26.04' }}
+    environment: ${{ inputs.mode != 'release' && 'private-source' || '' }}
     timeout-minutes: 40
     strategy:
       fail-fast: false
@@ -3040,11 +3330,27 @@ jobs:
       ARCH: ${{ matrix.arch }}
       CONTEXT: ${{ matrix.arch == 'arm64' && 'e2e/linux-arm64/gentoo-portage' || 'e2e/vm/gentoo-portage' }}
     steps:
+      # A kodflow-ci App token for supervizio/agent alone, minted here because
+      # this job runs in the private-source environment (the only place the
+      # App's key can be read), revoked when the job ends.
+      - name: Token for supervizio/agent (kodflow-ci App)
+        id: app
+        if: inputs.mode != 'release'
+        uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3.2.0
+        with:
+          app-id: ${{ vars.CI_APP_ID }}
+          private-key: ${{ secrets.CI_APP_PRIVATE_KEY }}
+          owner: supervizio
+          repositories: agent
+          permission-contents: read
+          permission-actions: read
+          permission-statuses: write
+
       - name: Report status (pending)
         if: needs.resolve.outputs.sha != ''
         continue-on-error: true
         env:
-          GH_TOKEN: ${{ secrets.AGENT_REPO_TOKEN }}
+          GH_TOKEN: ${{ steps.app.outputs.token }}
           TARGET: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
         run: |
           [ -z "$GH_TOKEN" ] && exit 0
@@ -3058,7 +3364,7 @@ jobs:
         with:
           repository: ${{ needs.resolve.outputs.source_repo }}
           ref: ${{ needs.resolve.outputs.ref }}
-          token: ${{ secrets.AGENT_REPO_TOKEN }}
+          token: ${{ steps.app.outputs.token }}
           persist-credentials: false
 
       # Release mode (validate-release.yml): no checkout of the private tree
@@ -3091,7 +3397,7 @@ jobs:
           path: bin
           repository: ${{ needs.resolve.outputs.source_repo }}
           run-id: ${{ needs.resolve.outputs.run_id }}
-          github-token: ${{ secrets.AGENT_REPO_TOKEN }}
+          github-token: ${{ steps.app.outputs.token }}
 
       - name: Download the arm64 static binary from the agent run (cross-repo)
         if: inputs.mode != 'release'
@@ -3101,7 +3407,7 @@ jobs:
           path: bin
           repository: ${{ needs.resolve.outputs.source_repo }}
           run-id: ${{ needs.resolve.outputs.run_id }}
-          github-token: ${{ secrets.AGENT_REPO_TOKEN }}
+          github-token: ${{ steps.app.outputs.token }}
 
       # The tag the overlay is written for: the candidate's, or v0.0.0, the
       # version agent's CI stamps on every package it builds.
@@ -3266,7 +3572,7 @@ jobs:
         if: always() && needs.resolve.outputs.sha != ''
         continue-on-error: true
         env:
-          GH_TOKEN: ${{ secrets.AGENT_REPO_TOKEN }}
+          GH_TOKEN: ${{ steps.app.outputs.token }}
           TARGET: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
           JOB_STATUS: ${{ job.status }}
         run: |
@@ -3302,6 +3608,7 @@ jobs:
     needs: [resolve]
     if: ${{ inputs.mode == 'release' || needs.resolve.outputs.linux != 'false' }}
     runs-on: ${{ matrix.arch == 'arm64' && 'ubuntu-26.04-arm' || 'ubuntu-26.04' }}
+    environment: ${{ inputs.mode != 'release' && 'private-source' || '' }}
     timeout-minutes: 40
     strategy:
       fail-fast: false
@@ -3318,11 +3625,27 @@ jobs:
       SYSTEM: ${{ matrix.arch == 'arm64' && 'aarch64-linux' || 'x86_64-linux' }}
       CONTEXT: ${{ matrix.arch == 'arm64' && 'e2e/linux-arm64/nixos-nix' || 'e2e/vm/nixos-nix' }}
     steps:
+      # A kodflow-ci App token for supervizio/agent alone, minted here because
+      # this job runs in the private-source environment (the only place the
+      # App's key can be read), revoked when the job ends.
+      - name: Token for supervizio/agent (kodflow-ci App)
+        id: app
+        if: inputs.mode != 'release'
+        uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3.2.0
+        with:
+          app-id: ${{ vars.CI_APP_ID }}
+          private-key: ${{ secrets.CI_APP_PRIVATE_KEY }}
+          owner: supervizio
+          repositories: agent
+          permission-contents: read
+          permission-actions: read
+          permission-statuses: write
+
       - name: Report status (pending)
         if: needs.resolve.outputs.sha != ''
         continue-on-error: true
         env:
-          GH_TOKEN: ${{ secrets.AGENT_REPO_TOKEN }}
+          GH_TOKEN: ${{ steps.app.outputs.token }}
           TARGET: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
         run: |
           [ -z "$GH_TOKEN" ] && exit 0
@@ -3336,7 +3659,7 @@ jobs:
         with:
           repository: ${{ needs.resolve.outputs.source_repo }}
           ref: ${{ needs.resolve.outputs.ref }}
-          token: ${{ secrets.AGENT_REPO_TOKEN }}
+          token: ${{ steps.app.outputs.token }}
           persist-credentials: false
 
       - name: Check out the release lane
@@ -3365,7 +3688,7 @@ jobs:
           path: bin
           repository: ${{ needs.resolve.outputs.source_repo }}
           run-id: ${{ needs.resolve.outputs.run_id }}
-          github-token: ${{ secrets.AGENT_REPO_TOKEN }}
+          github-token: ${{ steps.app.outputs.token }}
 
       - name: Download the arm64 static binary from the agent run (cross-repo)
         if: inputs.mode != 'release'
@@ -3375,7 +3698,7 @@ jobs:
           path: bin
           repository: ${{ needs.resolve.outputs.source_repo }}
           run-id: ${{ needs.resolve.outputs.run_id }}
-          github-token: ${{ secrets.AGENT_REPO_TOKEN }}
+          github-token: ${{ steps.app.outputs.token }}
 
       # The leg's NixOS configuration lives in this repository.
       - name: Check out the NixOS leg's configuration
@@ -3550,7 +3873,7 @@ jobs:
         if: always() && needs.resolve.outputs.sha != ''
         continue-on-error: true
         env:
-          GH_TOKEN: ${{ secrets.AGENT_REPO_TOKEN }}
+          GH_TOKEN: ${{ steps.app.outputs.token }}
           TARGET: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
           JOB_STATUS: ${{ job.status }}
         run: |
@@ -3643,14 +3966,31 @@ jobs:
     if: ${{ inputs.mode != 'release' && needs.resolve.outputs.linux != 'false' }}
     needs: [resolve]
     runs-on: ubuntu-26.04-arm
+    environment: ${{ inputs.mode != 'release' && 'private-source' || '' }}
     timeout-minutes: 20
     steps:
+      # A kodflow-ci App token for supervizio/agent alone, minted here because
+      # this job runs in the private-source environment (the only place the
+      # App's key can be read), revoked when the job ends.
+      - name: Token for supervizio/agent (kodflow-ci App)
+        id: app
+        if: inputs.mode != 'release'
+        uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3.2.0
+        with:
+          app-id: ${{ vars.CI_APP_ID }}
+          private-key: ${{ secrets.CI_APP_PRIVATE_KEY }}
+          owner: supervizio
+          repositories: agent
+          permission-contents: read
+          permission-actions: read
+          permission-statuses: write
+
       - name: Checkout agent code
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           repository: ${{ needs.resolve.outputs.source_repo }}
           ref: ${{ needs.resolve.outputs.ref }}
-          token: ${{ secrets.AGENT_REPO_TOKEN }}
+          token: ${{ steps.app.outputs.token }}
           persist-credentials: false
 
       - name: Download the arm64 glibc binary from the agent run (cross-repo)
@@ -3660,7 +4000,7 @@ jobs:
           path: dl-glibc
           repository: ${{ needs.resolve.outputs.source_repo }}
           run-id: ${{ needs.resolve.outputs.run_id }}
-          github-token: ${{ secrets.AGENT_REPO_TOKEN }}
+          github-token: ${{ steps.app.outputs.token }}
 
       - name: Download the arm64 musl binary from the agent run (cross-repo)
         uses: actions/download-artifact@70fc10c6e5e1ce46ad2ea6f2b72d43f7d47b13c3 # v8.0.0
@@ -3669,7 +4009,7 @@ jobs:
           path: dl-musl
           repository: ${{ needs.resolve.outputs.source_repo }}
           run-id: ${{ needs.resolve.outputs.run_id }}
-          github-token: ${{ secrets.AGENT_REPO_TOKEN }}
+          github-token: ${{ steps.app.outputs.token }}
 
       # The one arm64 package agent DOES bridge: nfpm has no xbps backend, so
       # this job has no recipe for it, and agent's packages-xbps uploads both
@@ -3682,7 +4022,7 @@ jobs:
           path: dl-xbps
           repository: ${{ needs.resolve.outputs.source_repo }}
           run-id: ${{ needs.resolve.outputs.run_id }}
-          github-token: ${{ secrets.AGENT_REPO_TOKEN }}
+          github-token: ${{ steps.app.outputs.token }}
 
       - name: Install nfpm (pinned, checksum-verified)
         env:
@@ -3771,6 +4111,7 @@ jobs:
     # only when both needs succeeded and nothing was cancelled.
     if: ${{ !cancelled() && needs.resolve.result == 'success' && (inputs.mode == 'release' || needs.arm64-packages.result == 'success') && (inputs.mode == 'release' || needs.resolve.outputs.linux != 'false') }}
     runs-on: ubuntu-26.04-arm
+    environment: ${{ inputs.mode != 'release' && 'private-source' || '' }}
     timeout-minutes: 30
     strategy:
       fail-fast: false
@@ -3955,11 +4296,27 @@ jobs:
             precheck: 'true'
             detect: void-container-arm64
     steps:
+      # A kodflow-ci App token for supervizio/agent alone, minted here because
+      # this job runs in the private-source environment (the only place the
+      # App's key can be read), revoked when the job ends.
+      - name: Token for supervizio/agent (kodflow-ci App)
+        id: app
+        if: inputs.mode != 'release'
+        uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3.2.0
+        with:
+          app-id: ${{ vars.CI_APP_ID }}
+          private-key: ${{ secrets.CI_APP_PRIVATE_KEY }}
+          owner: supervizio
+          repositories: agent
+          permission-contents: read
+          permission-actions: read
+          permission-statuses: write
+
       - name: Report status (pending)
         if: needs.resolve.outputs.sha != ''
         continue-on-error: true
         env:
-          GH_TOKEN: ${{ secrets.AGENT_REPO_TOKEN }}
+          GH_TOKEN: ${{ steps.app.outputs.token }}
         run: |
           [ -z "$GH_TOKEN" ] && exit 0
           curl -sf -X POST -H "Authorization: Bearer $GH_TOKEN" -H "Accept: application/vnd.github+json" \
@@ -3972,7 +4329,7 @@ jobs:
         with:
           repository: ${{ needs.resolve.outputs.source_repo }}
           ref: ${{ needs.resolve.outputs.ref }}
-          token: ${{ secrets.AGENT_REPO_TOKEN }}
+          token: ${{ steps.app.outputs.token }}
           persist-credentials: false
 
       # Release mode (validate-release.yml): no checkout of the private tree
@@ -4155,7 +4512,7 @@ jobs:
         if: always() && needs.resolve.outputs.sha != ''
         continue-on-error: true
         env:
-          GH_TOKEN: ${{ secrets.AGENT_REPO_TOKEN }}
+          GH_TOKEN: ${{ steps.app.outputs.token }}
         run: |
           [ -z "$GH_TOKEN" ] && exit 0
           STATE="success"; DESC="Passed"
@@ -4246,6 +4603,7 @@ jobs:
     needs: [resolve]
     # One leg carries its own `runner`, below; every other one runs here.
     runs-on: ${{ matrix.runner || 'ubuntu-26.04' }}
+    environment: ${{ inputs.mode != 'release' && 'private-source' || '' }}
     timeout-minutes: 45
     if: ${{ github.event.inputs.arm_only != 'true' && (inputs.mode == 'release' || needs.resolve.outputs.linux != 'false') }}
     strategy:
@@ -4430,11 +4788,27 @@ jobs:
             release_asset: supervizio-linux-loong64
             prep: "apt-get update -qq && DEBIAN_FRONTEND=noninteractive apt-get install -y -qq jq procps"
     steps:
+      # A kodflow-ci App token for supervizio/agent alone, minted here because
+      # this job runs in the private-source environment (the only place the
+      # App's key can be read), revoked when the job ends.
+      - name: Token for supervizio/agent (kodflow-ci App)
+        id: app
+        if: inputs.mode != 'release'
+        uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3.2.0
+        with:
+          app-id: ${{ vars.CI_APP_ID }}
+          private-key: ${{ secrets.CI_APP_PRIVATE_KEY }}
+          owner: supervizio
+          repositories: agent
+          permission-contents: read
+          permission-actions: read
+          permission-statuses: write
+
       - name: Report status (pending)
         if: needs.resolve.outputs.sha != ''
         continue-on-error: true
         env:
-          GH_TOKEN: ${{ secrets.AGENT_REPO_TOKEN }}
+          GH_TOKEN: ${{ steps.app.outputs.token }}
         run: |
           [ -z "$GH_TOKEN" ] && exit 0
           curl -sf -X POST -H "Authorization: Bearer $GH_TOKEN" -H "Accept: application/vnd.github+json" \
@@ -4447,7 +4821,7 @@ jobs:
         with:
           repository: ${{ needs.resolve.outputs.source_repo }}
           ref: ${{ needs.resolve.outputs.ref }}
-          token: ${{ secrets.AGENT_REPO_TOKEN }}
+          token: ${{ steps.app.outputs.token }}
           persist-credentials: false
 
       # Release mode (validate-release.yml): no checkout of the private tree
@@ -4478,7 +4852,7 @@ jobs:
           path: dl
           repository: ${{ needs.resolve.outputs.source_repo }}
           run-id: ${{ needs.resolve.outputs.run_id }}
-          github-token: ${{ secrets.AGENT_REPO_TOKEN }}
+          github-token: ${{ steps.app.outputs.token }}
 
       # nfpm emits VERSION-qualified, packager-native names inside the
       # artifact (supervizio_0.0.0_riscv64.deb, ..._armhf.apk); only agent's
@@ -4722,7 +5096,7 @@ jobs:
         if: always() && needs.resolve.outputs.sha != ''
         continue-on-error: true
         env:
-          GH_TOKEN: ${{ secrets.AGENT_REPO_TOKEN }}
+          GH_TOKEN: ${{ steps.app.outputs.token }}
         run: |
           [ -z "$GH_TOKEN" ] && exit 0
           STATE="success"; DESC="Passed"
@@ -4735,14 +5109,31 @@ jobs:
     name: ${{ inputs.mode == 'release' && 'leg/freebsd/amd64' || 'E2E BSD freebsd amd64' }}
     needs: [resolve]
     runs-on: ubuntu-26.04
+    environment: ${{ inputs.mode != 'release' && 'private-source' || '' }}
     timeout-minutes: 30
     if: ${{ github.event.inputs.arm_only != 'true' && (inputs.mode == 'release' || needs.resolve.outputs.freebsd != 'false') }}
     steps:
+      # A kodflow-ci App token for supervizio/agent alone, minted here because
+      # this job runs in the private-source environment (the only place the
+      # App's key can be read), revoked when the job ends.
+      - name: Token for supervizio/agent (kodflow-ci App)
+        id: app
+        if: inputs.mode != 'release'
+        uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3.2.0
+        with:
+          app-id: ${{ vars.CI_APP_ID }}
+          private-key: ${{ secrets.CI_APP_PRIVATE_KEY }}
+          owner: supervizio
+          repositories: agent
+          permission-contents: read
+          permission-actions: read
+          permission-statuses: write
+
       - name: Report status (pending)
         if: needs.resolve.outputs.sha != ''
         continue-on-error: true
         env:
-          GH_TOKEN: ${{ secrets.AGENT_REPO_TOKEN }}
+          GH_TOKEN: ${{ steps.app.outputs.token }}
         run: |
           [ -z "$GH_TOKEN" ] && exit 0
           curl -sf -X POST -H "Authorization: Bearer $GH_TOKEN" -H "Accept: application/vnd.github+json" \
@@ -4755,7 +5146,7 @@ jobs:
         with:
           repository: ${{ needs.resolve.outputs.source_repo }}
           ref: ${{ needs.resolve.outputs.ref }}
-          token: ${{ secrets.AGENT_REPO_TOKEN }}
+          token: ${{ steps.app.outputs.token }}
           persist-credentials: false
 
       # Release mode (validate-release.yml): no checkout of the private tree
@@ -4789,7 +5180,7 @@ jobs:
           path: bin
           repository: ${{ needs.resolve.outputs.source_repo }}
           run-id: ${{ needs.resolve.outputs.run_id }}
-          github-token: ${{ secrets.AGENT_REPO_TOKEN }}
+          github-token: ${{ steps.app.outputs.token }}
 
       - name: Verify the binary arrived
         run: |
@@ -4852,7 +5243,7 @@ jobs:
         if: always() && needs.resolve.outputs.sha != ''
         continue-on-error: true
         env:
-          GH_TOKEN: ${{ secrets.AGENT_REPO_TOKEN }}
+          GH_TOKEN: ${{ steps.app.outputs.token }}
         run: |
           [ -z "$GH_TOKEN" ] && exit 0
           STATE="success"; DESC="Passed"
@@ -4883,15 +5274,32 @@ jobs:
     name: E2E BSD freebsd 14 amd64 (advisory)
     needs: [resolve]
     runs-on: ubuntu-26.04
+    environment: ${{ inputs.mode != 'release' && 'private-source' || '' }}
     timeout-minutes: 30
     if: ${{ inputs.mode != 'release' && github.event.inputs.arm_only != 'true' && needs.resolve.outputs.freebsd != 'false' }}
     continue-on-error: true
     steps:
+      # A kodflow-ci App token for supervizio/agent alone, minted here because
+      # this job runs in the private-source environment (the only place the
+      # App's key can be read), revoked when the job ends.
+      - name: Token for supervizio/agent (kodflow-ci App)
+        id: app
+        if: inputs.mode != 'release'
+        uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3.2.0
+        with:
+          app-id: ${{ vars.CI_APP_ID }}
+          private-key: ${{ secrets.CI_APP_PRIVATE_KEY }}
+          owner: supervizio
+          repositories: agent
+          permission-contents: read
+          permission-actions: read
+          permission-statuses: write
+
       - name: Report status (pending)
         if: needs.resolve.outputs.sha != ''
         continue-on-error: true
         env:
-          GH_TOKEN: ${{ secrets.AGENT_REPO_TOKEN }}
+          GH_TOKEN: ${{ steps.app.outputs.token }}
         run: |
           [ -z "$GH_TOKEN" ] && exit 0
           curl -sf -X POST -H "Authorization: Bearer $GH_TOKEN" -H "Accept: application/vnd.github+json" \
@@ -4903,7 +5311,7 @@ jobs:
         with:
           repository: ${{ needs.resolve.outputs.source_repo }}
           ref: ${{ needs.resolve.outputs.ref }}
-          token: ${{ secrets.AGENT_REPO_TOKEN }}
+          token: ${{ steps.app.outputs.token }}
           persist-credentials: false
 
       # The bench pulled this from zot; the hosted runner takes the same bytes
@@ -4916,7 +5324,7 @@ jobs:
           path: bin
           repository: ${{ needs.resolve.outputs.source_repo }}
           run-id: ${{ needs.resolve.outputs.run_id }}
-          github-token: ${{ secrets.AGENT_REPO_TOKEN }}
+          github-token: ${{ steps.app.outputs.token }}
 
       - name: Verify the binary arrived
         run: |
@@ -4978,7 +5386,7 @@ jobs:
         if: ${{ !cancelled() && needs.resolve.outputs.sha != '' }}
         continue-on-error: true
         env:
-          GH_TOKEN: ${{ secrets.AGENT_REPO_TOKEN }}
+          GH_TOKEN: ${{ steps.app.outputs.token }}
         run: |
           [ -z "$GH_TOKEN" ] && exit 0
           STATE="success"; DESC="Passed"
@@ -4991,14 +5399,31 @@ jobs:
     name: ${{ inputs.mode == 'release' && 'leg/netbsd/amd64' || 'E2E BSD netbsd amd64' }}
     needs: [resolve]
     runs-on: ubuntu-26.04
+    environment: ${{ inputs.mode != 'release' && 'private-source' || '' }}
     timeout-minutes: 30
     if: ${{ github.event.inputs.arm_only != 'true' && (inputs.mode == 'release' || needs.resolve.outputs.netbsd != 'false') }}
     steps:
+      # A kodflow-ci App token for supervizio/agent alone, minted here because
+      # this job runs in the private-source environment (the only place the
+      # App's key can be read), revoked when the job ends.
+      - name: Token for supervizio/agent (kodflow-ci App)
+        id: app
+        if: inputs.mode != 'release'
+        uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3.2.0
+        with:
+          app-id: ${{ vars.CI_APP_ID }}
+          private-key: ${{ secrets.CI_APP_PRIVATE_KEY }}
+          owner: supervizio
+          repositories: agent
+          permission-contents: read
+          permission-actions: read
+          permission-statuses: write
+
       - name: Report status (pending)
         if: needs.resolve.outputs.sha != ''
         continue-on-error: true
         env:
-          GH_TOKEN: ${{ secrets.AGENT_REPO_TOKEN }}
+          GH_TOKEN: ${{ steps.app.outputs.token }}
         run: |
           [ -z "$GH_TOKEN" ] && exit 0
           curl -sf -X POST -H "Authorization: Bearer $GH_TOKEN" -H "Accept: application/vnd.github+json" \
@@ -5011,7 +5436,7 @@ jobs:
         with:
           repository: ${{ needs.resolve.outputs.source_repo }}
           ref: ${{ needs.resolve.outputs.ref }}
-          token: ${{ secrets.AGENT_REPO_TOKEN }}
+          token: ${{ steps.app.outputs.token }}
           persist-credentials: false
 
       # Release mode (validate-release.yml): no checkout of the private tree
@@ -5045,7 +5470,7 @@ jobs:
           path: bin
           repository: ${{ needs.resolve.outputs.source_repo }}
           run-id: ${{ needs.resolve.outputs.run_id }}
-          github-token: ${{ secrets.AGENT_REPO_TOKEN }}
+          github-token: ${{ steps.app.outputs.token }}
 
       - name: Verify the binary arrived
         run: |
@@ -5104,7 +5529,7 @@ jobs:
         if: always() && needs.resolve.outputs.sha != ''
         continue-on-error: true
         env:
-          GH_TOKEN: ${{ secrets.AGENT_REPO_TOKEN }}
+          GH_TOKEN: ${{ steps.app.outputs.token }}
         run: |
           [ -z "$GH_TOKEN" ] && exit 0
           STATE="success"; DESC="Passed"
@@ -5117,6 +5542,7 @@ jobs:
     name: ${{ inputs.mode == 'release' && format('leg/openbsd/amd64/{0}', matrix.release) || format('E2E BSD openbsd amd64 ({0})', matrix.release) }}
     needs: [resolve]
     runs-on: ubuntu-26.04
+    environment: ${{ inputs.mode != 'release' && 'private-source' || '' }}
     timeout-minutes: 30
     if: ${{ github.event.inputs.arm_only != 'true' && (inputs.mode == 'release' || needs.resolve.outputs.openbsd != 'false') }}
     strategy:
@@ -5163,11 +5589,27 @@ jobs:
         # sysroot the leg tests a system we never claimed.
         release: ['7.3', '7.4', '7.5', '7.6', '7.7', '7.8', '7.9']
     steps:
+      # A kodflow-ci App token for supervizio/agent alone, minted here because
+      # this job runs in the private-source environment (the only place the
+      # App's key can be read), revoked when the job ends.
+      - name: Token for supervizio/agent (kodflow-ci App)
+        id: app
+        if: inputs.mode != 'release'
+        uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3.2.0
+        with:
+          app-id: ${{ vars.CI_APP_ID }}
+          private-key: ${{ secrets.CI_APP_PRIVATE_KEY }}
+          owner: supervizio
+          repositories: agent
+          permission-contents: read
+          permission-actions: read
+          permission-statuses: write
+
       - name: Report status (pending)
         if: needs.resolve.outputs.sha != ''
         continue-on-error: true
         env:
-          GH_TOKEN: ${{ secrets.AGENT_REPO_TOKEN }}
+          GH_TOKEN: ${{ steps.app.outputs.token }}
         run: |
           [ -z "$GH_TOKEN" ] && exit 0
           curl -sf -X POST -H "Authorization: Bearer $GH_TOKEN" -H "Accept: application/vnd.github+json" \
@@ -5180,7 +5622,7 @@ jobs:
         with:
           repository: ${{ needs.resolve.outputs.source_repo }}
           ref: ${{ needs.resolve.outputs.ref }}
-          token: ${{ secrets.AGENT_REPO_TOKEN }}
+          token: ${{ steps.app.outputs.token }}
           # The workspace is synced wholesale into the guest; a persisted
           # credential would travel with it.
           persist-credentials: false
@@ -5230,7 +5672,7 @@ jobs:
           path: pkg
           repository: ${{ needs.resolve.outputs.source_repo }}
           run-id: ${{ needs.resolve.outputs.run_id }}
-          github-token: ${{ secrets.AGENT_REPO_TOKEN }}
+          github-token: ${{ steps.app.outputs.token }}
 
       # Everything checkable without paying for a guest boot is checked here,
       # on the host, where the diagnosis is legible.
@@ -5484,7 +5926,7 @@ jobs:
         if: always() && needs.resolve.outputs.sha != ''
         continue-on-error: true
         env:
-          GH_TOKEN: ${{ secrets.AGENT_REPO_TOKEN }}
+          GH_TOKEN: ${{ steps.app.outputs.token }}
         run: |
           [ -z "$GH_TOKEN" ] && exit 0
           STATE="success"; DESC="Passed"
@@ -5497,14 +5939,31 @@ jobs:
     name: ${{ inputs.mode == 'release' && 'leg/freebsd/arm64' || 'E2E BSD freebsd arm64' }}
     needs: [resolve]
     runs-on: ubuntu-26.04
+    environment: ${{ inputs.mode != 'release' && 'private-source' || '' }}
     timeout-minutes: 180
     if: ${{ github.event.inputs.arm_only != 'true' && (inputs.mode == 'release' || needs.resolve.outputs.freebsd != 'false') }}
     steps:
+      # A kodflow-ci App token for supervizio/agent alone, minted here because
+      # this job runs in the private-source environment (the only place the
+      # App's key can be read), revoked when the job ends.
+      - name: Token for supervizio/agent (kodflow-ci App)
+        id: app
+        if: inputs.mode != 'release'
+        uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3.2.0
+        with:
+          app-id: ${{ vars.CI_APP_ID }}
+          private-key: ${{ secrets.CI_APP_PRIVATE_KEY }}
+          owner: supervizio
+          repositories: agent
+          permission-contents: read
+          permission-actions: read
+          permission-statuses: write
+
       - name: Report status (pending)
         if: needs.resolve.outputs.sha != ''
         continue-on-error: true
         env:
-          GH_TOKEN: ${{ secrets.AGENT_REPO_TOKEN }}
+          GH_TOKEN: ${{ steps.app.outputs.token }}
         run: |
           [ -z "$GH_TOKEN" ] && exit 0
           curl -sf -X POST -H "Authorization: Bearer $GH_TOKEN" -H "Accept: application/vnd.github+json" \
@@ -5517,7 +5976,7 @@ jobs:
         with:
           repository: ${{ needs.resolve.outputs.source_repo }}
           ref: ${{ needs.resolve.outputs.ref }}
-          token: ${{ secrets.AGENT_REPO_TOKEN }}
+          token: ${{ steps.app.outputs.token }}
           persist-credentials: false
 
       # Release mode (validate-release.yml): no checkout of the private tree
@@ -5551,7 +6010,7 @@ jobs:
           path: bin
           repository: ${{ needs.resolve.outputs.source_repo }}
           run-id: ${{ needs.resolve.outputs.run_id }}
-          github-token: ${{ secrets.AGENT_REPO_TOKEN }}
+          github-token: ${{ steps.app.outputs.token }}
 
       - name: Verify the binary arrived
         run: |
@@ -5650,7 +6109,7 @@ jobs:
         if: always() && needs.resolve.outputs.sha != ''
         continue-on-error: true
         env:
-          GH_TOKEN: ${{ secrets.AGENT_REPO_TOKEN }}
+          GH_TOKEN: ${{ steps.app.outputs.token }}
         run: |
           [ -z "$GH_TOKEN" ] && exit 0
           STATE="success"; DESC="Passed"
@@ -5663,14 +6122,31 @@ jobs:
     name: ${{ inputs.mode == 'release' && 'leg/netbsd/arm64' || 'E2E BSD netbsd arm64' }}
     needs: [resolve]
     runs-on: ubuntu-26.04
+    environment: ${{ inputs.mode != 'release' && 'private-source' || '' }}
     timeout-minutes: 180
     if: ${{ github.event.inputs.arm_only != 'true' && (inputs.mode == 'release' || needs.resolve.outputs.netbsd != 'false') }}
     steps:
+      # A kodflow-ci App token for supervizio/agent alone, minted here because
+      # this job runs in the private-source environment (the only place the
+      # App's key can be read), revoked when the job ends.
+      - name: Token for supervizio/agent (kodflow-ci App)
+        id: app
+        if: inputs.mode != 'release'
+        uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3.2.0
+        with:
+          app-id: ${{ vars.CI_APP_ID }}
+          private-key: ${{ secrets.CI_APP_PRIVATE_KEY }}
+          owner: supervizio
+          repositories: agent
+          permission-contents: read
+          permission-actions: read
+          permission-statuses: write
+
       - name: Report status (pending)
         if: needs.resolve.outputs.sha != ''
         continue-on-error: true
         env:
-          GH_TOKEN: ${{ secrets.AGENT_REPO_TOKEN }}
+          GH_TOKEN: ${{ steps.app.outputs.token }}
         run: |
           [ -z "$GH_TOKEN" ] && exit 0
           curl -sf -X POST -H "Authorization: Bearer $GH_TOKEN" -H "Accept: application/vnd.github+json" \
@@ -5683,7 +6159,7 @@ jobs:
         with:
           repository: ${{ needs.resolve.outputs.source_repo }}
           ref: ${{ needs.resolve.outputs.ref }}
-          token: ${{ secrets.AGENT_REPO_TOKEN }}
+          token: ${{ steps.app.outputs.token }}
           persist-credentials: false
 
       # Release mode (validate-release.yml): no checkout of the private tree
@@ -5717,7 +6193,7 @@ jobs:
           path: bin
           repository: ${{ needs.resolve.outputs.source_repo }}
           run-id: ${{ needs.resolve.outputs.run_id }}
-          github-token: ${{ secrets.AGENT_REPO_TOKEN }}
+          github-token: ${{ steps.app.outputs.token }}
 
       - name: Verify the binary arrived
         run: |
@@ -5812,7 +6288,7 @@ jobs:
         if: always() && needs.resolve.outputs.sha != ''
         continue-on-error: true
         env:
-          GH_TOKEN: ${{ secrets.AGENT_REPO_TOKEN }}
+          GH_TOKEN: ${{ steps.app.outputs.token }}
         run: |
           [ -z "$GH_TOKEN" ] && exit 0
           STATE="success"; DESC="Passed"
@@ -5851,6 +6327,7 @@ jobs:
     name: ${{ inputs.mode == 'release' && format('leg/openbsd/arm64/{0}', matrix.release) || format('E2E BSD openbsd arm64 ({0})', matrix.release) }}
     needs: [resolve]
     runs-on: ubuntu-26.04
+    environment: ${{ inputs.mode != 'release' && 'private-source' || '' }}
     # 180, like the freebsd-arm64 and netbsd-arm64 legs: the guest is TCG, and
     # this one additionally installs a package and runs the eight supervision
     # scenarios inside it.
@@ -5892,11 +6369,27 @@ jobs:
         # here refuses the binary.
         release: ['7.3', '7.4', '7.5', '7.6', '7.7', '7.8', '7.9']
     steps:
+      # A kodflow-ci App token for supervizio/agent alone, minted here because
+      # this job runs in the private-source environment (the only place the
+      # App's key can be read), revoked when the job ends.
+      - name: Token for supervizio/agent (kodflow-ci App)
+        id: app
+        if: inputs.mode != 'release'
+        uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3.2.0
+        with:
+          app-id: ${{ vars.CI_APP_ID }}
+          private-key: ${{ secrets.CI_APP_PRIVATE_KEY }}
+          owner: supervizio
+          repositories: agent
+          permission-contents: read
+          permission-actions: read
+          permission-statuses: write
+
       - name: Report status (pending)
         if: needs.resolve.outputs.sha != ''
         continue-on-error: true
         env:
-          GH_TOKEN: ${{ secrets.AGENT_REPO_TOKEN }}
+          GH_TOKEN: ${{ steps.app.outputs.token }}
         run: |
           [ -z "$GH_TOKEN" ] && exit 0
           curl -sf -X POST -H "Authorization: Bearer $GH_TOKEN" -H "Accept: application/vnd.github+json" \
@@ -5909,7 +6402,7 @@ jobs:
         with:
           repository: ${{ needs.resolve.outputs.source_repo }}
           ref: ${{ needs.resolve.outputs.ref }}
-          token: ${{ secrets.AGENT_REPO_TOKEN }}
+          token: ${{ steps.app.outputs.token }}
           # The workspace is synced wholesale into the guest; a persisted
           # credential would travel with it.
           persist-credentials: false
@@ -5942,7 +6435,7 @@ jobs:
           path: pkg
           repository: ${{ needs.resolve.outputs.source_repo }}
           run-id: ${{ needs.resolve.outputs.run_id }}
-          github-token: ${{ secrets.AGENT_REPO_TOKEN }}
+          github-token: ${{ steps.app.outputs.token }}
 
       # Everything checkable without paying for a three-minute emulated boot is
       # checked here, on the host, where the diagnosis is legible.
@@ -6102,7 +6595,7 @@ jobs:
         if: always() && needs.resolve.outputs.sha != ''
         continue-on-error: true
         env:
-          GH_TOKEN: ${{ secrets.AGENT_REPO_TOKEN }}
+          GH_TOKEN: ${{ steps.app.outputs.token }}
         run: |
           [ -z "$GH_TOKEN" ] && exit 0
           STATE="success"; DESC="Passed"
@@ -6157,14 +6650,31 @@ jobs:
     name: ${{ inputs.mode == 'release' && 'leg/illumos/amd64' || 'E2E illumos amd64 (OmniOS)' }}
     needs: [resolve]
     runs-on: ubuntu-26.04
+    environment: ${{ inputs.mode != 'release' && 'private-source' || '' }}
     timeout-minutes: 45
     if: ${{ github.event.inputs.arm_only != 'true' && (inputs.mode == 'release' || needs.resolve.outputs.illumos != 'false') }}
     steps:
+      # A kodflow-ci App token for supervizio/agent alone, minted here because
+      # this job runs in the private-source environment (the only place the
+      # App's key can be read), revoked when the job ends.
+      - name: Token for supervizio/agent (kodflow-ci App)
+        id: app
+        if: inputs.mode != 'release'
+        uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3.2.0
+        with:
+          app-id: ${{ vars.CI_APP_ID }}
+          private-key: ${{ secrets.CI_APP_PRIVATE_KEY }}
+          owner: supervizio
+          repositories: agent
+          permission-contents: read
+          permission-actions: read
+          permission-statuses: write
+
       - name: Report status (pending)
         if: needs.resolve.outputs.sha != ''
         continue-on-error: true
         env:
-          GH_TOKEN: ${{ secrets.AGENT_REPO_TOKEN }}
+          GH_TOKEN: ${{ steps.app.outputs.token }}
         run: |
           [ -z "$GH_TOKEN" ] && exit 0
           curl -sf -X POST -H "Authorization: Bearer $GH_TOKEN" -H "Accept: application/vnd.github+json" \
@@ -6180,7 +6690,7 @@ jobs:
         with:
           repository: ${{ needs.resolve.outputs.source_repo }}
           ref: ${{ needs.resolve.outputs.ref }}
-          token: ${{ secrets.AGENT_REPO_TOKEN }}
+          token: ${{ steps.app.outputs.token }}
           persist-credentials: false
           sparse-checkout-cone-mode: false
           sparse-checkout: |
@@ -6218,7 +6728,7 @@ jobs:
           path: bin
           repository: ${{ needs.resolve.outputs.source_repo }}
           run-id: ${{ needs.resolve.outputs.run_id }}
-          github-token: ${{ secrets.AGENT_REPO_TOKEN }}
+          github-token: ${{ steps.app.outputs.token }}
 
       - name: Download the IPS archive from the agent run (cross-repo)
         if: inputs.mode != 'release'
@@ -6228,7 +6738,7 @@ jobs:
           path: pkg
           repository: ${{ needs.resolve.outputs.source_repo }}
           run-id: ${{ needs.resolve.outputs.run_id }}
-          github-token: ${{ secrets.AGENT_REPO_TOKEN }}
+          github-token: ${{ steps.app.outputs.token }}
 
       - name: Verify the binary and the archive arrived
         run: |
@@ -6269,7 +6779,7 @@ jobs:
         if: always() && needs.resolve.outputs.sha != ''
         continue-on-error: true
         env:
-          GH_TOKEN: ${{ secrets.AGENT_REPO_TOKEN }}
+          GH_TOKEN: ${{ steps.app.outputs.token }}
         run: |
           [ -z "$GH_TOKEN" ] && exit 0
           STATE="success"; DESC="Passed"
@@ -6282,14 +6792,31 @@ jobs:
     name: ${{ inputs.mode == 'release' && 'leg/solaris/amd64' || 'E2E Solaris 11.4 amd64' }}
     needs: [resolve]
     runs-on: ubuntu-26.04
+    environment: ${{ inputs.mode != 'release' && 'private-source' || '' }}
     timeout-minutes: 45
     if: ${{ github.event.inputs.arm_only != 'true' && (inputs.mode == 'release' || needs.resolve.outputs.solaris != 'false') }}
     steps:
+      # A kodflow-ci App token for supervizio/agent alone, minted here because
+      # this job runs in the private-source environment (the only place the
+      # App's key can be read), revoked when the job ends.
+      - name: Token for supervizio/agent (kodflow-ci App)
+        id: app
+        if: inputs.mode != 'release'
+        uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3.2.0
+        with:
+          app-id: ${{ vars.CI_APP_ID }}
+          private-key: ${{ secrets.CI_APP_PRIVATE_KEY }}
+          owner: supervizio
+          repositories: agent
+          permission-contents: read
+          permission-actions: read
+          permission-statuses: write
+
       - name: Report status (pending)
         if: needs.resolve.outputs.sha != ''
         continue-on-error: true
         env:
-          GH_TOKEN: ${{ secrets.AGENT_REPO_TOKEN }}
+          GH_TOKEN: ${{ steps.app.outputs.token }}
         run: |
           [ -z "$GH_TOKEN" ] && exit 0
           curl -sf -X POST -H "Authorization: Bearer $GH_TOKEN" -H "Accept: application/vnd.github+json" \
@@ -6305,7 +6832,7 @@ jobs:
         with:
           repository: ${{ needs.resolve.outputs.source_repo }}
           ref: ${{ needs.resolve.outputs.ref }}
-          token: ${{ secrets.AGENT_REPO_TOKEN }}
+          token: ${{ steps.app.outputs.token }}
           persist-credentials: false
           sparse-checkout-cone-mode: false
           sparse-checkout: |
@@ -6343,7 +6870,7 @@ jobs:
           path: bin
           repository: ${{ needs.resolve.outputs.source_repo }}
           run-id: ${{ needs.resolve.outputs.run_id }}
-          github-token: ${{ secrets.AGENT_REPO_TOKEN }}
+          github-token: ${{ steps.app.outputs.token }}
 
       - name: Download the IPS archive from the agent run (cross-repo)
         if: inputs.mode != 'release'
@@ -6353,7 +6880,7 @@ jobs:
           path: pkg
           repository: ${{ needs.resolve.outputs.source_repo }}
           run-id: ${{ needs.resolve.outputs.run_id }}
-          github-token: ${{ secrets.AGENT_REPO_TOKEN }}
+          github-token: ${{ steps.app.outputs.token }}
 
       - name: Verify the binary and the archive arrived
         run: |
@@ -6394,7 +6921,7 @@ jobs:
         if: always() && needs.resolve.outputs.sha != ''
         continue-on-error: true
         env:
-          GH_TOKEN: ${{ secrets.AGENT_REPO_TOKEN }}
+          GH_TOKEN: ${{ steps.app.outputs.token }}
         run: |
           [ -z "$GH_TOKEN" ] && exit 0
           STATE="success"; DESC="Passed"
@@ -6420,7 +6947,24 @@ jobs:
     # leg jobs themselves, and this workflow holds no token to post with.
     if: always() && inputs.mode != 'release'
     runs-on: ubuntu-26.04
+    environment: ${{ inputs.mode != 'release' && 'private-source' || '' }}
     steps:
+      # A kodflow-ci App token for supervizio/agent alone, minted here because
+      # this job runs in the private-source environment (the only place the
+      # App's key can be read), revoked when the job ends.
+      - name: Token for supervizio/agent (kodflow-ci App)
+        id: app
+        if: inputs.mode != 'release'
+        uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3.2.0
+        with:
+          app-id: ${{ vars.CI_APP_ID }}
+          private-key: ${{ secrets.CI_APP_PRIVATE_KEY }}
+          owner: supervizio
+          repositories: agent
+          permission-contents: read
+          permission-actions: read
+          permission-statuses: write
+
       # One verdict, computed once. The three consumers below (commit status,
       # dispatch callback, fail-the-job) used to each carry their own copy of
       # the same twelve-element array and the same loop — three places to keep
@@ -6586,11 +7130,11 @@ jobs:
         if: ${{ !cancelled() && needs.resolve.outputs.sha != '' && github.event.inputs.arm_only != 'true' }}
         continue-on-error: true
         env:
-          GH_TOKEN: ${{ secrets.AGENT_REPO_TOKEN }}
+          GH_TOKEN: ${{ steps.app.outputs.token }}
           STATE: ${{ steps.verdict.outputs.state }}
           DESC: ${{ steps.verdict.outputs.description }}
         run: |
-          [ -z "$GH_TOKEN" ] && { echo "AGENT_REPO_TOKEN not set, skipping"; exit 0; }
+          [ -z "$GH_TOKEN" ] && { echo "no kodflow-ci App token, skipping"; exit 0; }
           curl -sf -X POST \
             -H "Authorization: Bearer $GH_TOKEN" \
             -H "Accept: application/vnd.github+json" \
@@ -6604,11 +7148,11 @@ jobs:
         if: ${{ !cancelled() && needs.resolve.outputs.sha != '' && github.event.inputs.arm_only != 'true' }}
         continue-on-error: true
         env:
-          GH_TOKEN: ${{ secrets.AGENT_REPO_TOKEN }}
+          GH_TOKEN: ${{ steps.app.outputs.token }}
           STATE: ${{ steps.verdict.outputs.state }}
           SOURCE_REPO: ${{ needs.resolve.outputs.source_repo }}
         run: |
-          [ -z "$GH_TOKEN" ] && { echo "AGENT_REPO_TOKEN not set, skipping"; exit 0; }
+          [ -z "$GH_TOKEN" ] && { echo "no kodflow-ci App token, skipping"; exit 0; }
           curl -sf -X POST \
             -H "Authorization: Bearer $GH_TOKEN" \
             -H "Accept: application/vnd.github+json" \

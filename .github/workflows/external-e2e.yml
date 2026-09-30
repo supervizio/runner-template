@@ -23,9 +23,13 @@ name: External E2E (dispatched)
 #
 # SECURITY MODEL (public executor of private code — critical surface):
 #   * repository_dispatch-only trigger; no pull_request / pull_request_target.
-#   * LIBPROBE_REPO_TOKEN = fine-grained PAT, Contents:read + Commit statuses:write
-#     on the SOURCE repo only. Checks out the private source; posts the result
-#     back as a commit status on the source commit.
+#   * No personal token. Each job that reads libprobe or posts its status runs
+#     in the `private-source` environment (deployment branches: main only) and
+#     mints a kodflow-ci GitHub App token there (vars.CI_APP_ID, secret
+#     CI_APP_PRIVATE_KEY, both environment-scoped) for supervizio/libprobe
+#     alone, contents: read + statuses: write, revoked when the job ends.
+#     Checks out the private source; posts the result back as a commit status
+#     on the source commit.
 #   * Pass/fail travels via that commit status; the metric reports travel via
 #     upload-artifact (non-sensitive, see above).
 #   * Logs minimized (no --nocapture, RUST_BACKTRACE=0). The run is DELETED by
@@ -90,12 +94,27 @@ jobs:
   ack:
     name: Ack (pending status)
     runs-on: ubuntu-26.04
+    environment: private-source
     steps:
+      # A kodflow-ci App token for supervizio/libprobe alone, minted here because
+      # this job runs in the private-source environment (the only place the
+      # App's key can be read), revoked when the job ends.
+      - name: Token for supervizio/libprobe (kodflow-ci App)
+        id: app
+        uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3.2.0
+        with:
+          app-id: ${{ vars.CI_APP_ID }}
+          private-key: ${{ secrets.CI_APP_PRIVATE_KEY }}
+          owner: supervizio
+          repositories: libprobe
+          permission-contents: read
+          permission-statuses: write
+
       # Gate the whole workflow on source_repo, BEFORE anything reads it.
       #
       # SOURCE_REPO comes straight from an attacker-controllable dispatch
       # payload, and every downstream job does `actions/checkout` of that
-      # repository with LIBPROBE_REPO_TOKEN and then runs `cargo test --release`
+      # repository with a libprobe App token and then runs `cargo test --release`
       # on it. cargo executes build.rs, proc macros and test code, so an
       # unconstrained value turns "can dispatch a test run" into "can run
       # arbitrary code next to a private-repo credential".
@@ -122,7 +141,7 @@ jobs:
 
       - name: Set pending commit status on source
         env:
-          GH_TOKEN: ${{ secrets.LIBPROBE_REPO_TOKEN }}
+          GH_TOKEN: ${{ steps.app.outputs.token }}
         run: |
           set -euo pipefail
           gh api -X POST "repos/${SOURCE_REPO}/statuses/${SOURCE_SHA}" \
@@ -138,6 +157,7 @@ jobs:
     name: e2e ${{ matrix.platform }}
     needs: [ack]
     runs-on: ${{ matrix.runner }}
+    environment: private-source
     strategy:
       fail-fast: false
       matrix:
@@ -149,12 +169,26 @@ jobs:
           - { platform: macos-amd64,   runner: macos-26-intel }
           - { platform: macos-arm64,   runner: macos-26 }
     steps:
+      # A kodflow-ci App token for supervizio/libprobe alone, minted here because
+      # this job runs in the private-source environment (the only place the
+      # App's key can be read), revoked when the job ends.
+      - name: Token for supervizio/libprobe (kodflow-ci App)
+        id: app
+        uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3.2.0
+        with:
+          app-id: ${{ vars.CI_APP_ID }}
+          private-key: ${{ secrets.CI_APP_PRIVATE_KEY }}
+          owner: supervizio
+          repositories: libprobe
+          permission-contents: read
+          permission-statuses: write
+
       - name: Checkout private source (ephemeral, no persisted creds)
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           repository: ${{ env.SOURCE_REPO }}
           ref: ${{ env.SOURCE_SHA }}
-          token: ${{ secrets.LIBPROBE_REPO_TOKEN }}
+          token: ${{ steps.app.outputs.token }}
           persist-credentials: false
       - name: Full test suite
         run: ${{ env.TEST_CMD }}
@@ -213,6 +247,7 @@ jobs:
     name: e2e freebsd-amd64
     needs: [ack]
     runs-on: ubuntu-26.04
+    environment: private-source
     timeout-minutes: 40
     env: &freebsd-amd64
       LEG_OS: freebsd
@@ -222,12 +257,26 @@ jobs:
     outputs:
       bootstrapped: ${{ steps.bootstrapped.outputs.bootstrapped }}
     steps: &bsd-leg
+      # A kodflow-ci App token for supervizio/libprobe alone, minted here because
+      # this job runs in the private-source environment (the only place the
+      # App's key can be read), revoked when the job ends.
+      - name: Token for supervizio/libprobe (kodflow-ci App)
+        id: app
+        uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3.2.0
+        with:
+          app-id: ${{ vars.CI_APP_ID }}
+          private-key: ${{ secrets.CI_APP_PRIVATE_KEY }}
+          owner: supervizio
+          repositories: libprobe
+          permission-contents: read
+          permission-statuses: write
+
       - name: Checkout private source (ephemeral, no persisted creds)
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           repository: ${{ env.SOURCE_REPO }}
           ref: ${{ env.SOURCE_SHA }}
-          token: ${{ secrets.LIBPROBE_REPO_TOKEN }}
+          token: ${{ steps.app.outputs.token }}
           persist-credentials: false
 
       # Releases pinned, like e2e.yml. Unpinned, the action follows its own
@@ -310,6 +359,7 @@ jobs:
     needs: [ack, freebsd-amd64]
     if: ${{ !cancelled() && needs.ack.result == 'success' && needs.freebsd-amd64.outputs.bootstrapped != 'true' }}
     runs-on: ubuntu-26.04
+    environment: private-source
     timeout-minutes: 40
     env: *freebsd-amd64
     outputs:
@@ -320,6 +370,7 @@ jobs:
     name: e2e openbsd-amd64
     needs: [ack]
     runs-on: ubuntu-26.04
+    environment: private-source
     timeout-minutes: 40
     env: &openbsd-amd64
       LEG_OS: openbsd
@@ -335,6 +386,7 @@ jobs:
     needs: [ack, openbsd-amd64]
     if: ${{ !cancelled() && needs.ack.result == 'success' && needs.openbsd-amd64.outputs.bootstrapped != 'true' }}
     runs-on: ubuntu-26.04
+    environment: private-source
     timeout-minutes: 40
     env: *openbsd-amd64
     outputs:
@@ -345,6 +397,7 @@ jobs:
     name: e2e netbsd-amd64
     needs: [ack]
     runs-on: ubuntu-26.04
+    environment: private-source
     timeout-minutes: 40
     env: &netbsd-amd64
       LEG_OS: netbsd
@@ -360,6 +413,7 @@ jobs:
     needs: [ack, netbsd-amd64]
     if: ${{ !cancelled() && needs.ack.result == 'success' && needs.netbsd-amd64.outputs.bootstrapped != 'true' }}
     runs-on: ubuntu-26.04
+    environment: private-source
     timeout-minutes: 40
     env: *netbsd-amd64
     outputs:
@@ -373,6 +427,7 @@ jobs:
     name: e2e freebsd-arm64
     needs: [ack]
     runs-on: ubuntu-26.04-arm
+    environment: private-source
     continue-on-error: true
     env:
       LEG_OS: freebsd
@@ -385,6 +440,7 @@ jobs:
     name: e2e openbsd-arm64
     needs: [ack]
     runs-on: ubuntu-26.04-arm
+    environment: private-source
     continue-on-error: true
     env:
       LEG_OS: openbsd
@@ -399,6 +455,7 @@ jobs:
     name: e2e netbsd-arm64
     needs: [ack]
     runs-on: ubuntu-26.04-arm
+    environment: private-source
     continue-on-error: true
     env:
       LEG_OS: netbsd
@@ -415,6 +472,7 @@ jobs:
     name: e2e container-${{ matrix.distro }}
     needs: [ack]
     runs-on: ubuntu-26.04
+    environment: private-source
     continue-on-error: true
     strategy:
       fail-fast: false
@@ -424,12 +482,26 @@ jobs:
           - { distro: alpine,  image: "alpine:3.21",  target: x86_64-unknown-linux-musl, musl: true }
           - { distro: scratch, image: "scratch",      target: x86_64-unknown-linux-musl, musl: true }
     steps:
+      # A kodflow-ci App token for supervizio/libprobe alone, minted here because
+      # this job runs in the private-source environment (the only place the
+      # App's key can be read), revoked when the job ends.
+      - name: Token for supervizio/libprobe (kodflow-ci App)
+        id: app
+        uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3.2.0
+        with:
+          app-id: ${{ vars.CI_APP_ID }}
+          private-key: ${{ secrets.CI_APP_PRIVATE_KEY }}
+          owner: supervizio
+          repositories: libprobe
+          permission-contents: read
+          permission-statuses: write
+
       - name: Checkout private source (ephemeral, no persisted creds)
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           repository: ${{ env.SOURCE_REPO }}
           ref: ${{ env.SOURCE_SHA }}
-          token: ${{ secrets.LIBPROBE_REPO_TOKEN }}
+          token: ${{ steps.app.outputs.token }}
           persist-credentials: false
       - name: Rust target + musl toolchain
         run: |
@@ -512,13 +584,28 @@ jobs:
     needs: [ack, native, freebsd-amd64, freebsd-amd64-retry, openbsd-amd64, openbsd-amd64-retry, netbsd-amd64, netbsd-amd64-retry]
     if: ${{ always() }}
     runs-on: ubuntu-26.04
+    environment: private-source
     permissions:
       contents: read
       actions: read
     steps:
+      # A kodflow-ci App token for supervizio/libprobe alone, minted here because
+      # this job runs in the private-source environment (the only place the
+      # App's key can be read), revoked when the job ends.
+      - name: Token for supervizio/libprobe (kodflow-ci App)
+        id: app
+        uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3.2.0
+        with:
+          app-id: ${{ vars.CI_APP_ID }}
+          private-key: ${{ secrets.CI_APP_PRIVATE_KEY }}
+          owner: supervizio
+          repositories: libprobe
+          permission-contents: read
+          permission-statuses: write
+
       - name: Aggregate + set final commit status
         env:
-          GH_TOKEN: ${{ secrets.LIBPROBE_REPO_TOKEN }}
+          GH_TOKEN: ${{ steps.app.outputs.token }}
           RT_TOKEN: ${{ github.token }}
           NEEDS_JSON: ${{ toJSON(needs) }}
         run: |
@@ -570,8 +657,8 @@ jobs:
             echo "|---|---|---|"
             printf '%s' "$table"
           } | tee -a "$GITHUB_STEP_SUMMARY"
-          # Commit Status API: a fine-grained PAT can set statuses (Commit
-          # statuses: write); it can NOT create check-runs.
+          # Commit Status API: the App token carries statuses: write, and no
+          # checks permission, so a status and not a check-run.
           gh api -X POST "repos/${SOURCE_REPO}/statuses/${SOURCE_SHA}" \
             -f state="${overall}" \
             -f context="${CHECK_NAME}" \

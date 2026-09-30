@@ -59,11 +59,20 @@ gh workflow run e2e.yml \
 
 ## Required Secrets
 
-| Secret | Purpose | Permissions |
-|--------|---------|-------------|
-| `AGENT_REPO_TOKEN` | Access agent repo for checkout, artifacts, and commit statuses | `Actions: Read`, `Contents: Read`, `Commit statuses: Write` on `supervizio/agent` |
+No personal token. Every job that reads a private supervizio repository or
+posts a status on it runs in the **`private-source` environment** (deployment
+branches: `main` only) and mints a short-lived installation token of the
+**kodflow-ci GitHub App** with `actions/create-github-app-token`, scoped to the
+one repository it needs and to the permissions it uses, revoked when the job
+ends.
 
-Create a **fine-grained PAT** scoped to `supervizio/agent` with the above permissions, then add it as a repository secret in this repo.
+| Where | What | Purpose |
+|-------|------|---------|
+| environment `private-source`, variable | `CI_APP_ID` | the App's ID |
+| environment `private-source`, secret | `CI_APP_PRIVATE_KEY` | the App's private key; never at repository level |
+
+The App must be installed on `supervizio/agent` and `supervizio/libprobe`
+with at least Contents: read, Actions: read and Commit statuses: write.
 
 ## E2E Test Matrix
 

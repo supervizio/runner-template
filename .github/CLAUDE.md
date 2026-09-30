@@ -46,5 +46,5 @@ it runs (GitHub-hosted only) and why.
 ## Conventions
 
 - Workflows use reusable actions where possible
-- Secrets stored in GitHub repository settings
+- No repository-level secret for private repositories: the kodflow-ci App's key lives in the `private-source` environment (see workflows/CLAUDE.md)
 - Branch protection on main
