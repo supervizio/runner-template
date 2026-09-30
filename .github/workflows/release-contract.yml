@@ -23,6 +23,8 @@ on:
       - ".github/workflows/e2e.yml"
       - ".github/scripts/**"
       - ".github/workflows/agent-packages.yml"
+      - ".github/workflows/agent-solarish.yml"
+      - ".github/workflows/libprobe-solarish.yml"
   push:
     branches: [main]
     paths:
@@ -31,6 +33,8 @@ on:
       - ".github/workflows/e2e.yml"
       - ".github/scripts/**"
       - ".github/workflows/agent-packages.yml"
+      - ".github/workflows/agent-solarish.yml"
+      - ".github/workflows/libprobe-solarish.yml"
   workflow_dispatch:
 
 permissions:

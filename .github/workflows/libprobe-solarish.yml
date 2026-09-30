@@ -1,0 +1,130 @@
+name: libprobe illumos and Solaris
+
+# =============================================================================
+# libprobe's illumos/Solaris suite: the platform tests, the FFI and container
+# tests, the ABI cross-check and the metrics report, compiled and run inside a
+# real OmniOS r151054 and Oracle Solaris 11.4 guest. libkstat, the binary
+# procfs and swapctl answer nothing on Linux, and libprobe's self-hosted pods
+# have no KVM to boot a guest.
+#
+# WHO CALLS IT. libprobe's `.github/workflows/solarish-guest.yml`, from its
+# self-hosted runner, for ci.yml (a pull request touching
+# .github/solarish-paths.txt, or a manual run) and release.yml (every release,
+# before the draft). It dispatches `run-libprobe-solarish`, finds this run by
+# its run-name, reads its conclusion, and deletes it. The verdict is the only
+# thing that leaves: nothing is uploaded.
+#
+# THIS WORKFLOW BUILDS PRIVATE SOURCES ON A PUBLIC RUNNER, as the owner of
+# supervizio/libprobe decided. What keeps that safe:
+#   * repository_dispatch and workflow_dispatch only; never pull_request or
+#     pull_request_target.
+#   * PRIVATE_SOURCE_TOKEN (read-only) lives in the `private-source`
+#     environment, `main` only; only the checkout reads it,
+#     persist-credentials is off, and the guest never holds it.
+#   * `admit` validates the payload before any job holding the token starts.
+#   * The guest's whole output (cargo, tests, report) goes to a file outside
+#     the synced workspace, never copied back; the log shows only the stage
+#     markers. The report directory is removed before copy-back. No
+#     upload-artifact step exists.
+#   * libprobe deletes the run as soon as it has read the conclusion.
+# =============================================================================
+
+run-name: libprobe-solarish ${{ github.event.client_payload.request_id || inputs.request_id }}
+
+on:
+  repository_dispatch:
+    types: [run-libprobe-solarish]
+  workflow_dispatch:
+    inputs:
+      request_id:
+        description: "<libprobe run id>-<attempt>-<label>; the run-name libprobe looks for"
+        required: true
+      sha:
+        description: libprobe commit to test (40 hex)
+        required: true
+      run_id:
+        description: libprobe run asking (the request id starts with it)
+        required: true
+
+permissions:
+  contents: read
+
+concurrency:
+  group: libprobe-solarish-${{ github.event.client_payload.request_id || inputs.request_id }}
+  cancel-in-progress: true
+
+env:
+  REQUEST_ID: ${{ github.event.client_payload.request_id || inputs.request_id }}
+  SOURCE_SHA: ${{ github.event.client_payload.sha || inputs.sha }}
+  SOURCE_RUN_ID: ${{ github.event.client_payload.run_id || inputs.run_id }}
+  CARGO_TERM_COLOR: never
+  RUST_BACKTRACE: "0"
+
+jobs:
+  admit:
+    name: Admit the request
+    runs-on: ubuntu-26.04
+    steps:
+      - name: Validate the request
+        run: |
+          set -euo pipefail
+          [[ "$REQUEST_ID" =~ ^[0-9]{1,20}-[0-9]{1,4}-[a-z]{1,20}$ ]] || { echo "::error::request_id must be <run id>-<attempt>-<label>"; exit 1; }
+          [[ "$SOURCE_SHA" =~ ^[0-9a-f]{40}$ ]] || { echo "::error::sha must be a full 40-hex commit"; exit 1; }
+          [[ "$SOURCE_RUN_ID" =~ ^[0-9]{1,20}$ ]] || { echo "::error::run_id must be numeric"; exit 1; }
+          [ "${REQUEST_ID%%-*}" = "$SOURCE_RUN_ID" ] || { echo "::error::request_id does not start with run_id"; exit 1; }
+          echo "request $REQUEST_ID: libprobe@$SOURCE_SHA"
+
+  guest:
+    name: Guest tests (${{ matrix.name }})
+    needs: [admit]
+    runs-on: ubuntu-26.04
+    environment: private-source
+    timeout-minutes: 60
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { name: illumos, os: omnios, release: r151054-build }
+          - { name: solaris, os: solaris, release: 11.4-gcc }
+    steps:
+      - name: Check out libprobe
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: supervizio/libprobe
+          ref: ${{ env.SOURCE_SHA }}
+          token: ${{ secrets.PRIVATE_SOURCE_TOKEN }}
+          persist-credentials: false
+
+      # One step per kernel (`uses:` takes no expression), one command. The
+      # guest's output stays in the guest; only `=== ` markers are printed.
+      - name: OmniOS ${{ matrix.release }}
+        if: matrix.os == 'omnios'
+        uses: vmactions/omnios-vm@9576f0b6d15e7696548409baa533bc0a339caf42 # v1.3.7
+        with:
+          release: ${{ matrix.release }}
+          envs: CARGO_TERM_COLOR RUST_BACKTRACE
+          run: |
+            sh .github/scripts/solarish-guest.sh >/var/tmp/lp-guest.log 2>&1
+            grep '^=== ' /var/tmp/lp-guest.log || true
+            status="$(cat solarish-out/status 2>/dev/null || echo missing)"
+            rm -rf solarish-out && mkdir solarish-out && echo "$status" > solarish-out/status
+
+      - name: Solaris ${{ matrix.release }}
+        if: matrix.os == 'solaris'
+        uses: vmactions/solaris-vm@87d3c436511cef802cd1637f86f73b1a97715c8c # v1.4.1
+        with:
+          release: ${{ matrix.release }}
+          envs: CARGO_TERM_COLOR RUST_BACKTRACE
+          run: |
+            sh .github/scripts/solarish-guest.sh >/var/tmp/lp-guest.log 2>&1
+            grep '^=== ' /var/tmp/lp-guest.log || true
+            status="$(cat solarish-out/status 2>/dev/null || echo missing)"
+            rm -rf solarish-out && mkdir solarish-out && echo "$status" > solarish-out/status
+
+      - name: Verdict
+        run: |
+          set -euo pipefail
+          test -f solarish-out/status || { echo "::error::the guest wrote no verdict"; exit 1; }
+          status="$(cat solarish-out/status)"
+          [ "$status" = 0 ] || { echo "::error::a guest stage failed (the FAILED marker above names it; its output stays in the guest)"; exit 1; }
+          echo "every guest stage passed"

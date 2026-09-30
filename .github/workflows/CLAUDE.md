@@ -18,6 +18,8 @@ of it is what anyone works on.
 | `e2e.yml` | `repository_dispatch[run-e2e]`, `workflow_dispatch`, `workflow_call` | **agent's** E2E matrix — Docker, Linux guests, BSD, illumos, Solaris, Windows, macOS. Merge lane: installs the packages the agent run published, runs the legs of the families that run built (the others report `not-built`, see "Only what the agent run built"), and reports `e2e/*` commit statuses back to that SHA. Release mode (`workflow_call` from `validate-release.yml`, `mode: release`): the same jobs, named `leg/<id>`, on a release candidate's assets and test kit — see "e2e.yml in release mode" below. |
 | `external-e2e.yml` | `repository_dispatch[run-external-e2e]`, `workflow_dispatch` | **libprobe's** lane. Rebuilds from source on the dispatched SHA; posts `e2e-public/<run>-<attempt>`, green iff the 6 native legs AND the 3 BSD **amd64** legs pass. BSD arm64 (no KVM, 1-2 h a leg) and the containers are advisory: shown in the table, never in the verdict. A BSD amd64 leg whose guest never became ready is retried once on a fresh runner; a leg that reached its tests never is. The BSD steps are written once (`&bsd-leg`) and aliased by all nine BSD jobs. |
 | `agent-packages.yml` | `repository_dispatch[build-agent-packages]`, `workflow_dispatch` | **agent's packaging**: the one producer of its FreeBSD, NetBSD, OpenBSD (amd64, arm64), macOS (amd64, arm64) and Chocolatey packages, each built and installed on its own system from binaries agent cross-compiled on its self-hosted runner. agent's `public-packages.yml` dispatches it (ci.yml `package-openbsd`, release.yml `build-bsd-packages` / `build-desktop-packages`), finds the run by its run-name and downloads the packages. See "agent's packages" below. |
+| `agent-solarish.yml` | `repository_dispatch[build-agent-solarish]`, `workflow_dispatch` | **agent's illumos and Solaris bytes**: the binary built natively with cgo in an OmniOS r151054 and a Solaris 11.4 guest, and its IPS archive, installed and run under SMF there. Builds agent's PRIVATE sources: see "Private sources built here" below. agent's `public-packages.yml` (producer `solarish`) dispatches it, downloads the bytes and deletes the run. |
+| `libprobe-solarish.yml` | `repository_dispatch[run-libprobe-solarish]`, `workflow_dispatch` | **libprobe's illumos/Solaris suite** in the same two guests: platform, FFI and container tests, ABI check, metrics report. Builds libprobe's PRIVATE sources; only the verdict (the run's conclusion) leaves. libprobe's `solarish-guest.yml` dispatches it and deletes the run. |
 | `cleanup-external-e2e.yml` | `workflow_run` on both of the above | Deletes each dispatched run once it finishes, so no public trace of a private-source run remains. `repository_dispatch` runs only — a `workflow_dispatch` is someone debugging on purpose. |
 | `release-contract.yml` | PR and push on `release-contract/**`, `e2e.yml`, `.github/scripts/**` | Tests the release contract's validator on Linux, macOS, Windows and Python 3.9, and re-derives the manifest test vector with coreutils alone. See "The release contract" below. |
 | `validate-release.yml` | `repository_dispatch[validate-release]`, `workflow_dispatch` | The **release** lane: validates a candidate's exact bytes, pulled by digest from the private repository's GHCR package. agent's legs are `e2e.yml` called in release mode. See "The release contract" below. |
@@ -103,7 +105,8 @@ the 26.04 labels yet; `.github/actionlint.yaml` lists them.
   legs `illumos/amd64`, `solaris/amd64`). A stock OmniOS r151054 and a stock
   Oracle Solaris 11.4 guest (`vmactions/omnios-vm`, `vmactions/solaris-vm`, no
   compiler), jq from each OS's own repository. The binary and the `.p5p` are
-  agent's native build and IPS archive (agent's `solarish-package.yml`, CI
+  agent's native build and IPS archive (`agent-solarish.yml` here, brought
+  back into agent's run by its `public-packages.yml`; CI
   artifacts `supervizio-{illumos,solaris}-amd64[-pkg]`, release assets
   `supervizio-{illumos,solaris}-amd64[.p5p]`). `.github/solarish-leg/in-guest.sh`
   installs the raw binary through install.sh (which grafts the SMF manifest),
@@ -116,8 +119,8 @@ the 26.04 labels yet; `.github/actionlint.yaml` lists them.
   `go.work`, `.dockerignore`), never agent's sources. Status contexts
   `e2e/illumos/omnios-amd64`, `e2e/solaris/amd64`.
 
-  **When they run.** agent builds these two kernels (about 26 hosted minutes
-  of a private repository) on every release, but for a pull request only when
+  **When they run.** agent builds these two kernels (in `agent-solarish.yml`,
+  here) on every release, but for a pull request only when
   it touches the paths agent lists in its `.github/solarish-paths.txt` -- the
   rule "Only what the agent run built" below applies to them as to every
   family.
@@ -190,6 +193,35 @@ built it before uploading it.
   is only a safety net for a deletion that never happened. The run is not in
   `cleanup-external-e2e.yml`, which deletes on completion, before agent could
   download anything.
+
+## Private sources built here (`agent-solarish.yml`, `libprobe-solarish.yml`)
+
+These two workflows compile the PRIVATE sources of agent and libprobe on this
+public repository's runners. Their owner decided it: the private repositories'
+hosted minutes are billed, their self-hosted pods have no KVM, and illumos and
+Solaris need a real guest to build (agent) and to test (libprobe). It is the
+one exception to "nothing private goes in it", and it is fenced:
+
+- **Triggers**: `repository_dispatch` and `workflow_dispatch` only. Never
+  `pull_request` or `pull_request_target`.
+- **Credential**: `PRIVATE_SOURCE_TOKEN` (fine-grained, read-only: Contents
+  and Actions on agent and libprobe), in the `private-source` environment,
+  deployment branches `main` only; never at repository level. Only the
+  checkout (and agent's libprobe fetch, silenced) reads it;
+  `persist-credentials: false`; the guest never holds it. A credential-free
+  `admit` validates the payload before any job holding it starts.
+- **Nothing of the sources leaves**: the guest's whole output goes to a file
+  under `/var/tmp` in the guest, outside the synced workspace, so copy-back
+  never returns it; the log shows only the scripts' `=== <stage>` markers and
+  the verdict. agent's build logs are removed from the workspace before
+  copy-back; libprobe's report directory is reduced to its status file.
+  Uploads: agent's binary and `.p5p`; for libprobe, nothing.
+- **Nothing stays**: the private side deletes the run as soon as it has what it
+  needs (cancelling it first if it is still running). One-day artifact
+  retention is only a net.
+- `_PrivateSourceWorkflow`, `AgentSolarishGuardRails` and
+  `LibprobeSolarishGuardRails` in `release-contract/tests/test_release_contract.py`
+  pin every point above that a file can show.
 
 ## Upstream images: pinned hash or signature
 
