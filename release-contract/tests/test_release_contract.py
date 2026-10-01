@@ -1146,7 +1146,13 @@ class PackagingLanesAreStubs(unittest.TestCase):
                 pins = re.findall(r"uses: kodflow/runner-template/\.github/workflows/%s@([0-9a-f]{40})$" % re.escape(reusable), text, re.M)
                 self.assertEqual(len(pins), 1)
                 self.assertEqual(re.findall(r"^      ref: ([0-9a-f]{40})$", text, re.M), pins)
-                self.assertNotRegex(text, r"secrets|environment:|pull_request")
+                # The App key, by name, is the one secret a stub passes: a
+                # called workflow reads only what it declares, and inherit
+                # does not cross owners. Empty here; the called jobs read the
+                # private-source environment's key.
+                self.assertEqual(re.findall(r"secrets\.([A-Za-z0-9_]+)", text), ["CI_APP_PRIVATE_KEY"])
+                self.assertRegex(text, r"(?m)^    secrets:\n      CI_APP_PRIVATE_KEY: \$\{\{ secrets\.CI_APP_PRIVATE_KEY \}\}$")
+                self.assertNotRegex(text, r"secrets: *inherit|environment:|pull_request")
                 self.assertEqual(len(re.findall(r"^  [A-Za-z0-9_-]+:$", text.partition("\njobs:\n")[2], re.M)), 1)
 
 
@@ -1231,6 +1237,11 @@ class AppKeyStaysInTheEnvironment(unittest.TestCase):
     # e2e.yml's legs: the merge lane in the environment, release mode (which
     # runs candidate bytes) in none.
     CONDITIONAL = "environment: ${{ inputs.mode != 'release' && 'private-source' || '' }}"
+    # A stub's job calls kodflow/runner-template and hands it the key by name
+    # (a called workflow reads only the secrets it declares). It holds no
+    # value: the key exists only in the environment, which the called jobs
+    # name. PackagingLanesAreStubs pins that line.
+    STUB_PASS = "      CI_APP_PRIVATE_KEY: ${{ secrets.CI_APP_PRIVATE_KEY }}"
 
     @staticmethod
     def code(text):
@@ -1267,7 +1278,10 @@ class AppKeyStaysInTheEnvironment(unittest.TestCase):
         seen = 0
         for wf, text in self.workflows():
             for name, job in self.jobs(text).items():
-                if "secrets.CI_APP_PRIVATE_KEY" not in self.code(job):
+                body = self.code(job)
+                if re.search(r"(?m)^    uses: kodflow/runner-template/\.github/workflows/reusable-[a-z0-9-]+\.yml@[0-9a-f]{40}$", body):
+                    body = body.replace(self.STUB_PASS, "")
+                if "secrets.CI_APP_PRIVATE_KEY" not in body:
                     continue
                 seen += 1
                 envs = re.findall(r"^    environment: .*$", job, re.M)
@@ -1292,7 +1306,8 @@ class AppKeyStaysInTheEnvironment(unittest.TestCase):
                 self.assertNotIn("permission-administration", block, wf)
             self.assertEqual(text.count("uses: actions/create-github-app-token@"), text.count(self.PIN), wf)
             self.assertNotIn("secrets.CI_APP_PRIVATE_KEY", self.code(text).replace(
-                "private-key: ${{ secrets.CI_APP_PRIVATE_KEY }}", ""), wf)
+                "private-key: ${{ secrets.CI_APP_PRIVATE_KEY }}", "").replace(
+                self.STUB_PASS if "uses: kodflow/runner-template/.github/workflows/reusable-" in text else "\0", ""), wf)
         self.assertGreaterEqual(steps, 36)
 
     def test_release_mode_never_mints_a_token(self):

@@ -170,57 +170,19 @@ edit and moves the pin: change them there, not here. `PackagingLanesAreStubs`
 in `release-contract/tests/test_release_contract.py` pins what the private
 callers depend on (event type, run-name) and that no stub reads a secret.
 
-## agent's packages (`agent-packages.yml`, logic in kodflow/runner-template)
+## agent's packages and libprobe's illumos/Solaris suite
 
-agent's private repository no longer spends a hosted minute on packaging. Its
-self-hosted runner cross-compiles every binary; `agent-packages.yml` runs only
-the packaging tool that needs its own OS, and installs each package where it
-built it before uploading it.
-
-- **Request.** agent's `public-packages.yml` (on `supervizio-runner`)
-  dispatches `build-agent-packages` with `request_id` (`<run id>-<attempt>-<label>`),
-  `sha`, `run_id`, `version_num` and `only`. The run is named
-  `agent-packages <request_id>` (`run-name:`); agent lists this workflow's
-  `repository_dispatch` runs, takes the one with that title, waits for it to
-  complete and downloads its artifacts. The verdict is the run's conclusion:
-  nothing here writes to agent.
-- **Artifacts** keep the names agent's release job reads:
-  `supervizio-{freebsd,netbsd}-pkg`, `supervizio-openbsd-{amd64,arm64}-pkg`,
-  `supervizio-macos-{amd64,arm64}-pkg`, `supervizio-windows-choco`,
-  `supervizio-{illumos,solaris}-amd64-pkg`. The `windows-arm64` job uploads
-  nothing and is `continue-on-error`.
-- **illumos and Solaris** (`solarish` job): a stock OmniOS r151054 and a stock
-  Solaris 11.4 guest (the images e2e.yml's legs boot; nothing is compiled)
-  run agent's `solarish-package-in-guest.sh` on the cross-built binary and
-  agent's `go test -c` binaries (`solarish-tests-<platform>`, refused unless
-  every file is an x86-64 ELF): `--version`, `--probe`, the tests, the IPS
-  archive, install, SMF online and still running, uninstall. The guest's logs
-  stay in the guest; the log shows its `=== ` lines and the verdict. Only the
-  `.p5p` is uploaded.
-- **What it reads from agent**: the binaries of the requesting run, and a
-  sparse checkout of `setup/`, `examples/config.yaml`, `LICENSE`,
-  `e2e/test-install.ps1`, `.github/scripts/bsd-package-in-guest.sh` and
-  `.github/scripts/solarish-package-in-guest.sh` at `sha`. Everything but the
-  guest wrappers already ships in each release's `e2e-kit.tar.gz`. No Go source
-  is checked out. The scripts are read at the packaged commit rather than
-  vendored here, so build-pkg.sh and the tree it packages cannot drift apart.
-- **Guard-rails.** No `pull_request` or `pull_request_target` trigger. The only
-  credential is a kodflow-ci App token (read-only: Contents and Actions on
-  `supervizio/agent`), minted in jobs of the **`private-source` environment**,
-  the only place its key is stored; that environment's deployment branches are
-  `main` only, so a branch run stops at its first private read. See "The
-  kodflow-ci App" below.
-  `admit` validates every payload field before any job holding the token
-  starts. Only package directories are uploaded, and no step prints a file of
-  the checkout.
-- **Nothing stays.** agent's `public-packages.yml` deletes the run
-  (`DELETE /actions/runs/<id>`) as soon as it has downloaded the packages,
-  whatever the outcome, and fails if the run is still there: a public run of
-  agent's packaging left behind is a defect. The one-day artifact retention (the minimum)
-  is only a safety net for a deletion that never happened, and so is
-  `sweep.yml`, which deletes a run agent never took back two hours after it
-  completed. The run is not in `cleanup-external-e2e.yml`, which deletes on
-  completion, before agent could download anything.
+Both are stubs (above). What they build, what they read from agent and
+libprobe, their guard-rails and why nothing stays public are documented where
+the logic is: the headers of `reusable-agent-packages.yml` and
+`reusable-libprobe-solarish.yml` in kodflow/runner-template, whose
+`tests/test_supervizio_lanes.py` pins them. What agent and libprobe depend on
+here is unchanged: the event types (`build-agent-packages`,
+`run-libprobe-solarish`), the run-names (`agent-packages <request id>`,
+`libprobe-solarish <request id>`) and the artifact names agent's release job
+reads. `sweep.yml` deletes a run its caller never took back; neither is in
+`cleanup-external-e2e.yml`, which deletes on completion, before the caller
+could download anything.
 
 ## The kodflow-ci App: the only credential on private repositories
 
