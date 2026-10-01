@@ -36,11 +36,6 @@ tools:
   - mcp__gitlab__list_merge_requests
   - mcp__gitlab__create_merge_request_note
   - mcp__gitlab__list_pipelines
-  # Codacy MCP (analysis results)
-  - mcp__codacy__codacy_get_repository_pull_request
-  - mcp__codacy__codacy_get_pull_request_git_diff
-  - mcp__codacy__codacy_list_pull_request_issues
-  - mcp__codacy__codacy_get_pull_request_files_coverage
   # Documentation
   - mcp__context7__resolve-library-id
   - mcp__context7__query-docs

@@ -420,24 +420,19 @@ step_mcp_configuration() {
     }
 
     # Initialize tokens from environment variables (fallback)
-    local CODACY_TOKEN="${CODACY_API_TOKEN:-}"
     local GITHUB_TOKEN="${GITHUB_API_TOKEN:-}"
 
     # Try 1Password if OP_SERVICE_ACCOUNT_TOKEN is defined
     if [ -n "${OP_SERVICE_ACCOUNT_TOKEN:-}" ] && command -v op &> /dev/null; then
         log_info "Retrieving secrets from 1Password..."
 
-        local OP_CODACY
-        OP_CODACY=$(get_1password_field "mcp-codacy" "$VAULT_ID")
         local OP_GITHUB
         OP_GITHUB=$(get_1password_field "mcp-github" "$VAULT_ID")
 
-        [ -n "$OP_CODACY" ] && CODACY_TOKEN="$OP_CODACY"
         [ -n "$OP_GITHUB" ] && GITHUB_TOKEN="$OP_GITHUB"
     fi
 
     # Show status of tokens (INFO for optional, WARNING for essential)
-    [ -z "$CODACY_TOKEN" ] && log_info "Codacy token not configured (optional)"
     [ -z "$GITHUB_TOKEN" ] && log_warning "GitHub token not available"
 
     # Helper: escape special chars for sed replacement
@@ -497,7 +492,7 @@ step_mcp_configuration() {
     # Generate mcp.json from template (baked in Docker image)
     # ALWAYS regenerate from template to ensure latest MCP config is applied
     if [ -f "$MCP_TPL" ]; then
-        if [ -z "$CODACY_TOKEN" ] && [ -z "$GITHUB_TOKEN" ]; then
+        if [ -z "$GITHUB_TOKEN" ]; then
             log_warning "No tokens available, creating minimal mcp.json"
             printf '%s\n' '{"mcpServers":{}}' > "$MCP_OUTPUT"
             chown "$(id -u):$(id -g)" "$MCP_OUTPUT" 2>/dev/null || true
@@ -505,8 +500,7 @@ step_mcp_configuration() {
             log_info "Created minimal mcp.json (optional MCPs will be added below)"
         else
             generate_mcp_from_template() {
-                local escaped_codacy escaped_github mcp_tmp
-                escaped_codacy=$(escape_for_sed "${CODACY_TOKEN}")
+                local escaped_github mcp_tmp
                 escaped_github=$(escape_for_sed "${GITHUB_TOKEN}")
 
                 mcp_tmp=$(mktemp "${MCP_OUTPUT}.tmp.XXXXXX") || {
@@ -516,8 +510,7 @@ step_mcp_configuration() {
 
                 trap 'rm -f "${mcp_tmp:-}" 2>/dev/null || true' RETURN
 
-                if ! sed -e "s|{{CODACY_TOKEN}}|${escaped_codacy}|g" \
-                        -e "s|{{GITHUB_TOKEN}}|${escaped_github}|g" \
+                if ! sed -e "s|{{GITHUB_TOKEN}}|${escaped_github}|g" \
                         "$MCP_TPL" > "$mcp_tmp"; then
                     log_error "Failed to render mcp.json template"
                     return 0

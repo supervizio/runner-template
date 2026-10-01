@@ -34,9 +34,6 @@ tools:
   - mcp__gitlab__list_merge_requests
   - mcp__gitlab__create_merge_request_note
   - mcp__gitlab__list_pipelines
-  # Codacy MCP (Security)
-  - mcp__codacy__codacy_search_repository_srm_items
-  - mcp__codacy__codacy_cli_analyze
 model: opus
 allowed-tools:
   - "Bash(git:*)"
@@ -355,4 +352,4 @@ Always use MCP tools before CLI fallback. Platform auto-detected from git remote
 
 | Action | MCP Tool | CLI Fallback |
 |--------|----------|--------------|
-| Security | `mcp__codacy__codacy_search_repository_srm_items` | `trivy`, `checkov` |
+| Security | - | `trivy`, `checkov` |

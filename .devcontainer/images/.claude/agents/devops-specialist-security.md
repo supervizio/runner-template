@@ -14,8 +14,6 @@ tools:
   - mcp__grepai__grepai_trace_graph
   - mcp__grepai__grepai_index_status
   - Bash
-  - mcp__codacy__codacy_search_repository_srm_items
-  - mcp__codacy__codacy_cli_analyze
 model: sonnet
 context: fork
 allowed-tools:

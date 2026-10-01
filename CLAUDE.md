@@ -89,7 +89,7 @@ Universal DevContainer shell providing cutting-edge AI agents, skills, and workf
 - **Cloud CLIs**: AWS v2, GCP SDK, Azure CLI
 - **IaC**: Terraform, Vault, Consul, Nomad, Packer, Ansible
 - **Containers**: Docker, kubectl, Helm
-- **AI**: Claude Code, MCP servers (GitHub, Codacy, Playwright, context7, grepai, Taskmaster)
+- **AI**: Claude Code, MCP servers (GitHub, Playwright, context7, grepai, Taskmaster)
 
 ## How to Work
 
@@ -104,7 +104,7 @@ Branch conventions: `feat/<desc>` or `fix/<desc>`, commit prefix matches.
 
 **Reliability first**: Verify before generating. Agents consult context7 and official docs before producing non-trivial code.
 
-**MCP-first**: Use MCP tools (`mcp__github__*`, `mcp__codacy__*`) before CLI fallbacks. Auth is pre-configured.
+**MCP-first**: Use MCP tools (`mcp__github__*`) before CLI fallbacks. Auth is pre-configured.
 
 **Self-correction**: When linting or tests fail, agents fix and retry automatically.
 

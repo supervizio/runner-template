@@ -32,8 +32,6 @@ allowed-tools:
   - "TaskList(*)"
   - "TaskGet(*)"
   - "mcp__github__*"
-  - "mcp__codacy__*"
-  - "Bash(codacy-analysis-cli:*)"
   - "mcp__taskmaster__*"
 ---
 
@@ -411,10 +409,10 @@ files:
 
 ---
 
-## Phase 4.5: CodeRabbit Configuration (AI Tools 1/3)
+## Phase 4.5: CodeRabbit Configuration (AI Tools 1/2)
 
 **Generate `.coderabbit.yaml` if missing, personalized from project context.**
-**See also:** Phase 4.6 (Qodo Merge) and Phase 4.7 (Codacy) for the full AI tools configuration block.
+**See also:** Phase 4.6 (Qodo Merge) for the full AI tools configuration block.
 
 ```yaml
 coderabbit_config:
@@ -576,7 +574,7 @@ coderabbit_config:
 
 ---
 
-## Phase 4.6: Qodo Merge (PR-Agent) Configuration (AI Tools 2/3)
+## Phase 4.6: Qodo Merge (PR-Agent) Configuration (AI Tools 2/2)
 
 **Generate `.pr_agent.toml` if missing, personalized from project context.**
 **Official docs:** https://qodo-merge-docs.qodo.ai/usage-guide/configuration_options/
@@ -692,110 +690,6 @@ qodo_merge_config:
 
 ---
 
-## Phase 4.7: Codacy Configuration (AI Tools 3/3)
-
-**Generate `.codacy.yaml` if missing, personalized from project context.**
-**Official docs:** https://docs.codacy.com/repositories-configure/codacy-configuration-file/
-**CLI validation:** `codacy-analysis-cli validate-configuration --directory $(pwd)`
-
-```yaml
-codacy_config:
-  trigger: "ALWAYS (after Qodo Merge config)"
-  docs: "https://docs.codacy.com/repositories-configure/codacy-configuration-file/"
-  validation_cli: "codacy-analysis-cli validate-configuration --directory $(pwd)"
-
-  1_check_exists:
-    action: "Glob('/workspace/.codacy.yaml') OR Glob('/workspace/.codacy.yml')"
-    if_exists:
-      status: "SKIP"
-      output: "Phase 4.7 skipped output"
-    if_missing:
-      status: "GENERATE"
-      steps: [2_detect_excludes, 3_detect_engines, 4_generate_file, 5_validate]
-
-  2_detect_excludes:
-    action: "Build exclude_paths from project context"
-    always:
-      - "CLAUDE.md"
-      - "AGENTS.md"
-      - "README.md"
-      - "docs/**"
-      - ".devcontainer/**/*.md"
-      - ".claude/**/*.md"
-      - ".devcontainer/images/.claude/**/*.md"
-    if_detected:
-      go: ["vendor/**"]
-      node: ["node_modules/**", "dist/**"]
-      java: ["target/**", "build/**"]
-      rust: ["target/**"]
-      python: ["__pycache__/**", ".venv/**"]
-      dotnet: ["bin/**", "obj/**"]
-
-  3_detect_engines:
-    action: "Optional engine overrides (Codacy auto-detects by default)"
-    note: |
-      Only add explicit engines section if user has specific preferences.
-      Codacy supports 40+ tools out-of-the-box. Override only when:
-        - Disabling a tool that produces false positives for the stack
-        - Enabling a tool that is not auto-detected
-        - Configuring tool-specific options
-
-  4_generate_file:
-    action: "Write /workspace/.codacy.yaml"
-    format: "YAML with --- header (required by Codacy)"
-    structure: |
-      ---
-      exclude_paths:
-        - "{from step 2}"
-      # engines section only if step 3 produced overrides
-
-  5_validate:
-    primary: "codacy-analysis-cli validate-configuration --directory $(pwd)"
-    fallback: |
-      python3 -c "
-      import yaml, pathlib
-      cfg = yaml.safe_load(pathlib.Path('/workspace/.codacy.yaml').read_text())
-      excludes = cfg.get('exclude_paths', [])
-      print(f'valid ({len(excludes)} exclusions)')
-      "
-    on_failure: "Fix YAML syntax and retry"
-```
-
-**Output Phase 4.7 (generated):**
-
-```text
-═══════════════════════════════════════════════════════════════
-  Codacy Configuration
-═══════════════════════════════════════════════════════════════
-
-  Status: GENERATED (new file)
-
-  Exclusions:
-    ├─ 7 always-excluded paths (docs, prompts)
-    └─ 2 stack-specific exclusions (vendor, node_modules)
-
-  Engines: auto-detect (no overrides)
-
-  Validation: valid (codacy-analysis-cli)
-  Docs: https://docs.codacy.com/repositories-configure/codacy-configuration-file/
-
-═══════════════════════════════════════════════════════════════
-```
-
-**Output Phase 4.7 (skipped):**
-
-```text
-═══════════════════════════════════════════════════════════════
-  Codacy Configuration
-═══════════════════════════════════════════════════════════════
-
-  Status: SKIPPED (file already exists)
-
-═══════════════════════════════════════════════════════════════
-```
-
----
-
 ## Phase 4.8: GitHub Branch Protection (CI Gates)
 
 **Configure branch protection ruleset and tighten CI gates for merge quality.**
@@ -803,7 +697,7 @@ codacy_config:
 
 ```yaml
 branch_protection_config:
-  trigger: "ALWAYS (after Codacy config)"
+  trigger: "ALWAYS (after Qodo config)"
   api: "https://docs.github.com/en/rest/repos/rules"
 
   1_check_exists:
@@ -838,7 +732,7 @@ branch_protection_config:
       message: "Ruleset main-protection already exists."
     if_missing:
       status: "CONFIGURE"
-      steps: [2_extract_tokens, 3_detect_owner_repo, 4_configure_codacy_gate, 5_update_coderabbit, 6_create_ruleset, 7_validate]
+      steps: [2_extract_tokens, 3_detect_owner_repo, 5_update_coderabbit, 6_create_ruleset, 7_validate]
     if_api_error:
       status: "SKIP"
       message: "GitHub API error — cannot verify rulesets. Check token permissions."
@@ -849,10 +743,8 @@ branch_protection_config:
   2_extract_tokens:
     action: "Extract tokens from /workspace/mcp.json using jq"
     github: "jq -r '.mcpServers.github.env.GITHUB_PERSONAL_ACCESS_TOKEN // empty' /workspace/mcp.json"
-    codacy: "jq -r '.mcpServers.codacy.env.CODACY_ACCOUNT_TOKEN // empty' /workspace/mcp.json"
     notes:
       - "GITHUB_TOKEN must be non-empty — abort phase if empty"
-      - "CODACY_TOKEN may be empty — step 4 is conditional"
 
   3_detect_owner_repo:
     action: "Parse owner/repo from git remote origin"
@@ -864,24 +756,6 @@ branch_protection_config:
       if [ -z "$OWNER" ] || [ -z "$REPO" ]; then echo "Cannot parse owner/repo from $REMOTE"; exit 1; fi
     handles: "SSH (git@github.com:owner/repo.git) and HTTPS (https://github.com/owner/repo)"
     on_failure: "Log warning, skip phase"
-
-  4_configure_codacy_gate:
-    action: "Set Codacy diff coverage gate to 80% via Codacy API v3"
-    condition: "CODACY_TOKEN is non-empty"
-    sets_flag: "CODACY_CONFIGURED=true on success (used by step 6 to conditionally add status checks)"
-    command: |
-      CODACY_CONFIGURED=false
-      [ -z "$CODACY_TOKEN" ] && { echo "Codacy gate skipped (no token)"; exit 0; }
-      curl -fsSL -X PATCH \
-        -H "api-token: $CODACY_TOKEN" \
-        -H "Content-Type: application/json" \
-        -d '{"diffCoverageThreshold": 80}' \
-        "https://api.codacy.com/api/v3/organizations/gh/$OWNER/repositories/$REPO/settings/quality/pull-requests" \
-        && CODACY_CONFIGURED=true
-      export CODACY_CONFIGURED
-    on_success: "Codacy diff coverage gate set to 80%, CODACY_CONFIGURED=true"
-    on_failure: "Log warning, CODACY_CONFIGURED remains false — Codacy checks excluded from ruleset"
-    if_no_token: "SKIP — CODACY_CONFIGURED=false, Codacy checks excluded from ruleset"
 
   5_update_coderabbit:
     action: "Edit .coderabbit.yaml — harden pre_merge_checks from warning to error"
@@ -917,13 +791,9 @@ branch_protection_config:
 
   6_create_ruleset:
     action: "POST to GitHub Rulesets API to create main-protection"
-    note: "Codacy status checks are only included if CODACY_CONFIGURED flag is set (step 4 succeeded)"
     command: |
-      # Build rules array — Codacy checks only if step 4 configured successfully
+      # Build rules array
       RULES='[{"type":"pull_request","parameters":{"required_approving_review_count":1,"dismiss_stale_reviews_on_push":true,"require_last_push_approval":false,"required_review_thread_resolution":true}}'
-      if [ "$CODACY_CONFIGURED" = "true" ]; then
-        RULES="$RULES"',{"type":"required_status_checks","parameters":{"strict_required_status_checks_policy":true,"do_not_enforce_on_create":false,"required_status_checks":[{"context":"Codacy Static Code Analysis"},{"context":"Codacy Diff Coverage"}]}}'
-      fi
       RULES="$RULES]"
       curl -fsSL -X POST \
         -H "Authorization: Bearer $GITHUB_TOKEN" \
@@ -971,20 +841,7 @@ branch_protection_config:
     ├─ Target  : refs/heads/main
     ├─ Enforce : active
     ├─ Reviews : 1 required approver (dismiss stale on push)
-    {{#if CODACY_CONFIGURED}}
-    └─ Checks  : Codacy Static Code Analysis
-                 Codacy Diff Coverage
-    {{else}}
-    └─ Checks  : (none — Codacy not configured)
-    {{/if}}
-
-  {{#if CODACY_CONFIGURED}}
-  Codacy Gate:
-    └─ diffCoverageThreshold: 80% (set via API)
-  {{else}}
-  Codacy Gate:
-    └─ SKIPPED (no CODACY_ACCOUNT_TOKEN)
-  {{/if}}
+    └─ Checks  : (none)
 
   CodeRabbit:
     └─ pre_merge_checks: title + description → mode: error
@@ -1093,7 +950,6 @@ parallel_checks:
     ✓ README.md (updated)
     ✓ .coderabbit.yaml (generated if missing)
     ✓ .pr_agent.toml (generated if missing)
-    ✓ .codacy.yaml (generated if missing)
     {{#if phase4_8_configured}}✓ Branch protection: main-protection ruleset (CI gates){{/if}}
     {conditional files}
 

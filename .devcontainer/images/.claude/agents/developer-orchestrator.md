@@ -31,9 +31,6 @@ tools:
   - mcp__gitlab__create_merge_request
   - mcp__gitlab__list_merge_requests
   - mcp__gitlab__list_pipelines
-  # Codacy MCP
-  - mcp__codacy__codacy_list_repository_issues
-  - mcp__codacy__codacy_get_repository_with_analysis
 model: opus
 allowed-tools:
   - "Bash(git:*)"

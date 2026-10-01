@@ -58,7 +58,6 @@ What Gets Installed:
 
   Items to create in 1Password:
     mcp-github    → GitHub Personal Access Token (field: credential)
-    mcp-codacy    → Codacy Account Token (field: credential)
     mcp-gitlab    → GitLab Personal Access Token (field: credential)
 
 Total: 239 files (~3.2MB) or 84 files (~0.8MB) with --minimal
@@ -664,20 +663,17 @@ fetch_1password_tokens() {
     echo "  → Searching for tokens..."
 
     # Fetch tokens from 1Password (searches all vaults)
-    local op_github op_codacy op_gitlab
+    local op_github op_gitlab
 
     op_github=$(get_1password_field "mcp-github" "credential")
-    op_codacy=$(get_1password_field "mcp-codacy" "credential")
     op_gitlab=$(get_1password_field "mcp-gitlab" "credential")
 
     # Use 1Password tokens if found
     [ -n "$op_github" ] && export GITHUB_TOKEN="$op_github" && echo "    ✓ mcp-github" || true
-    [ -n "$op_codacy" ] && export CODACY_TOKEN="$op_codacy" && echo "    ✓ mcp-codacy" || true
     [ -n "$op_gitlab" ] && export GITLAB_TOKEN="$op_gitlab" && echo "    ✓ mcp-gitlab" || true
 
     # Report what wasn't found
     [ -z "$op_github" ] && echo "    ⚠ mcp-github not found" || true
-    [ -z "$op_codacy" ] && echo "    ⚠ mcp-codacy not found" || true
     [ -z "$op_gitlab" ] && echo "    ⚠ mcp-gitlab not found" || true
 }
 
@@ -706,14 +702,12 @@ generate_mcp_config() {
 
     # Get tokens (set by 1Password only)
     local github_token="${GITHUB_TOKEN:-}"
-    local codacy_token="${CODACY_TOKEN:-}"
     local gitlab_token="${GITLAB_TOKEN:-}"
     local gitlab_api="${GITLAB_API_URL:-https://gitlab.com/api/v4}"
 
     # Escape tokens for sed
-    local escaped_github escaped_codacy escaped_gitlab escaped_gitlab_api
+    local escaped_github escaped_gitlab escaped_gitlab_api
     escaped_github=$(printf '%s' "$github_token" | sed 's/[&/\]/\\&/g')
-    escaped_codacy=$(printf '%s' "$codacy_token" | sed 's/[&/\]/\\&/g')
     escaped_gitlab=$(printf '%s' "$gitlab_token" | sed 's/[&/\]/\\&/g')
     escaped_gitlab_api=$(printf '%s' "$gitlab_api" | sed 's/[&/\]/\\&/g')
 
@@ -721,7 +715,6 @@ generate_mcp_config() {
     mkdir -p "$(dirname "$mcp_output")"
 
     if sed -e "s|{{GITHUB_TOKEN}}|${escaped_github}|g" \
-           -e "s|{{CODACY_TOKEN}}|${escaped_codacy}|g" \
            -e "s|{{GITLAB_TOKEN}}|${escaped_gitlab}|g" \
            -e "s|{{GITLAB_API_URL:-https://gitlab.com/api/v4}}|${escaped_gitlab_api}|g" \
            "$mcp_tpl" > "$mcp_output"; then
@@ -743,7 +736,6 @@ generate_mcp_config() {
     # Show final token status
     echo "  Token status:"
     [ -n "$github_token" ] && echo "    GITHUB_TOKEN: ✓ configured" || echo "    GITHUB_TOKEN: ✗ not set"
-    [ -n "$codacy_token" ] && echo "    CODACY_TOKEN: ✓ configured" || echo "    CODACY_TOKEN: ✗ not set"
     [ -n "$gitlab_token" ] && echo "    GITLAB_TOKEN: ✓ configured" || echo "    GITLAB_TOKEN: ✗ not set"
 }
 
@@ -1027,7 +1019,6 @@ main() {
         echo "    1. Restart your shell (or source ~/.zshrc)"
         echo "    2. Create items in 1Password:"
         echo "       - mcp-github (GitHub token)"
-        echo "       - mcp-codacy (Codacy token)"
         echo "       - mcp-gitlab (GitLab token)"
         echo "    3. Run: super-claude"
         echo ""
