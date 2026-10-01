@@ -17,11 +17,9 @@ of it is what anyone works on.
 |------|---------|--------------|
 | `e2e.yml` | `repository_dispatch[run-e2e]`, `workflow_dispatch`, `workflow_call` | **agent's** E2E matrix — Docker, Linux guests, BSD, illumos, Solaris, Windows, macOS. Merge lane: installs the packages the agent run published, runs the legs of the families that run built (the others report `not-built`, see "Only what the agent run built"), and reports `e2e/*` commit statuses back to that SHA. Release mode (`workflow_call` from `validate-release.yml`, `mode: release`): the same jobs, named `leg/<id>`, on a release candidate's assets and test kit — see "e2e.yml in release mode" below. |
 | `external-e2e.yml` | `repository_dispatch[run-external-e2e]`, `workflow_dispatch` | **libprobe's** lane. Rebuilds from source on the dispatched SHA; posts `e2e-public/<run>-<attempt>`, green iff the 6 native legs AND the 3 BSD **amd64** legs pass. BSD arm64 (no KVM, 1-2 h a leg) and the containers are advisory: shown in the table, never in the verdict. A BSD amd64 leg whose guest never became ready is retried once on a fresh runner; a leg that reached its tests never is. The BSD steps are written once (`&bsd-leg`) and aliased by all nine BSD jobs. |
-| `agent-packages.yml` | `repository_dispatch[build-agent-packages]` | **agent's packaging**, a STUB: it calls `kodflow/runner-template`'s `reusable-agent-packages.yml` at a pinned commit, where the logic lives — the one producer of agent's FreeBSD, NetBSD, OpenBSD (amd64, arm64), macOS (amd64, arm64), Chocolatey, illumos and Solaris (IPS) packages, each built and installed on its own system from binaries agent cross-compiled on its self-hosted runner. The run, its artifacts and the `private-source` environment are this repository's. agent's `public-packages.yml` dispatches it, finds the run by its run-name and downloads the packages. See "agent's packages" below. |
-| `libprobe-solarish.yml` | `repository_dispatch[run-libprobe-solarish]` | **libprobe's illumos and Solaris runtime suite**, a STUB calling `kodflow/runner-template`'s `reusable-libprobe-solarish.yml`: from binaries libprobe cross-built on its self-hosted runner, an OmniOS r151054 and a Solaris 11.4 guest run the bundle's plan (`scripts/solarish-leg/libprobe-tests.sh` of kodflow/runner-template); the verdict is the run's conclusion, the stage logs a one-day artifact. libprobe's `solarish-guest.yml` dispatches it, downloads the report and deletes the run. |
-| `selftest.yml` | `repository_dispatch[runner-template-selftest]` | A STUB: proves the wiring end to end (the call at the pin, the `private-source` environment, the App key and client id, the App installed on supervizio) without reading anything private. |
-| `sweep.yml` | hourly | A STUB: deletes the `repository_dispatch` runs of `agent-packages.yml`, `libprobe-solarish.yml` and `selftest.yml` no caller took back (completed for two hours, alive for three). |
-| `cleanup-external-e2e.yml` | `workflow_run` on `e2e.yml` and `external-e2e.yml` | Deletes each dispatched run once it finishes, so no public trace of a private-source run remains. `repository_dispatch` runs only — a `workflow_dispatch` is someone debugging on purpose. |
+| `agent-packages.yml` | `repository_dispatch[build-agent-packages]`, `workflow_dispatch` | **agent's packaging**: the one producer of its FreeBSD, NetBSD, OpenBSD (amd64, arm64), macOS (amd64, arm64), Chocolatey, illumos and Solaris (IPS) packages, each built and installed on its own system from binaries agent cross-compiled on its self-hosted runner. agent's `public-packages.yml` dispatches it (ci.yml `package-openbsd` / `package-solarish`, release.yml `build-bsd-packages` / `build-solarish-packages` / `build-desktop-packages`), finds the run by its run-name and downloads the packages. See "agent's packages" below. |
+| `libprobe-solarish.yml` | `repository_dispatch[run-libprobe-solarish]`, `workflow_dispatch` | **libprobe's illumos and Solaris runtime suite**, from binaries libprobe cross-built on its self-hosted runner: an OmniOS r151054 and a Solaris 11.4 guest run the bundle's plan (`.github/solarish-leg/libprobe-tests.sh`); the verdict is the run's conclusion, the stage logs a one-day artifact. libprobe's `solarish-guest.yml` dispatches it, downloads the report and deletes the run. Same guard-rails as `agent-packages.yml`. |
+| `cleanup-external-e2e.yml` | `workflow_run` on both of the above | Deletes each dispatched run once it finishes, so no public trace of a private-source run remains. `repository_dispatch` runs only — a `workflow_dispatch` is someone debugging on purpose. |
 | `release-contract.yml` | PR and push on `release-contract/**`, `e2e.yml`, `.github/scripts/**` | Tests the release contract's validator on Linux, macOS, Windows and Python 3.9, and re-derives the manifest test vector with coreutils alone. See "The release contract" below. |
 | `validate-release.yml` | `repository_dispatch[validate-release]`, `workflow_dispatch` | The **release** lane: validates a candidate's exact bytes, pulled by digest from the private repository's GHCR package. agent's legs are `e2e.yml` called in release mode. See "The release contract" below. |
 | `validate-release-doorbell.yml` | `workflow_run` on `validate-release` | Posts a commit status on the validated private commit so the private side wakes and builds the receipt. The lane's only credential (a kodflow-ci App token, in the `private-source` environment). |
@@ -155,22 +153,7 @@ them as required legs. `FamilyLegsNotBuilt`, `SolarishLegsInReleaseMode` and
 `E2eFamilies` in `release-contract/tests/test_release_contract.py` pin it all
 (`release-contract.yml` runs them when `e2e.yml` or `.github/scripts/` change).
 
-## The stubs: logic in kodflow/runner-template
-
-`agent-packages.yml`, `libprobe-solarish.yml`, `selftest.yml` and `sweep.yml`
-are **stubs**: a few lines that call a reusable workflow of
-[kodflow/runner-template](https://github.com/kodflow/runner-template) at a full
-commit SHA (and pass the same SHA as `ref`). The logic, its guard-rails and
-their tests live there, in one copy for every owner; the run, its log, its
-artifacts, the `private-source` environment and the App key it reads are this
-repository's. The stubs are owned by
-[kodflow/post-commit](https://github.com/kodflow/post-commit)
-(`stub/runner-template/supervizio/`), whose nightly `enforce` reverts a local
-edit and moves the pin: change them there, not here. `PackagingLanesAreStubs`
-in `release-contract/tests/test_release_contract.py` pins what the private
-callers depend on (event type, run-name) and that no stub reads a secret.
-
-## agent's packages (`agent-packages.yml`, logic in kodflow/runner-template)
+## agent's packages (`agent-packages.yml`)
 
 agent's private repository no longer spends a hosted minute on packaging. Its
 self-hosted runner cross-compiles every binary; `agent-packages.yml` runs only
@@ -217,10 +200,9 @@ built it before uploading it.
   (`DELETE /actions/runs/<id>`) as soon as it has downloaded the packages,
   whatever the outcome, and fails if the run is still there: a public run of
   agent's packaging left behind is a defect. The one-day artifact retention (the minimum)
-  is only a safety net for a deletion that never happened, and so is
-  `sweep.yml`, which deletes a run agent never took back two hours after it
-  completed. The run is not in `cleanup-external-e2e.yml`, which deletes on
-  completion, before agent could download anything.
+  is only a safety net for a deletion that never happened. The run is not in
+  `cleanup-external-e2e.yml`, which deletes on completion, before agent could
+  download anything.
 
 ## The kodflow-ci App: the only credential on private repositories
 
@@ -236,7 +218,7 @@ and the permissions that job uses, revoked by the action's post step:
 |----------|------------|-------------|
 | `e2e.yml` (merge lane only) | agent | contents: read, actions: read, statuses: write |
 | `external-e2e.yml` | libprobe | contents: read, statuses: write |
-| `agent-packages.yml` (logic in kodflow/runner-template) | agent | contents: read, actions: read |
+| `agent-packages.yml` | agent | contents: read, actions: read |
 | `validate-release-doorbell.yml` | agent, libprobe | statuses: write |
 
 Consequence: a branch run of these jobs stops at the environment (main only),
