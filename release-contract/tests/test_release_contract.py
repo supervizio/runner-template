@@ -1115,174 +1115,45 @@ class CalledWorkflowLegs(unittest.TestCase):
                 self.assertEqual(rc.results_from_jobs(jobs, ["macos/arm64"]), {"macos/arm64": "missing"})
 
 
-class AgentPackagesGuardRails(unittest.TestCase):
-    """agent-packages.yml is a PUBLIC workflow holding a credential to a private
-    repository, and it produces release assets (agent's BSD, macOS and choco
-    packages). What keeps a fork's code away from that credential, and the
-    credential away from anything that does not need it, is pinned here."""
+class PackagingLanesAreStubs(unittest.TestCase):
+    """agent-packages.yml and libprobe-solarish.yml are stubs: the logic, and
+    the guard-rails this suite used to pin on it (AgentPackagesGuardRails,
+    AgentSolarishPackaging, LibprobeSolarishGuardRails), moved to
+    kodflow/runner-template (reusable-agent-packages.yml,
+    reusable-libprobe-solarish.yml, tests/test_supervizio_lanes.py). What is
+    left here is what the private callers depend on and what keeps a stub a
+    stub: the event they dispatch, the run-name they look the run up by, a
+    call at a full commit SHA, and nothing that reads a secret."""
 
-    PATH = os.path.join(ROOT, os.pardir, ".github", "workflows", "agent-packages.yml")
-    # The names agent's release job reads: a rename here ships a release
-    # without that package.
-    ARTIFACTS = {
-        "supervizio-freebsd-pkg", "supervizio-netbsd-pkg",
-        "supervizio-openbsd-amd64-pkg", "supervizio-openbsd-arm64-pkg",
-        "supervizio-macos-amd64-pkg", "supervizio-macos-arm64-pkg",
-        "supervizio-windows-choco",
-        "supervizio-illumos-amd64-pkg", "supervizio-solaris-amd64-pkg",
+    WORKFLOWS = os.path.join(ROOT, os.pardir, ".github", "workflows")
+    STUBS = {
+        "agent-packages.yml": ("build-agent-packages", "agent-packages", "reusable-agent-packages.yml"),
+        "libprobe-solarish.yml": ("run-libprobe-solarish", "libprobe-solarish", "reusable-libprobe-solarish.yml"),
     }
 
-    @classmethod
-    def setUpClass(cls):
-        with open(cls.PATH, encoding="utf-8") as fh:
-            cls.workflow = fh.read()
-        head, _, body = cls.workflow.partition("\njobs:\n")
-        cls.head = head
-        cls.jobs = dict(re.findall(r"^  ([A-Za-z0-9_-]+):\n(.*?)(?=^  [A-Za-z0-9_-]+:\n|\Z)", body, re.M | re.S))
-
-    def code(self, text):
-        # Comments may name what the workflow refuses; only code counts.
+    @staticmethod
+    def code(text):
         return "\n".join(line.split(" #", 1)[0] for line in text.splitlines() if not line.lstrip().startswith("#"))
 
-    def test_only_trusted_triggers(self):
-        on = re.search(r"^on:\n(.*?)(?=^\S)", self.head, re.M | re.S).group(1)
-        triggers = set(re.findall(r"^  ([a-z_]+):", on, re.M))
-        self.assertEqual(triggers, {"repository_dispatch", "workflow_dispatch"})
-        self.assertNotIn("pull_request", self.code(self.workflow))
-
-    def test_the_token_lives_in_the_environment_only(self):
-        secrets = set(re.findall(r"secrets\.([A-Za-z0-9_]+)", self.code(self.workflow)))
-        self.assertEqual(secrets, {"CI_APP_PRIVATE_KEY"})
-        for name, job in self.jobs.items():
-            uses_token = "secrets.CI_APP_PRIVATE_KEY" in self.code(job)
-            in_env = re.search(r"^    environment: private-source$", job, re.M) is not None
-            self.assertEqual(uses_token, in_env, name)
-            if uses_token:
-                self.assertIn("persist-credentials: false", job, name)
-
-    def test_admit_holds_nothing_and_gates_everything(self):
-        admit = self.jobs["admit"]
-        self.assertNotIn("secrets.", self.code(admit))
-        self.assertNotIn("environment:", admit)
-        for name, job in self.jobs.items():
-            if name != "admit":
-                self.assertIsNotNone(re.search(r"^    needs: \[admit\]$", job, re.M), name)
-
-    def test_no_go_source_is_checked_out(self):
-        for name, job in self.jobs.items():
-            for block in re.findall(r"sparse-checkout: \|\n((?:\s{12}\S.*\n)+)", job):
-                paths = {p.strip() for p in block.splitlines()}
-                allowed = {"/setup/", "/setup/init/windows/", "/examples/config.yaml", "/LICENSE",
-                           "/e2e/test-install.ps1", "/.github/scripts/bsd-package-in-guest.sh",
-                           "/.github/scripts/solarish-package-in-guest.sh"}
-                self.assertLessEqual(paths, allowed, name)
-            checkouts = self.code(job).count("uses: actions/checkout@")
-            self.assertEqual(checkouts, self.code(job).count("sparse-checkout-cone-mode: false"), name)
-
-    def test_only_packages_leave(self):
-        paths = re.findall(r"uses: actions/upload-artifact@.*?\n(?:\s+.*\n)*?\s+path: (\S+)", self.workflow)
-        self.assertTrue(paths)
-        self.assertEqual(set(paths), {"artifacts/pkg/"})
-
-    def test_artifact_names(self):
-        names = set(re.findall(r'"pkg_artifact":"([^"]+)"', self.workflow))
-        self.assertEqual(names, self.ARTIFACTS)
-
-
-class AgentSolarishPackaging(unittest.TestCase):
-    """agent's illumos and Solaris packages come from agent-packages.yml, from
-    binaries agent cross-built on its own runner: no job here compiles, and
-    the guest gets binaries and the packaging tree only."""
-
-    @classmethod
-    def setUpClass(cls):
-        with open(AgentPackagesGuardRails.PATH, encoding="utf-8") as fh:
-            cls.workflow = fh.read()
-        body = cls.workflow.partition("\njobs:\n")[2]
-        cls.jobs = dict(re.findall(r"^  ([A-Za-z0-9_-]+):\n(.*?)(?=^  [A-Za-z0-9_-]+:\n|\Z)", body, re.M | re.S))
-
-    def test_both_kernels_are_packaged_from_downloaded_binaries(self):
-        admit = self.jobs["admit"]
-        for platform, os_, release in (("illumos-amd64", "omnios", "r151054"), ("solaris-amd64", "solaris", "11.4")):
-            with self.subTest(platform=platform):
-                entry = re.search(r'\{"platform":"%s"[^}]*\}' % platform, admit)
-                self.assertIsNotNone(entry)
-                self.assertIn(f'"os":"{os_}"', entry.group(0))
-                self.assertIn(f'"release":"{release}"', entry.group(0))
-                self.assertIn(f'"artifact":"supervizio-{platform}"', entry.group(0))
-                self.assertIn(f'"tests_artifact":"solarish-tests-{platform}"', entry.group(0))
-        job = self.jobs["solarish"]
-        self.assertEqual(job.count("uses: actions/download-artifact@"), 2)
-        self.assertNotRegex(job, r"\bgo (build|test)\b|cargo |go\.dev/dl")
-
-    def test_the_guests_run_agents_packaging_script_and_only_packages_leave(self):
-        job = self.jobs["solarish"]
-        runs = re.findall(r"^\s+run: (.+)$", job, re.M)
-        guest = [r for r in runs if "solarish-package-in-guest.sh" in r]
-        self.assertEqual(guest, ["sh .github/scripts/solarish-package-in-guest.sh"] * 2)
-        self.assertEqual(set(re.findall(r"retention-days: (\d+)", job)), {"1"})
-        self.assertEqual(set(re.findall(r"uses: actions/upload-artifact@.*?\n(?:\s+.*\n)*?\s+path: (\S+)", job)), {"artifacts/pkg/"})
-
-
-class LibprobeSolarishGuardRails(unittest.TestCase):
-    """libprobe-solarish.yml is public and holds a credential to libprobe. It
-    downloads a bundle of binaries and a plan, never a checkout of libprobe,
-    and answers with its conclusion and a one-day report."""
-
-    PATH = os.path.join(ROOT, os.pardir, ".github", "workflows", "libprobe-solarish.yml")
-
-    @classmethod
-    def setUpClass(cls):
-        with open(cls.PATH, encoding="utf-8") as fh:
-            cls.workflow = fh.read()
-        head, _, body = cls.workflow.partition("\njobs:\n")
-        cls.head = head
-        cls.jobs = dict(re.findall(r"^  ([A-Za-z0-9_-]+):\n(.*?)(?=^  [A-Za-z0-9_-]+:\n|\Z)", body, re.M | re.S))
-
-    def code(self, text):
-        return "\n".join(line.split(" #", 1)[0] for line in text.splitlines() if not line.lstrip().startswith("#"))
-
-    def test_only_trusted_triggers(self):
-        on = re.search(r"^on:\n(.*?)(?=^\S)", self.head, re.M | re.S).group(1)
-        self.assertEqual(set(re.findall(r"^  ([a-z_]+):", on, re.M)), {"repository_dispatch", "workflow_dispatch"})
-        self.assertNotIn("pull_request", self.code(self.workflow))
-
-    def test_the_token_lives_in_the_environment_only(self):
-        self.assertEqual(set(re.findall(r"secrets\.([A-Za-z0-9_]+)", self.code(self.workflow))), {"CI_APP_PRIVATE_KEY"})
-        for name, job in self.jobs.items():
-            uses_token = "secrets.CI_APP_PRIVATE_KEY" in self.code(job)
-            self.assertEqual(uses_token, re.search(r"^    environment: private-source$", job, re.M) is not None, name)
-        # libprobe alone, and nothing but reading its artifacts.
-        guest = self.code(self.jobs["guest"])
-        self.assertIn("repositories: libprobe\n", guest)
-        self.assertEqual(re.findall(r"permission-([a-z-]+): (\w+)", guest), [("actions", "read")])
-
-    def test_admit_holds_nothing_and_gates_everything(self):
-        self.assertNotIn("secrets.", self.code(self.jobs["admit"]))
-        self.assertNotIn("environment:", self.jobs["admit"])
-        for name, job in self.jobs.items():
-            if name != "admit":
-                self.assertIsNotNone(re.search(r"^    needs: \[admit\]$", job, re.M), name)
-
-    def test_libprobe_is_never_checked_out(self):
-        code = self.code(self.workflow)
-        # The one checkout is this repository's own (the guest script).
-        for step in re.findall(r"uses: actions/checkout@[^\n]*\n((?:\s{10}\S.*\n|\s{12,}.*\n)*)", code):
-            self.assertNotIn("repository:", step)
-        self.assertEqual(code.count("repository: supervizio/libprobe"), 1)  # the download, only
-        self.assertRegex(code, r"uses: actions/download-artifact@[^\n]*\n(?:\s+.*\n)*?\s+repository: supervizio/libprobe")
-        self.assertNotRegex(code, r"\bcargo |rustup|go build")
-
-    def test_the_bundle_is_checked_before_a_guest_boots(self):
-        job = self.code(self.jobs["guest"])
-        check = job.index("unexpected files in the bundle")
-        self.assertLess(check, job.index("uses: vmactions/omnios-vm@"))
-        self.assertLess(check, job.index("uses: vmactions/solaris-vm@"))
-
-    def test_only_the_report_leaves_for_one_day(self):
-        paths = re.findall(r"uses: actions/upload-artifact@.*?\n(?:\s+.*\n)*?\s+path: (\S+)", self.workflow)
-        self.assertEqual(paths, ["libprobe-out/"])
-        self.assertEqual(set(re.findall(r"retention-days: (\d+)", self.workflow)), {"1"})
+    def test_each_lane_is_a_stub(self):
+        for name, (event, title, reusable) in self.STUBS.items():
+            with self.subTest(name), open(os.path.join(self.WORKFLOWS, name), encoding="utf-8") as fh:
+                text = self.code(fh.read())
+                on = re.search(r"^on:\n(.*?)(?=^\S)", text, re.M | re.S).group(1)
+                self.assertEqual(set(re.findall(r"^  ([a-z_]+):", on, re.M)), {"repository_dispatch"})
+                self.assertIn(f"types: [{event}]", on)
+                self.assertIn(f"run-name: {title} ${{{{ github.event.client_payload.request_id }}}}", text)
+                pins = re.findall(r"uses: kodflow/runner-template/\.github/workflows/%s@([0-9a-f]{40})$" % re.escape(reusable), text, re.M)
+                self.assertEqual(len(pins), 1)
+                self.assertEqual(re.findall(r"^      ref: ([0-9a-f]{40})$", text, re.M), pins)
+                # The App key, by name, is the one secret a stub passes: a
+                # called workflow reads only what it declares, and inherit
+                # does not cross owners. Empty here; the called jobs read the
+                # private-source environment's key.
+                self.assertEqual(re.findall(r"secrets\.([A-Za-z0-9_]+)", text), ["CI_APP_PRIVATE_KEY"])
+                self.assertRegex(text, r"(?m)^    secrets:\n      CI_APP_PRIVATE_KEY: \$\{\{ secrets\.CI_APP_PRIVATE_KEY \}\}$")
+                self.assertNotRegex(text, r"secrets: *inherit|environment:|pull_request")
+                self.assertEqual(len(re.findall(r"^  [A-Za-z0-9_-]+:$", text.partition("\njobs:\n")[2], re.M)), 1)
 
 
 class NoReleaseWithoutIllumosAndSolaris(unittest.TestCase):
@@ -1366,6 +1237,11 @@ class AppKeyStaysInTheEnvironment(unittest.TestCase):
     # e2e.yml's legs: the merge lane in the environment, release mode (which
     # runs candidate bytes) in none.
     CONDITIONAL = "environment: ${{ inputs.mode != 'release' && 'private-source' || '' }}"
+    # A stub's job calls kodflow/runner-template and hands it the key by name
+    # (a called workflow reads only the secrets it declares). It holds no
+    # value: the key exists only in the environment, which the called jobs
+    # name. PackagingLanesAreStubs pins that line.
+    STUB_PASS = "      CI_APP_PRIVATE_KEY: ${{ secrets.CI_APP_PRIVATE_KEY }}"
 
     @staticmethod
     def code(text):
@@ -1402,7 +1278,10 @@ class AppKeyStaysInTheEnvironment(unittest.TestCase):
         seen = 0
         for wf, text in self.workflows():
             for name, job in self.jobs(text).items():
-                if "secrets.CI_APP_PRIVATE_KEY" not in self.code(job):
+                body = self.code(job)
+                if re.search(r"(?m)^    uses: kodflow/runner-template/\.github/workflows/reusable-[a-z0-9-]+\.yml@[0-9a-f]{40}$", body):
+                    body = body.replace(self.STUB_PASS, "")
+                if "secrets.CI_APP_PRIVATE_KEY" not in body:
                     continue
                 seen += 1
                 envs = re.findall(r"^    environment: .*$", job, re.M)
@@ -1427,7 +1306,8 @@ class AppKeyStaysInTheEnvironment(unittest.TestCase):
                 self.assertNotIn("permission-administration", block, wf)
             self.assertEqual(text.count("uses: actions/create-github-app-token@"), text.count(self.PIN), wf)
             self.assertNotIn("secrets.CI_APP_PRIVATE_KEY", self.code(text).replace(
-                "private-key: ${{ secrets.CI_APP_PRIVATE_KEY }}", ""), wf)
+                "private-key: ${{ secrets.CI_APP_PRIVATE_KEY }}", "").replace(
+                self.STUB_PASS if "uses: kodflow/runner-template/.github/workflows/reusable-" in text else "\0", ""), wf)
         self.assertGreaterEqual(steps, 36)
 
     def test_release_mode_never_mints_a_token(self):
