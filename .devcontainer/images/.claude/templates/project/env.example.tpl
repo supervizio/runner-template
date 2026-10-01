@@ -46,4 +46,3 @@ AZURE_TENANT_ID=
 
 # MCP Tokens (auto-configured in container)
 # GITHUB_TOKEN=
-# CODACY_TOKEN=

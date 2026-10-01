@@ -8,16 +8,6 @@
       ],
       "env": {}
     },
-    "codacy": {
-      "command": "npx",
-      "args": [
-        "-y",
-        "@codacy/codacy-mcp@0.x"
-      ],
-      "env": {
-        "CODACY_ACCOUNT_TOKEN": "{{CODACY_TOKEN}}"
-      }
-    },
     "github": {
       "command": "docker",
       "args": [

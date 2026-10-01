@@ -16,13 +16,6 @@ tools:
   - mcp__grepai__grepai_trace_graph
   - mcp__grepai__grepai_index_status
   - Bash
-  # Codacy MCP (Security & Risk Management)
-  - mcp__codacy__codacy_search_repository_srm_items
-  - mcp__codacy__codacy_search_organization_srm_items
-  - mcp__codacy__codacy_list_pull_request_issues
-  - mcp__codacy__codacy_get_file_issues
-  - mcp__codacy__codacy_get_issue
-  - mcp__codacy__codacy_cli_analyze
   # Documentation (local + remote)
   - mcp__context7__resolve-library-id
   - mcp__context7__query-docs
@@ -220,26 +213,6 @@ supply_chain:
     }
   }
 }
-```
-
-## MCP Integration
-
-Use Codacy for comprehensive scanning:
-
-```yaml
-codacy_integration:
-  security_scan:
-    tool: mcp__codacy__codacy_search_repository_srm_items
-    params:
-      scanTypes: ["SAST", "Secrets", "SCA"]
-      priorities: ["Critical", "High"]
-      statuses: ["OnTrack", "DueSoon", "Overdue"]
-
-  file_issues:
-    tool: mcp__codacy__codacy_get_file_issues
-    params:
-      categories: ["Security"]
-      levels: ["Error", "Warning"]
 ```
 
 ## Documentation Strategy

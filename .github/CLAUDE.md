@@ -37,12 +37,6 @@ it runs (GitHub-hosted only) and why.
 |------|-------------|
 | dependabot.yml | Automated dependency update configuration |
 
-## Instructions (gitignored)
-
-| File | Description |
-|------|-------------|
-| codacy.instructions.md | Codacy code quality AI instructions |
-
 ## Conventions
 
 - Workflows use reusable actions where possible

@@ -6,7 +6,6 @@
 Use MCP tools BEFORE CLI fallbacks:
 - `mcp__grepai__*` before Grep
 - `mcp__github__*` before `gh`
-- `mcp__codacy__*` before codacy-cli
 - `mcp__playwright__*` before npx playwright
 
 MCP has pre-configured auth. NEVER ask for tokens if MCP is configured.

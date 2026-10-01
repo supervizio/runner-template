@@ -15,14 +15,6 @@ tools:
   - mcp__grepai__grepai_trace_graph
   - mcp__grepai__grepai_index_status
   - Bash
-  # Codacy MCP (Quality Analysis)
-  - mcp__codacy__codacy_list_repository_issues
-  - mcp__codacy__codacy_get_file_issues
-  - mcp__codacy__codacy_get_file_with_analysis
-  - mcp__codacy__codacy_get_file_clones
-  - mcp__codacy__codacy_get_repository_with_analysis
-  - mcp__codacy__codacy_list_files
-  - mcp__codacy__codacy_cli_analyze
 model: haiku
 context: fork
 allowed-tools:
@@ -110,20 +102,6 @@ quality_checks:
     "test_coverage_files": 3
   }
 }
-```
-
-## MCP Integration
-
-Use Codacy for quality issues:
-
-```
-mcp__codacy__codacy_list_repository_issues:
-  provider: "gh"
-  organization: <from git remote>
-  repository: <from git remote>
-  options:
-    categories: ["complexity", "errorprone", "codestyle"]
-    levels: ["Warning", "Error"]
 ```
 
 ## Severity Mapping

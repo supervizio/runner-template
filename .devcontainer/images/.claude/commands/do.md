@@ -20,7 +20,6 @@ allowed-tools:
   - "TaskList(*)"
   - "TaskGet(*)"
   - "AskUserQuestion(*)"
-  - "mcp__codacy__codacy_cli_analyze(*)"
 ---
 
 # /do - Iterative Task Loop (RLM Architecture)

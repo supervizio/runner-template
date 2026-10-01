@@ -11,11 +11,9 @@ allowed-tools:
   - "Bash(glab:*)"
   - "mcp__github__*"
   - "mcp__gitlab__*"
-  - "mcp__codacy__*"
   - "Read(**/*)"
   - "Write(.env)"
   - "Edit(.env)"
-  - "Edit(.codacy.yaml)"
   - "Glob(**/*)"
   - "mcp__grepai__*"
   - "Grep(**/*)"
@@ -1118,7 +1116,7 @@ ci_monitoring:
 
 ---
 
-### Phase 3.5: Review Comments Triage (CodeRabbit, Qodo, Codacy)
+### Phase 3.5: Review Comments Triage (CodeRabbit, Qodo)
 
 **After CI passes, triage and resolve review bot findings before merging.**
 
@@ -1132,7 +1130,7 @@ review_triage:
   config:
     max_iterations: 3                    # Review-fix-recheck loop limit
     wait_for_re_review: 120s             # Max wait for bot re-review after push
-    sources: [coderabbit, qodo, codacy, human]
+    sources: [coderabbit, qodo, human]
     platform: "github"                   # Phase 3.5 is GitHub-only (CodeRabbit/Qodo are GitHub bots)
     skip_conditions:
       - "No review comments exist on the PR/MR"
@@ -1143,8 +1141,7 @@ review_triage:
   # Phase 3.5.1: Parallel Fetch (GitHub-only)
   #---------------------------------------------------------------------------
   # NOTE: CodeRabbit and Qodo are GitHub-specific bots.
-  # On GitLab, Phase 3.5 is skipped entirely (only Codacy runs on both,
-  # but its findings are surfaced via CI checks, not review comments).
+  # On GitLab, Phase 3.5 is skipped entirely.
   #
   # Fetch ALL review feedback in ONE parallel call:
   #
@@ -1154,10 +1151,7 @@ review_triage:
   # 2. mcp__github__pull_request_read(method="get_comments")
   #    → Issue-level comments (CodeRabbit summary)
   #
-  # 3. mcp__codacy__codacy_list_pull_request_issues(status="new")
-  #    → Codacy-specific findings
-  #
-  # All three calls are independent → execute in parallel.
+  # Both calls are independent → execute in parallel.
   #---------------------------------------------------------------------------
   phase_3_5_1_fetch:
     action: "Fetch all review feedback in parallel"
@@ -1168,9 +1162,6 @@ review_triage:
       - tool: "mcp__github__pull_request_read"
         params: { method: "get_comments" }
         captures: "issue_comments"
-      - tool: "mcp__codacy__codacy_list_pull_request_issues"
-        params: { status: "new" }
-        captures: "codacy_issues"
 
   #---------------------------------------------------------------------------
   # Phase 3.5.2: Classification
@@ -1188,8 +1179,6 @@ review_triage:
           author.login IN ['qodo-merge-pro[bot]', 'qodo-code-review[bot]', 'github-actions[bot]']
           AND content matches Qodo format with P0/P1/P2
         alt_logins: ["qodo-merge-pro[bot]", "qodo-code-review[bot]", "github-actions[bot]"]
-      codacy:
-        rule: "From mcp__codacy__codacy_list_pull_request_issues API"
       human:
         rule: "is_bot=false"
 
@@ -1200,9 +1189,6 @@ review_triage:
       qodo:
         relevant: "P0 (BLOCKER) or P1 (MAJOR)"
         irrelevant: "P2 (MINOR)"
-      codacy:
-        relevant: "status='new' AND severity in [Critical, High, Medium]"
-        irrelevant: "status='fixed' OR severity in [Low, Info]"
       human:
         relevant: "ALL unresolved (HIGHEST priority)"
         irrelevant: "resolved only"
@@ -1216,10 +1202,8 @@ review_triage:
       1: "Human unresolved comments"
       2: "CodeRabbit unresolved findings (blocks merge via request_changes)"
       3: "Qodo P0 blockers"
-      4: "Codacy Critical/High issues"
-      5: "Qodo P1 majors"
-      6: "Codacy Medium issues"
-      7: "CodeRabbit non-blocking suggestions (lowest)"
+      4: "Qodo P1 majors"
+      5: "CodeRabbit non-blocking suggestions (lowest)"
     skip_condition: "If 0 relevant findings → output 'No review issues' → proceed to Phase 5.5"
 
   #---------------------------------------------------------------------------
@@ -1238,7 +1222,6 @@ review_triage:
         5. Interact with bots:
            - CodeRabbit: post "@coderabbitai resolve" then "@coderabbitai review"
            - Qodo: no action (auto-re-reviews on push)
-           - Codacy: no action (auto-re-analyzes on push)
            - Human: no action (never auto-dismiss)
         6. Wait for re-reviews (MCP-only polling with wait_for_re_review 120s cap)
         7. Re-fetch and re-classify (repeat Phase 3.5.1 + 3.5.2)
@@ -1256,19 +1239,6 @@ review_triage:
           3. "@coderabbitai resume"
           4. "@coderabbitai resolve" (dismiss fixed findings)
           5. "@coderabbitai review" (trigger fresh re-review)
-
-    codacy_false_positive_handling:
-      description: "When Codacy finding is a false positive that cannot be fixed"
-      action: |
-        1. Identify if issue is a false positive (wrong rule for this context)
-        2. Ask user via AskUserQuestion:
-           Option 1: "Fix the code"
-           Option 2: "Add inline suppression (// nolint:rule, # noqa, etc.)"
-           Option 3: "Add path exclusion to .codacy.yaml"
-           Option 4: "Ignore this finding"
-        3. If .codacy.yaml exclusion chosen:
-           Edit .codacy.yaml with new exclude_paths entry
-           or engines.{tool}.exclude_paths
 
     escalation:
       condition: "iteration >= max_iterations AND relevant_count > 0"
@@ -1314,10 +1284,9 @@ review_triage:
   Sources:
     ├─ CodeRabbit: 3 findings (2 relevant)
     ├─ Qodo: 1 P0, 2 P2 (1 relevant)
-    ├─ Codacy: 4 new issues (3 relevant)
     └─ Human: 0 comments
 
-  Total relevant: 6 findings
+  Total relevant: 3 findings
   Action: Entering fix loop...
 
 ═══════════════════════════════════════════════════════════════
@@ -1332,11 +1301,11 @@ review_triage:
 
   Iterations: 2/3
   Fixed: 5 findings
-  Dismissed: 1 (Codacy false positive)
+  Dismissed: 1 (false positive)
   Remaining: 0
 
   Commits added:
-    └─ fix(review): address coderabbit + codacy findings
+    └─ fix(review): address coderabbit + qodo findings
 
   Proceeding to Phase 5.5...
 
@@ -1353,7 +1322,6 @@ review_triage:
   Sources:
     ├─ CodeRabbit: 0 findings
     ├─ Qodo: 0 findings
-    ├─ Codacy: 0 issues
     └─ Human: 0 comments
 
   No review issues found.
@@ -1974,7 +1942,6 @@ action_finish:
 |--------|--------|--------|
 | Auto-resolve human comments | **FORBIDDEN** | Only humans resolve their own |
 | Skip Phase 3.5 entirely | **ALLOWED** | If 0 review comments exist or --skip-review |
-| `.codacy.yaml` exclusion without user approval | **FORBIDDEN** | Persistent config change |
 | More than 3 fix iterations | **FORBIDDEN** | Escalate to user |
 | Auto-dismiss CodeRabbit without fixing | **FORBIDDEN** | Must fix or justify |
 | Auto-dismiss Qodo P0/P1 without fixing | **FORBIDDEN** | Must address blockers |
