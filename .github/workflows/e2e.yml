@@ -5483,7 +5483,7 @@ jobs:
           mv "bin/supervizio-netbsd-amd64" bin/supervizio
 
       - name: Install, validate and uninstall in a netbsd guest
-        uses: vmactions/netbsd-vm@20ee93a005c9fc78743e6e05269f4cb023b87413 # v1.5.0
+        uses: vmactions/netbsd-vm@c8a0d7ddb84619a7a8cc4e652efa7950b3fd9f92 # v1.5.2
         with:
           usesh: true
           # Pinned, for the same reason the Windows leg pins its image: an
@@ -6206,7 +6206,7 @@ jobs:
           mv "bin/supervizio-netbsd-arm64" bin/supervizio
 
       - name: Install, validate and uninstall in a netbsd guest
-        uses: vmactions/netbsd-vm@20ee93a005c9fc78743e6e05269f4cb023b87413 # v1.5.0
+        uses: vmactions/netbsd-vm@c8a0d7ddb84619a7a8cc4e652efa7950b3fd9f92 # v1.5.2
         with:
           usesh: true
           # aarch64 guest on an x86_64 HOST. The action's own README is explicit:
