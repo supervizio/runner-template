@@ -1835,7 +1835,7 @@ jobs:
           ls -l "pkg/supervizio-amd64.apk"
 
       - name: Install, graft, validate and uninstall in a alpine guest
-        uses: vmactions/alpine-vm@697847385681cdc413604693010eded91e8d9650 # v1.0.1
+        uses: vmactions/alpine-vm@bbc5d76bdbe2d3497bdd8c6c7f09c94aa01c785e # v1.0.2
         with:
           release: '3.23'
           copyback: false
@@ -2783,7 +2783,7 @@ jobs:
           ls -l "pkg/supervizio-amd64.apk"
 
       - name: Install, graft onto runsvdir, validate and uninstall
-        uses: vmactions/alpine-vm@697847385681cdc413604693010eded91e8d9650 # v1.0.1
+        uses: vmactions/alpine-vm@bbc5d76bdbe2d3497bdd8c6c7f09c94aa01c785e # v1.0.2
         with:
           release: '3.23'
           copyback: false
@@ -2975,7 +2975,7 @@ jobs:
           ls -l "pkg/supervizio-amd64.apk"
 
       - name: Install, graft onto s6-svscan, validate and uninstall
-        uses: vmactions/alpine-vm@697847385681cdc413604693010eded91e8d9650 # v1.0.1
+        uses: vmactions/alpine-vm@bbc5d76bdbe2d3497bdd8c6c7f09c94aa01c785e # v1.0.2
         with:
           release: '3.23'
           copyback: false
