@@ -252,7 +252,7 @@ jobs:
       # harness in whichever booted.
       - name: Harness -- boot FreeBSD 15.1
         if: ${{ matrix.leg.scenario == 'abi' && matrix.leg.host == 'freebsd' }}
-        uses: vmactions/freebsd-vm@a2f9a41fa97f6848b8c3b791087dfcdaa5b473ff # v1.5.8
+        uses: vmactions/freebsd-vm@c46abacb49f09938ca4e1702d15d836285d694cc # v1.5.9
         with:
           release: '15.1'
           arch: ${{ runner.arch == 'ARM64' && 'aarch64' || 'x86_64' }}
