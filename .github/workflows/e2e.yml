@@ -5193,7 +5193,7 @@ jobs:
           mv "bin/supervizio-freebsd-amd64" bin/supervizio
 
       - name: Install, validate and uninstall in a freebsd guest
-        uses: vmactions/freebsd-vm@a2f9a41fa97f6848b8c3b791087dfcdaa5b473ff # v1.5.8
+        uses: vmactions/freebsd-vm@c46abacb49f09938ca4e1702d15d836285d694cc # v1.5.9
         with:
           usesh: true
           # Pinned, for the same reason the Windows leg pins its image: an
@@ -5337,7 +5337,7 @@ jobs:
           mv "bin/supervizio-freebsd-amd64" bin/supervizio
 
       - name: Install, validate and uninstall in a FreeBSD 14 guest
-        uses: vmactions/freebsd-vm@a2f9a41fa97f6848b8c3b791087dfcdaa5b473ff # v1.5.8
+        uses: vmactions/freebsd-vm@c46abacb49f09938ca4e1702d15d836285d694cc # v1.5.9
         with:
           usesh: true
           # Pinned to the 14.x agent's FreeBSD sysroot is linked against, and
@@ -6023,7 +6023,7 @@ jobs:
           mv "bin/supervizio-freebsd-arm64" bin/supervizio
 
       - name: Install, validate and uninstall in a freebsd guest
-        uses: vmactions/freebsd-vm@a2f9a41fa97f6848b8c3b791087dfcdaa5b473ff # v1.5.8
+        uses: vmactions/freebsd-vm@c46abacb49f09938ca4e1702d15d836285d694cc # v1.5.9
         with:
           usesh: true
           # aarch64 guest on an x86_64 HOST. The action's own README is explicit:
