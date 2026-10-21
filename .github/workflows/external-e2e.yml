@@ -31,7 +31,7 @@ name: External E2E (dispatched)
 #     Checks out the private source; posts the result back as a commit status
 #     on the source commit.
 #   * Pass/fail travels via that commit status; the metric reports travel via
-#     upload-artifact (non-sensitive, see above).
+#     one-day artifacts (non-sensitive, see above).
 #   * Logs minimized (no --nocapture, RUST_BACKTRACE=0). The run is DELETED by
 #     cleanup-external-e2e.yml AFTER the dispatcher has pulled the artifacts.
 #   * Third-party actions pinned by commit SHA.
@@ -203,6 +203,7 @@ jobs:
           name: report-${{ matrix.platform }}
           path: report-${{ matrix.platform }}.json
           if-no-files-found: warn
+          retention-days: 1
 
   # --- BSD legs via QEMU (vmactions): one job per (os, arch) -------------------
   #
@@ -350,6 +351,7 @@ jobs:
           name: report-${{ env.LEG_OS }}-${{ env.LEG_ARCH }}
           path: report-${{ env.LEG_OS }}-${{ env.LEG_ARCH }}.json
           if-no-files-found: warn
+          retention-days: 1
           # A retry runs only when attempt 1 never reached the report, so the
           # two never both upload. Were they ever to, the retry's is the leg's.
           overwrite: true
@@ -536,6 +538,7 @@ jobs:
           name: report-container-${{ matrix.distro }}
           path: report-container-${{ matrix.distro }}.json
           if-no-files-found: warn
+          retention-days: 1
 
   # --- Collect: fuse every per-(os,arch) report into one `metrics-reports`
   # artifact the dispatcher downloads to regenerate the coverage plaquette.
@@ -563,6 +566,7 @@ jobs:
           name: metrics-reports
           path: reports/
           if-no-files-found: warn
+          retention-days: 1
 
   # --- Report: set the final source commit status ------------------------------
   # Needs exactly the gating legs: the native matrix, and the three BSD amd64

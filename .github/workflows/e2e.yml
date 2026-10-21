@@ -1165,6 +1165,8 @@ jobs:
         uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
         with:
           go-version-file: agent/go.work
+          # No module/build cache: it would hold objects compiled from agent's tree.
+          cache: false
 
       - name: Build Windows crasher
         run: |
@@ -1325,6 +1327,8 @@ jobs:
         uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
         with:
           go-version-file: agent/go.work
+          # No module/build cache: it would hold objects compiled from agent's tree.
+          cache: false
 
       - name: Build Windows crasher
         run: |
@@ -3514,7 +3518,7 @@ jobs:
           # What Portage installed is the binary under test, byte for byte.
           want="$(sha256sum "$bin" | cut -d' ' -f1)"
           got="$(docker exec svz sha256sum /usr/bin/supervizio | cut -d' ' -f1)"
-          [ "$got" = "$want" ] || { echo "::error::/usr/bin/supervizio is $got, the binary under test is $want"; exit 1; }
+          [ "$got" = "$want" ] || { echo "::error::/usr/bin/supervizio is not the binary under test (sha256 differs)"; exit 1; }
           docker exec svz sh -c 'test -x /etc/init.d/supervizio && grep -qx "command=\"/usr/bin/supervizio\"" /etc/init.d/supervizio && grep -q "^ExecStart=/usr/bin/supervizio " /usr/lib/systemd/system/supervizio.service && test -f /etc/supervizio/config.yaml' || {
             echo "::error::the package did not install its OpenRC script, systemd unit or configuration pointing at /usr/bin"; exit 1; }
           docker exec svz /usr/bin/supervizio --version
@@ -3817,7 +3821,7 @@ jobs:
           # Single quotes on purpose, here and below: expanded in the container.
           # shellcheck disable=SC2016
           got="$(nx sh -c 'sha256sum "$(readlink -f /run/current-system/sw/bin/supervizio)"' | cut -d' ' -f1)"
-          [ "$got" = "$want" ] || { echo "::error::the installed supervizio is $got, the binary under test is $want"; exit 1; }
+          [ "$got" = "$want" ] || { echo "::error::the installed supervizio is not the binary under test (sha256 differs)"; exit 1; }
           # The unit is the package's own supervizio.service, pointed at the
           # store, and the module put Nix on its PATH for the inventory.
           nx systemctl cat supervizio | grep -q '^ExecStart=/nix/store/.*/bin/supervizio --config /etc/supervizio/config.yaml$' || {
@@ -4061,7 +4065,6 @@ jobs:
             echo "::error::agent run ${{ needs.resolve.outputs.run_id }} did not bridge both arm64 binaries (E2E_BRIDGE_PLATFORMS)" >&2
             exit 1
           }
-          file "$glibc" "$musl"
           mkdir -p pkgs
 
           # nfpm.yaml reads ./supervizio-linux-${BIN_ARCH} relative to the
@@ -4879,7 +4882,6 @@ jobs:
           mv "$found" "payload/${ARTIFACT}"
           chmod +x "payload/${ARTIFACT}"
           ls -l "payload/${ARTIFACT}"
-          sha256sum "payload/${ARTIFACT}"
 
       # The hosted image registers NO qemu emulator of its own -- measured on
       # ubuntu-24.04, run 35571941548, where /proc/sys/fs/binfmt_misc held only

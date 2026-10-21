@@ -61,6 +61,60 @@ right before a draft is published.
   the doorbell is the lane's only secret-holder and executes nothing. README D3
   and section 4 say why.
 
+## Product runs: what stays and for how long
+
+A run of this public repository may hold agent's or libprobe's bytes while its
+job runs; nothing of them may stay readable afterwards (supervizio/agent#297).
+GitHub refuses to delete a run that is still in progress, so removal is always
+done from outside the run: by the caller, by a `workflow_run` janitor, and
+under both by `cleanup-product-runs.yml`.
+
+| Workflow | Product bytes held during the job | Uploads (all `retention-days: 1`) | How the run goes |
+|---|---|---|---|
+| `e2e.yml` | merge lane: agent's checkout at the dispatched SHA and the binaries and packages of agent's CI run (App token, `actions: read`); release mode (called by `validate-release.yml`): the candidate's assets and test kit, pulled by digest | `probe-cap-*` (probe output JSON), `supervizio-arm64-packages` (arm64 packages rebuilt for the run's own legs) | `cleanup-external-e2e.yml` on completion (repository_dispatch runs); `cleanup-product-runs.yml` 30 min after completion (any event) |
+| `external-e2e.yml` | libprobe's checkout at the dispatched SHA, built and tested on each leg | `report-*`, `metrics-reports` (runner metrics JSON) | same as `e2e.yml` |
+| `agent-packages.yml` (stub; logic in kodflow/runner-template) | agent's cross-built binaries from its CI artifacts, a sparse checkout of its packaging files, the packages built from them | the packages, which agent's caller downloads | agent's `public-packages.yml` deletes it after downloading and fails if it is still listed; `sweep.yml` after 2 h; `cleanup-product-runs.yml` after 30 min |
+| `libprobe-solarish.yml` (stub; logic in kodflow/runner-template) | libprobe's cross-built bundle | stage logs | libprobe's `solarish-guest.yml` deletes it after downloading the report; `sweep.yml`; `cleanup-product-runs.yml` |
+| `validate-release.yml` | a release candidate's assets, pulled by digest from the private package | none | **kept**: its runs are the evidence a promotion reads (README D3); the repository retention setting removes them |
+
+Rules, enforced by `.github/scripts/check_run_retention.py` (run by
+`release-contract/tests/test_run_retention.py`, hence by `release-contract.yml`
+on any workflow or action change); its docstring is the precise text:
+
+- every `actions/upload-artifact` step has `retention-days: 1`, and per file
+  the count of lines naming upload-artifact equals the count of
+  `retention-days: 1` lines (the issue's own check: word comments otherwise);
+- in a product workflow (the table above, plus `.github/actions/`), nothing
+  writes the Actions cache: no `actions/cache`, every `actions/setup-*` says
+  `cache: false`, no docker `type=gha`, no vmactions `cache-after-prepare:
+  true`. A public repository's default-branch cache can be restored by any
+  pull request's workflow, forks included, and it outlives the job;
+- anywhere, an `actions/cache` path never names a product location;
+- a new workflow that mentions a private repository, the App token, the
+  release candidate action or a reusable lane fails the check until it is
+  classified in the script.
+
+Logs: a step that handles product files does not `set -x`, and does not print
+hashes or `file`/`strings`-style output of product binaries (a mismatch says
+"differs", not the two hashes). `::add-mask::` is not relied on.
+
+Open, for the maintainer:
+
+- **The three Alpine legs of `e2e.yml`** (`e2e-linux-alpine-{openrc,runit,s6}`)
+  set `cache-after-prepare: true`: vmactions syncs the workspace (the package
+  under test, agent's checkout) into the guest BEFORE `prepare`, so the
+  prepared image it caches holds them. They need the reboot that option
+  brings, for `psi=1` on the kernel command line. They are the check's only
+  exception; the fix (a mounted rather than copied workspace, or the
+  `qemu-vm` action's `kernel-args`) has to be proven on `main`, and the
+  existing `alpine-*-prep-*` cache entries deleted.
+- **Retention setting**: Actions artifact and log retention of this repository
+  to 1 day (a repository/organisation setting, not a file here). README D1:
+  commit statuses and check runs expire with the retention of the repository
+  they are on.
+- `validate-release.yml` runs are kept on purpose (above); whether their logs
+  may outlive the job is a contract decision, not a cleanup one.
+
 ---
 
 # Inherited: devcontainer-template
