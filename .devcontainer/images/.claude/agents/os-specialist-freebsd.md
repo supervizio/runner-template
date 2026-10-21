@@ -162,8 +162,8 @@ pfctl -si                    # show info
 ```bash
 # /etc/rc.conf
 # ifconfig_vtnet0="DHCP"
-# ifconfig_vtnet0="inet 10.0.0.10 netmask 255.255.255.0"
-# defaultrouter="10.0.0.1"
+# ifconfig_vtnet0="inet <host-ip> netmask 255.255.255.0"
+# defaultrouter="<gateway-ip>"
 
 service netif restart
 service routing restart

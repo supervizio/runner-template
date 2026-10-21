@@ -150,7 +150,7 @@ pfctl -si                    # show counters
 ```bash
 # /etc/hostname.<if>
 # dhcp                        # for DHCP
-# inet 10.0.0.10 255.255.255.0  # static
+# inet <host-ip> 255.255.255.0  # static
 
 # Apply
 sh /etc/netstart <if>
@@ -160,7 +160,7 @@ cat /etc/resolv.conf
 
 # Routing
 route show
-route add default 10.0.0.1
+route add default <gateway-ip>
 # /etc/mygate - default gateway
 ```
 
