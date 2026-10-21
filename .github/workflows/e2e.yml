@@ -3498,6 +3498,13 @@ jobs:
           case "$PV" in
             *_*) docker exec svz sh -c "mkdir -p /etc/portage/package.accept_keywords && echo 'app-admin/supervizio-bin ~$ARCH' > /etc/portage/package.accept_keywords/supervizio" ;;
           esac
+          # The ebuild's LICENSE is supervizio-EULA, outside the stage3's
+          # default ACCEPT_LICENSE: accept it for this package alone, as its
+          # README tells a user to. package.license only adds to
+          # ACCEPT_LICENSE, so a release whose LICENSE is already accepted
+          # (MIT) is unaffected. The stage3 ships no package.license: a
+          # directory, like package.accept_keywords.
+          docker exec svz sh -c "mkdir -p /etc/portage/package.license && echo 'app-admin/supervizio-bin supervizio-EULA' > /etc/portage/package.license/supervizio"
           docker cp e2e/validate-probe.sh svz:/opt/svz/validate-probe.sh
           docker cp e2e/scenario-battery.sh svz:/opt/svz/scenario-battery.sh
           docker cp e2e/validate-detection.sh svz:/opt/svz/validate-detection.sh
