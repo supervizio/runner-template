@@ -55,6 +55,11 @@ right before a draft is published.
 - It is **public**. Nothing private goes in it: no private branch names, no internal
   lab addresses or paths, no secrets, no content of the private repositories'
   releases.
+  `private-addresses.yml` enforces the address part: no RFC 1918 address in any
+  tracked file, documentation included (use placeholders such as `<host-ip>`).
+  A job here never connects to a private network; if one ever needs a private
+  endpoint it reads it from a repository secret, never from a variable (variables
+  print unmasked in public logs).
 - No binary is ever stored here, not even transiently as a release or an
   artifact: candidates stay in the private packages.
 - `validate-release.yml` references no secret and never runs on `pull_request`;

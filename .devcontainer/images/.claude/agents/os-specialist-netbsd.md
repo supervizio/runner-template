@@ -141,8 +141,8 @@ mount -o log /dev/sd0a /
 ```bash
 # /etc/rc.conf
 # ifconfig_vioif0="dhcp"
-# ifconfig_vioif0="inet 10.0.0.10 netmask 255.255.255.0"
-# defaultroute="10.0.0.1"
+# ifconfig_vioif0="inet <host-ip> netmask 255.255.255.0"
+# defaultroute="<gateway-ip>"
 
 # Restart
 service network restart

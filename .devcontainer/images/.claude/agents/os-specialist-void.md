@@ -143,8 +143,8 @@ sv status dhcpcd
 cat /etc/dhcpcd.conf
 
 # Static IP (/etc/rc.local or /etc/network/interfaces equivalent)
-ip addr add 10.0.0.10/24 dev eth0
-ip route add default via 10.0.0.1
+ip addr add <host-ip>/24 dev eth0
+ip route add default via <gateway-ip>
 
 # DNS
 cat /etc/resolv.conf

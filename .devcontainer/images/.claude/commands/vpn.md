@@ -463,7 +463,7 @@ connect_workflow:
   Config   : ✓ Downloaded (.ovpn)
   Creds    : ✓ Resolved (username + password)
   Status   : CONNECTED
-  Interface: tun0 (10.8.0.2)
+  Interface: tun0 (<tunnel-ip>)
 
 ═══════════════════════════════════════════════════════════════════
 ```
@@ -481,7 +481,7 @@ connect_workflow:
   Config   : ✓ Downloaded (.conf)
   Creds    : N/A (keys in config)
   Status   : CONNECTED
-  Interface: wg0 (10.0.0.2)
+  Interface: wg0 (<tunnel-ip>)
 
 ═══════════════════════════════════════════════════════════════════
 ```
@@ -587,7 +587,7 @@ status_workflow:
 
   Protocol : OpenVPN
   Process  : openvpn (PID: 1234) ✓
-  Interface: tun0 (10.8.0.2) ✓
+  Interface: tun0 (<tunnel-ip>) ✓
   Uptime   : Running
 
   Recent logs:

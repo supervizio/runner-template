@@ -1801,7 +1801,7 @@ jobs:
           kit-dir: .
           files: supervizio-amd64.apk pkg
 
-      # The bench leg pulled this package from zot at 192.168.100.250, which a
+      # The bench leg pulled this package from the lab registry, which a
       # hosted runner cannot reach. Same bytes, taken from the GitHub artifact
       # agent's packaging jobs now mirror. Downloaded on the HOST and synced in
       # by vmactions -- the token never enters the guest.
@@ -1965,7 +1965,7 @@ jobs:
           kit-dir: .
           files: supervizio-amd64.deb pkg
 
-      # The bench leg pulled this package from zot at 192.168.100.250, which a
+      # The bench leg pulled this package from the lab registry, which a
       # hosted runner cannot reach. Same bytes, taken from the GitHub artifact
       # agent's packaging jobs now mirror. Downloaded on the HOST and synced in
       # by vmactions -- the token never enters the guest.
@@ -2151,7 +2151,7 @@ jobs:
           kit-dir: agent
           files: supervizio-amd64.rpm pkg
 
-      # The bench leg pulled this package from zot at 192.168.100.250, which a
+      # The bench leg pulled this package from the lab registry, which a
       # hosted runner cannot reach. Same bytes, taken from the GitHub artifact
       # agent's packaging jobs now mirror. Downloaded on the HOST and pushed in
       # by scp -- the token never enters the guest.
