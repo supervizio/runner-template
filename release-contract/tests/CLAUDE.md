@@ -10,6 +10,7 @@
 | `test_live_proof.py` + `live_proof.py` | the documents `release-contract-proof.yml` stages on a live draft, tested offline |
 | `proof-policy.json` | integrity-only agent legs, and the production libprobe legs with their `abi` scenario, for hand-run lanes on the bridge probe package. It omits `solarish/illumos-amd64` and `solarish/solaris-amd64` until a published libprobe release carries those archives |
 | `e2e-proof-policy.json` | every production agent leg, on the bridge probe package, for a test candidate: kept equal to `policy.json`'s agent legs, the Gentoo, NixOS, illumos and Solaris ones included |
+| `test_run_retention.py` | `.github/scripts/check_run_retention.py` on this tree, and on the uploads and caches it must refuse |
 | `vectors/` | the manifest test vector any other implementation must reproduce |
 
 A leg added to `policy.json` changes the counts `ShippedPolicy` and `LegMatrix`
