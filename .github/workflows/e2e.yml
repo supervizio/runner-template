@@ -1834,10 +1834,21 @@ jobs:
           [ "$found" = "pkg/supervizio-amd64.apk" ] || mv "$found" "pkg/supervizio-amd64.apk"
           ls -l "pkg/supervizio-amd64.apk"
 
-      - name: Install, graft, validate and uninstall in a alpine guest
+      # cache-after-prepare caches the guest disk as 'prepare' leaves it, so
+      # later runs boot it with psi=1 already on the kernel line. With the
+      # default rsync sync, vmactions copies the runner's work tree into that
+      # disk BEFORE 'prepare' runs and the disk is still writable, so the
+      # cached image carried the package and the checkout -- in the Actions
+      # cache of a public repository, readable by any pull-request run. With
+      # sync 'no' the cached image is the base OS, the prepare packages and
+      # the boot line; the workspace goes in afterwards, into the -snapshot
+      # boot that dies with the job. The key hashes 'prepare' and 'sync', so
+      # the images cached under rsync are never restored by this definition.
+      - name: Boot the alpine guest (the cached image holds no workspace)
         uses: vmactions/alpine-vm@697847385681cdc413604693010eded91e8d9650 # v1.0.1
         with:
           release: '3.23'
+          sync: 'no'
           copyback: false
           cache-after-prepare: true
           prepare: |
@@ -1850,9 +1861,20 @@ jobs:
               [ -f "$f" ] && sed -i '/APPEND/ s/$/ psi=1/' "$f"
             done
             grep -h APPEND /boot/extlinux.conf 2>/dev/null || true
-          run: |
-            set -e
-            WS="$(pwd)"
+      - name: Copy the workspace into the guest
+        run: |
+          set -euo pipefail
+          # The custom-shell wrapper vmactions writes for the next step.
+          echo "$HOME/.local/bin" >> "$GITHUB_PATH"
+          # shellcheck disable=SC2029 # the host's path, expanded on purpose
+          tar -C "$GITHUB_WORKSPACE" -cf - . \
+            | ssh alpine "mkdir -p '$GITHUB_WORKSPACE' && tar -C '$GITHUB_WORKSPACE' -xf -"
+      - name: Install, graft, validate and uninstall in a alpine guest
+        shell: alpine {0}
+        run: |
+            set -eu
+            WS='${{ github.workspace }}'
+            cd "$WS"
             echo "=== Platform ==="; uname -a; head -2 /etc/os-release
             echo "PID1=$(cat /proc/1/comm)"
 
@@ -2782,10 +2804,12 @@ jobs:
           [ "$found" = "pkg/supervizio-amd64.apk" ] || mv "$found" "pkg/supervizio-amd64.apk"
           ls -l "pkg/supervizio-amd64.apk"
 
-      - name: Install, graft onto runsvdir, validate and uninstall
+      # sync 'no' keeps the workspace out of the cached image: see e2e-linux-alpine-openrc.
+      - name: Boot the alpine guest (the cached image holds no workspace)
         uses: vmactions/alpine-vm@697847385681cdc413604693010eded91e8d9650 # v1.0.1
         with:
           release: '3.23'
+          sync: 'no'
           copyback: false
           cache-after-prepare: true
           prepare: |
@@ -2798,9 +2822,20 @@ jobs:
               [ -f "$f" ] && sed -i '/APPEND/ s/$/ psi=1/' "$f"
             done
             grep -h APPEND /boot/extlinux.conf 2>/dev/null || true
-          run: |
-            set -e
-            WS="$(pwd)"
+      - name: Copy the workspace into the guest
+        run: |
+          set -euo pipefail
+          # The custom-shell wrapper vmactions writes for the next step.
+          echo "$HOME/.local/bin" >> "$GITHUB_PATH"
+          # shellcheck disable=SC2029 # the host's path, expanded on purpose
+          tar -C "$GITHUB_WORKSPACE" -cf - . \
+            | ssh alpine "mkdir -p '$GITHUB_WORKSPACE' && tar -C '$GITHUB_WORKSPACE' -xf -"
+      - name: Install, graft onto runsvdir, validate and uninstall
+        shell: alpine {0}
+        run: |
+            set -eu
+            WS='${{ github.workspace }}'
+            cd "$WS"
             echo "=== Platform ==="; uname -srm; head -2 /etc/os-release
             echo "PID1=$(cat /proc/1/comm)   (busybox init -- the supervisor runs ON TOP of it)"
 
@@ -2974,10 +3009,12 @@ jobs:
           [ "$found" = "pkg/supervizio-amd64.apk" ] || mv "$found" "pkg/supervizio-amd64.apk"
           ls -l "pkg/supervizio-amd64.apk"
 
-      - name: Install, graft onto s6-svscan, validate and uninstall
+      # sync 'no' keeps the workspace out of the cached image: see e2e-linux-alpine-openrc.
+      - name: Boot the alpine guest (the cached image holds no workspace)
         uses: vmactions/alpine-vm@697847385681cdc413604693010eded91e8d9650 # v1.0.1
         with:
           release: '3.23'
+          sync: 'no'
           copyback: false
           cache-after-prepare: true
           prepare: |
@@ -2990,9 +3027,20 @@ jobs:
               [ -f "$f" ] && sed -i '/APPEND/ s/$/ psi=1/' "$f"
             done
             grep -h APPEND /boot/extlinux.conf 2>/dev/null || true
-          run: |
-            set -e
-            WS="$(pwd)"
+      - name: Copy the workspace into the guest
+        run: |
+          set -euo pipefail
+          # The custom-shell wrapper vmactions writes for the next step.
+          echo "$HOME/.local/bin" >> "$GITHUB_PATH"
+          # shellcheck disable=SC2029 # the host's path, expanded on purpose
+          tar -C "$GITHUB_WORKSPACE" -cf - . \
+            | ssh alpine "mkdir -p '$GITHUB_WORKSPACE' && tar -C '$GITHUB_WORKSPACE' -xf -"
+      - name: Install, graft onto s6-svscan, validate and uninstall
+        shell: alpine {0}
+        run: |
+            set -eu
+            WS='${{ github.workspace }}'
+            cd "$WS"
             echo "=== Platform ==="; uname -srm; head -2 /etc/os-release
             echo "PID1=$(cat /proc/1/comm)   (busybox init -- the supervisor runs ON TOP of it)"
 
