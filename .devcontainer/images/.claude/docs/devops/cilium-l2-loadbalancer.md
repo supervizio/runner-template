@@ -40,8 +40,8 @@ locals {
       interface_name = "eno1"
       network_type   = "internal"
       ip_range = {
-        start = "192.168.3.150"
-        stop  = "192.168.3.250"
+        start = "<internal-pool-start>"
+        stop  = "<internal-pool-end>"
       }
       # Empty node selector means all nodes
       node_selector = {}
@@ -51,8 +51,8 @@ locals {
       interface_name = "eno2"
       network_type   = "public-api"
       ip_range = {
-        start = "192.168.4.150"
-        stop  = "192.168.4.250"
+        start = "<api-pool-start>"
+        stop  = "<api-pool-end>"
       }
       # Restrict to control plane nodes for security
       node_selector = {
@@ -95,7 +95,7 @@ l2announcements:
 ipam:
   mode: "cluster-pool"
   operator:
-    clusterPoolIPv4PodCIDRList: ["10.0.0.0/16"]
+    clusterPoolIPv4PodCIDRList: ["<pod-cidr>"]
     clusterPoolIPv4MaskSize: 24
 
 # BPF Configuration (for CoreOS/Flatcar)

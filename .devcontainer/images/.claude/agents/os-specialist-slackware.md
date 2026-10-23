@@ -147,9 +147,9 @@ grub-mkconfig -o /boot/grub/grub.cfg
 
 ```bash
 # /etc/rc.d/rc.inet1.conf
-# IPADDR[0]="10.0.0.10"
+# IPADDR[0]="<host-ip>"
 # NETMASK[0]="255.255.255.0"
-# GATEWAY="10.0.0.1"
+# GATEWAY="<gateway-ip>"
 # USE_DHCP[0]="yes"
 
 # Restart network
