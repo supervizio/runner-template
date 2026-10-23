@@ -139,7 +139,7 @@ jobs:
           ls -l fixture/
 
       - name: Upload
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: openbsd-abi-fixture
           path: fixture/
@@ -261,7 +261,7 @@ jobs:
             "$WS/out/native79-cgo" control
 
       - name: Upload the 7.9-native binaries
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: openbsd-abi-bin-native79
           path: out/
@@ -504,7 +504,7 @@ jobs:
           done
 
       - name: Upload the cross binaries
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: openbsd-abi-bin-cross-${{ matrix.goarch }}-${{ matrix.sysroot }}
           path: out/
@@ -583,7 +583,7 @@ jobs:
 
       - name: Upload
         if: ${{ always() }}
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: openbsd-abi-bin-native-arm64
           path: out/
@@ -688,7 +688,7 @@ jobs:
 
       - name: Upload the row
         if: ${{ always() }}
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: openbsd-abi-result-${{ matrix.release }}
           path: result-${{ matrix.release }}.txt
@@ -769,7 +769,7 @@ jobs:
 
       - name: Upload the row
         if: ${{ always() }}
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: openbsd-abi-result-arm64
           path: result-arm64.txt
