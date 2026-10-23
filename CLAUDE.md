@@ -7,7 +7,9 @@ The **public** end-to-end runner of `supervizio/agent` and `supervizio/libprobe`
 (both private), and the home of their **release contract**. It exists because a
 public repository's GitHub-hosted minutes are free: the private repositories
 dispatch their E2E matrices here and read the verdict back. Every job runs on a
-GitHub-hosted runner; none targets the self-hosted fleet.
+GitHub-hosted runner; none targets the self-hosted fleet. No job checks agent
+out: its legs read the binaries and a `packaging-inputs-<group>` artifact of
+the agent run that asked (`.github/workflows/CLAUDE.md`).
 
 | Where | What |
 |---|---|

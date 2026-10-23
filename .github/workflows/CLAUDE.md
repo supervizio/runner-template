@@ -117,9 +117,9 @@ the 26.04 labels yet; `.github/actionlint.yaml` lists them.
   same service): online under SMF after each, nothing left after each
   uninstall. validate-probe, `validate-detection.sh
   {omnios,solaris}-amd64`, an SMF cycle (disable, enable, SIGKILL then
-  restarted) and the scenario battery run on the first. The merge lane checks
-  out only the four paths the release kit carries (`e2e/`, `setup/`,
-  `go.work`, `.dockerignore`), never agent's sources. Status contexts
+  restarted) and the scenario battery run on the first. The merge lane reads
+  agent's `packaging-inputs-e2e` artifact like every other leg, never agent's
+  sources. Status contexts
   `e2e/illumos/omnios-amd64`, `e2e/solaris/amd64`.
 
   **When they run.** agent builds these two kernels on every release, but for
@@ -171,6 +171,19 @@ repository's. The stubs are owned by
 edit and moves the pin: change them there, not here. `PackagingLanesAreStubs`
 in `release-contract/tests/test_release_contract.py` pins what the private
 callers depend on (event type, run-name) and that no stub reads a secret.
+
+## What the merge lane reads of agent: `packaging-inputs-e2e`, never a checkout
+
+No job here checks `supervizio/agent` out. Every merge-lane leg of `e2e.yml`
+downloads, with its read-only App token (`actions: read`), the
+`packaging-inputs-e2e` artifact of the agent run that dispatched it -- one
+`packaging-inputs.tar`, the files agent lists file by file for that group (its
+`.github/packaging-inputs.txt`), modes kept -- and unpacks it where the
+checkout used to be (`.`, or `agent/` for the Windows, Rocky, openSUSE and
+Arch legs), then deletes the tar before anything is synced into a guest.
+agent builds it at the commit it tested and refuses one carrying internal
+notes or naming its private infrastructure. Release mode is unchanged: the
+release's `e2e-kit.tar.gz`, through `.github/actions/release-candidate`.
 
 ## agent's packages and libprobe's illumos/Solaris suite
 
