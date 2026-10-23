@@ -25,6 +25,8 @@ build and boot, `x86_64-linux` and `aarch64-linux`.
   runner. None of it touches `services.supervizio`.
 - `boot.isContainer`, `documentation.enable = false`, and `jq` + `procps` for
   agent's validators and battery.
+- `nixpkgs.config.allowUnfreePredicate` allows the `supervizio` package
+  alone (unfree, its EULA), as supervizio's README tells users to.
 - nixpkgs is pinned to a nixos-26.05 commit, so every run boots the same
   system. Moving it is a change here, proven by a run of both legs.
 

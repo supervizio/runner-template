@@ -18,23 +18,36 @@ on:
     workflows: ["External E2E (dispatched)", "E2E Tests"]
     types: [completed]
 
-permissions:
-  # Delete-only janitor: it checks out nothing, so actions:write is the only
-  # scope it needs (least privilege).
-  actions: write
+permissions: {}
 
 jobs:
   delete-run:
     name: Delete completed dispatched run
     if: ${{ github.event.workflow_run.event == 'repository_dispatch' }}
     runs-on: ubuntu-26.04
+    timeout-minutes: 5
+    permissions:
+      # Delete-only janitor: it checks out nothing, so actions:write is the only
+      # scope it needs (least privilege).
+      actions: write
     steps:
       - name: Delete the run
         env:
-          GH_TOKEN: ${{ github.token }}
+          TOKEN: ${{ github.token }}
+          API: ${{ github.api_url }}/repos/${{ github.repository }}
+          RID: ${{ github.event.workflow_run.id }}
+          NAME: ${{ github.event.workflow_run.name }}
         run: |
           set -euo pipefail
-          rid="${{ github.event.workflow_run.id }}"
-          echo "deleting ${{ github.event.workflow_run.name }} run ${rid} (trigger=${{ github.event.workflow_run.event }})"
-          gh api -X DELETE "repos/${{ github.repository }}/actions/runs/${rid}"
-          echo "deleted."
+          echo "deleting ${NAME} run ${RID}"
+          # Only 204 (deleted) and 404 (already gone, e.g. by
+          # cleanup-product-runs.yml) are a clean result. Anything else fails
+          # this job, so a run left public is a red run, not a silent one.
+          code="$(curl -sS -o "$RUNNER_TEMP/delete.txt" -w '%{http_code}' -X DELETE \
+            -H "Authorization: Bearer $TOKEN" -H "Accept: application/vnd.github+json" \
+            -H "X-GitHub-Api-Version: 2022-11-28" "$API/actions/runs/$RID")" || code="curl-error"
+          case "$code" in
+            204) echo "deleted." ;;
+            404) echo "already gone." ;;
+            *) echo "::error::could not delete ${NAME} run ${RID} (HTTP $code); cleanup-product-runs.yml retries it"; cat "$RUNNER_TEMP/delete.txt" || true; exit 1 ;;
+          esac

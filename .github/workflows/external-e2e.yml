@@ -6,6 +6,12 @@ name: External E2E (dispatched)
 # both amd64 AND arm64). Triggered ONLY by an authenticated repository_dispatch
 # — never by a PR — so external forks can never reach the secrets below.
 #
+# NO SOURCE COMES HERE. The source repository cross-builds every leg's test
+# executables in its own CI and uploads them to its run (`e2e-tests-<leg>`,
+# one day); each leg downloads its bundle from that run (source_run_id) and
+# runs its plan with .github/scripts/libprobe-e2e-plan.sh, which refuses a
+# bundle holding anything but executables and a plan.
+#
 # Besides pass/fail, every leg emits a `metrics_report` JSON — the REAL value of
 # every metric collected on that (os, arch) — uploaded as an artifact. Those
 # artifacts are the ground truth from which the coverage plaquette is
@@ -27,11 +33,10 @@ name: External E2E (dispatched)
 #     in the `private-source` environment (deployment branches: main only) and
 #     mints a kodflow-ci GitHub App token there (vars.CI_APP_CLIENT_ID, secret
 #     CI_APP_PRIVATE_KEY, both environment-scoped) for supervizio/libprobe
-#     alone, contents: read + statuses: write, revoked when the job ends.
-#     Checks out the private source; posts the result back as a commit status
-#     on the source commit.
+#     alone, actions: read (the bundle) + statuses: write, revoked when the
+#     job ends. Posts the result back as a commit status on the source commit.
 #   * Pass/fail travels via that commit status; the metric reports travel via
-#     upload-artifact (non-sensitive, see above).
+#     one-day artifacts (non-sensitive, see above).
 #   * Logs minimized (no --nocapture, RUST_BACKTRACE=0). The run is DELETED by
 #     cleanup-external-e2e.yml AFTER the dispatcher has pulled the artifacts.
 #   * Third-party actions pinned by commit SHA.
@@ -52,9 +57,8 @@ on:
         description: "Source commit SHA to check out"
         required: true
       source_run_id:
-        description: "Source run id (for the status context)"
-        required: false
-        default: "manual"
+        description: "Source run id: the run whose e2e-tests-* bundles the legs download (and the status context)"
+        required: true
       source_attempt:
         description: "Source run attempt"
         required: false
@@ -73,20 +77,12 @@ env:
   SOURCE_RUN_ID: ${{ github.event.client_payload.source_run_id || github.event.inputs.source_run_id }}
   SOURCE_ATTEMPT: ${{ github.event.client_payload.source_attempt || github.event.inputs.source_attempt }}
   CHECK_NAME: e2e-public/${{ github.event.client_payload.source_run_id || github.event.inputs.source_run_id }}-${{ github.event.client_payload.source_attempt || github.event.inputs.source_attempt }}
-  CARGO_TERM_COLOR: always
   RUST_BACKTRACE: "0"
-  # Full test suite: every unit + integration test (--lib --tests), including
-  # the #[ignore]-gated E2E ones. Doctests are excluded (--doc) on purpose: they
-  # are compile-checked examples, not functional tests, and one stale example in
-  # the darwin backend would otherwise red the gate on macOS.
-  #
-  # --no-fail-fast: cargo otherwise stops at the first failing test BINARY. On
-  # NetBSD one failing lib test meant tests/capability.rs, inventory.rs and
-  # behavioral.rs never ran at all, so a red leg said nothing about them. The
-  # verdict is the same -- any failure is a failure -- but one run now lists
-  # every failing binary instead of one per round trip.
-  TEST_CMD: "cargo test --release -p probe-platform --lib --tests --no-fail-fast -- --include-ignored"
-  REPORT_CMD: "cargo run --release -p probe-platform --bin metrics_report"
+  # The bundle's plan: every test executable with --include-ignored (the
+  # #[ignore]-gated E2E ones too), each run whatever the previous one
+  # concluded, so a red leg lists every failing executable; then
+  # metrics_report. The plan runner is this repository's.
+  PLAN: .github/scripts/libprobe-e2e-plan.sh
 
 jobs:
   # --- Ack: set the pending commit status immediately, so the source repo's
@@ -107,20 +103,19 @@ jobs:
           private-key: ${{ secrets.CI_APP_PRIVATE_KEY }}
           owner: supervizio
           repositories: libprobe
-          permission-contents: read
+          permission-actions: read
           permission-statuses: write
 
       # Gate the whole workflow on source_repo, BEFORE anything reads it.
       #
       # SOURCE_REPO comes straight from an attacker-controllable dispatch
-      # payload, and every downstream job does `actions/checkout` of that
-      # repository with a libprobe App token and then runs `cargo test --release`
-      # on it. cargo executes build.rs, proc macros and test code, so an
+      # payload, and every downstream job downloads executables from that
+      # repository's run with a libprobe App token and runs them. An
       # unconstrained value turns "can dispatch a test run" into "can run
       # arbitrary code next to a private-repo credential".
       #
       # Every other job declares `needs: [ack]`, so failing here stops the run
-      # before a single checkout happens. libprobe only: the token reaches
+      # before a single download happens. libprobe only: the token reaches
       # nothing else, and agent has its own lane in e2e.yml.
       #
       # Read through env rather than template interpolation -- a repository name is
@@ -138,6 +133,10 @@ jobs:
               exit 1 ;;
           esac
           echo "source_repo accepted: $CANDIDATE"
+          # The legs download their bundles from this run of the source repo.
+          case "$SOURCE_RUN_ID" in
+            ''|*[!0-9]*) echo "::error::source_run_id '$SOURCE_RUN_ID' is not a run id" >&2; exit 1 ;;
+          esac
 
       - name: Set pending commit status on source
         env:
@@ -180,29 +179,42 @@ jobs:
           private-key: ${{ secrets.CI_APP_PRIVATE_KEY }}
           owner: supervizio
           repositories: libprobe
-          permission-contents: read
+          permission-actions: read
           permission-statuses: write
 
-      - name: Checkout private source (ephemeral, no persisted creds)
+      # This repository's plan runner, nothing of libprobe's. Before the
+      # download: checkout empties the workspace.
+      - name: Plan runner
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
-          repository: ${{ env.SOURCE_REPO }}
-          ref: ${{ env.SOURCE_SHA }}
-          token: ${{ steps.app.outputs.token }}
           persist-credentials: false
+          sparse-checkout-cone-mode: false
+          sparse-checkout: |
+            /.github/scripts/libprobe-e2e-plan.sh
+      - name: Download the test bundle (binaries and a plan, no source)
+        shell: bash
+        env:
+          GH_TOKEN: ${{ steps.app.outputs.token }}
+          BUNDLE: e2e-tests-${{ matrix.platform }}
+        run: |
+          set -euo pipefail
+          gh run download "$SOURCE_RUN_ID" -R "$SOURCE_REPO" -n "$BUNDLE" -D bundle
+          sh "$PLAN" check bundle
       - name: Full test suite
-        run: ${{ env.TEST_CMD }}
+        shell: bash
+        run: sh "$PLAN" tests bundle
       - name: Generate metrics report (real ground-truth artifact)
         if: ${{ always() }}
         shell: bash
-        run: ${{ env.REPORT_CMD }} > "report-${{ matrix.platform }}.json"
+        run: sh "$PLAN" report bundle "report-${{ matrix.platform }}.json"
       - name: Upload metrics report
         if: ${{ always() }}
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: report-${{ matrix.platform }}
           path: report-${{ matrix.platform }}.json
           if-no-files-found: warn
+          retention-days: 1
 
   # --- BSD legs via QEMU (vmactions): one job per (os, arch) -------------------
   #
@@ -224,12 +236,10 @@ jobs:
   # two for the other OSes are skipped. `custom-shell-name: bsdvm` gives the
   # three guests one shell name, so the test and report steps exist once.
   #
-  # BOOTSTRAP vs VERDICT. Everything before `Bootstrap complete` -- checkout, VM
-  # boot, the rust package, `cargo fetch` -- is infrastructure: no libprobe code
-  # has been compiled yet, so a failure there says nothing about the code.
-  # Everything after it -- compile, tests, metrics report -- is the verdict.
-  # `cargo fetch` sits on the bootstrap side on purpose: a crates.io download
-  # that fails is a network fault, not something libprobe has to answer for.
+  # BOOTSTRAP vs VERDICT. Everything before `Bootstrap complete` -- the plan
+  # runner, the bundle download, the VM boot -- is infrastructure: no libprobe
+  # code has run yet, so a failure there says nothing about the code.
+  # Everything after it -- tests, metrics report -- is the verdict.
   #
   # RETRY: amd64 only, bootstrap only. A gating leg whose attempt 1 never got
   # past bootstrap (no `bootstrapped` output) runs once more as <os>-amd64-retry,
@@ -239,10 +249,8 @@ jobs:
   # when attempt 1 did not bootstrap. arm64 is not retried: it gates nothing,
   # and a second attempt can cost two more hours.
   #
-  # The cargo target dir lives outside the synced workspace ($HOME/e2e-target in
-  # the guest): the custom shell rsyncs the workspace back to the host after
-  # every step, and the host needs the report JSON from it, not a release
-  # target/ pulled back twice -- over an emulated NIC on arm64.
+  # The custom shell rsyncs the workspace back to the host after every step:
+  # that is how the report JSON reaches the upload.
   freebsd-amd64:
     name: e2e freebsd-amd64
     needs: [ack]
@@ -268,22 +276,32 @@ jobs:
           private-key: ${{ secrets.CI_APP_PRIVATE_KEY }}
           owner: supervizio
           repositories: libprobe
-          permission-contents: read
+          permission-actions: read
           permission-statuses: write
 
-      - name: Checkout private source (ephemeral, no persisted creds)
+      # This repository's plan runner and the leg's bundle, both on the host
+      # before the boot: the workspace is synced into the guest.
+      - name: Plan runner
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
-          repository: ${{ env.SOURCE_REPO }}
-          ref: ${{ env.SOURCE_SHA }}
-          token: ${{ steps.app.outputs.token }}
           persist-credentials: false
+          sparse-checkout-cone-mode: false
+          sparse-checkout: |
+            /.github/scripts/libprobe-e2e-plan.sh
+      - name: Download the test bundle (binaries and a plan, no source)
+        env:
+          GH_TOKEN: ${{ steps.app.outputs.token }}
+          BUNDLE: e2e-tests-${{ env.LEG_OS }}-${{ env.LEG_ARCH }}
+        run: |
+          set -euo pipefail
+          gh run download "$SOURCE_RUN_ID" -R "$SOURCE_REPO" -n "$BUNDLE" -D bundle
+          sh "$PLAN" check bundle
 
       # Releases pinned, like e2e.yml. Unpinned, the action follows its own
       # default, which moves without notice -- netbsd already drifted to 11.0
       # while the bench and expected-matrix.json still said 10.1. A guest that
       # changes under you turns a red leg into a mystery.
-      - name: Boot FreeBSD 15.1 ${{ env.LEG_ARCH }}, install rust, fetch crates
+      - name: Boot FreeBSD 15.1 ${{ env.LEG_ARCH }}
         id: boot-freebsd
         if: ${{ env.LEG_OS == 'freebsd' }}
         timeout-minutes: ${{ fromJSON(env.BOOT_TIMEOUT_MIN) }}
@@ -292,9 +310,8 @@ jobs:
           release: '15.1'
           arch: ${{ env.VM_ARCH }}
           custom-shell-name: bsdvm
-          prepare: pkg install -y rust
-          run: cargo fetch
-      - name: Boot OpenBSD 7.9 ${{ env.LEG_ARCH }}, install rust, fetch crates
+          run: uname -a
+      - name: Boot OpenBSD 7.9 ${{ env.LEG_ARCH }}
         id: boot-openbsd
         if: ${{ env.LEG_OS == 'openbsd' }}
         timeout-minutes: ${{ fromJSON(env.BOOT_TIMEOUT_MIN) }}
@@ -303,9 +320,8 @@ jobs:
           release: '7.9'
           arch: ${{ env.VM_ARCH }}
           custom-shell-name: bsdvm
-          prepare: pkg_add -I rust
-          run: cargo fetch
-      - name: Boot NetBSD 10.1 ${{ env.LEG_ARCH }}, install rust, fetch crates
+          run: uname -a
+      - name: Boot NetBSD 10.1 ${{ env.LEG_ARCH }}
         id: boot-netbsd
         if: ${{ env.LEG_OS == 'netbsd' }}
         timeout-minutes: ${{ fromJSON(env.BOOT_TIMEOUT_MIN) }}
@@ -314,8 +330,7 @@ jobs:
           release: '10.1'
           arch: ${{ env.VM_ARCH }}
           custom-shell-name: bsdvm
-          prepare: /usr/sbin/pkg_add -I rust || pkgin -y install rust
-          run: cargo fetch
+          run: uname -a
 
       # The boundary. Set only when one of the three boots succeeded, so a job
       # whose LEG_OS matches none of them cannot pass for bootstrapped.
@@ -326,30 +341,28 @@ jobs:
       - name: VM never became ready (infrastructure, not a test result)
         if: ${{ !cancelled() && steps.bootstrapped.outcome != 'success' }}
         run: |
-          echo "::error::${LEG_OS}-${LEG_ARCH}: the guest never became ready to test (VM boot, rust package or crate download failed) -- no libprobe code ran. Attempt 1 of an amd64 leg is retried once on a fresh runner; a retry that fails too, or an arm64 leg, stays failed."
+          echo "::error::${LEG_OS}-${LEG_ARCH}: the guest never became ready to test (bundle download or VM boot failed) -- no libprobe code ran. Attempt 1 of an amd64 leg is retried once on a fresh runner; a retry that fails too, or an arm64 leg, stays failed."
           exit 1
 
       - name: Full test suite
         if: ${{ steps.bootstrapped.outcome == 'success' }}
         shell: bsdvm {0}
-        run: |
-          CARGO_TARGET_DIR="$HOME/e2e-target"; export CARGO_TARGET_DIR
-          ${{ env.TEST_CMD }}
+        # Expression, not $PLAN: the guest shell does not inherit the job's env.
+        run: sh ${{ env.PLAN }} tests bundle
       # Whatever the tests concluded, as long as the guest is up: a red leg
       # still owes its ground-truth report.
       - name: Generate metrics report (real ground-truth artifact)
         if: ${{ !cancelled() && steps.bootstrapped.outcome == 'success' }}
         shell: bsdvm {0}
-        run: |
-          CARGO_TARGET_DIR="$HOME/e2e-target"; export CARGO_TARGET_DIR
-          ${{ env.REPORT_CMD }} > report-${{ env.LEG_OS }}-${{ env.LEG_ARCH }}.json
+        run: sh ${{ env.PLAN }} report bundle report-${{ env.LEG_OS }}-${{ env.LEG_ARCH }}.json
       - name: Upload metrics report
         if: ${{ always() }}
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: report-${{ env.LEG_OS }}-${{ env.LEG_ARCH }}
           path: report-${{ env.LEG_OS }}-${{ env.LEG_ARCH }}.json
           if-no-files-found: warn
+          retention-days: 1
           # A retry runs only when attempt 1 never reached the report, so the
           # two never both upload. Were they ever to, the retry's is the leg's.
           overwrite: true
@@ -466,8 +479,9 @@ jobs:
 
   # --- Container legs: the same metrics are ALSO collected INSIDE Docker
   # containers (musl/glibc/scratch), so the report certifies what libprobe
-  # captures under each libc + a no-OS image. metrics_report is built for the
-  # matching target, then run inside the image; its JSON is extracted. Advisory.
+  # captures under each libc + a no-OS image. metrics_report comes from the
+  # source repo's bundle for the matching libc (gnu: linux-amd64, static musl:
+  # linux-amd64-musl), runs inside the image; its JSON is extracted. Advisory.
   containers:
     name: e2e container-${{ matrix.distro }}
     needs: [ack]
@@ -478,9 +492,9 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - { distro: ubuntu,  image: "ubuntu:24.04", target: x86_64-unknown-linux-gnu,  musl: false }
-          - { distro: alpine,  image: "alpine:3.21",  target: x86_64-unknown-linux-musl, musl: true }
-          - { distro: scratch, image: "scratch",      target: x86_64-unknown-linux-musl, musl: true }
+          - { distro: ubuntu,  image: "ubuntu:24.04", bundle: linux-amd64 }
+          - { distro: alpine,  image: "alpine:3.21",  bundle: linux-amd64-musl }
+          - { distro: scratch, image: "scratch",      bundle: linux-amd64-musl }
     steps:
       # A kodflow-ci App token for supervizio/libprobe alone, minted here because
       # this job runs in the private-source environment (the only place the
@@ -493,32 +507,28 @@ jobs:
           private-key: ${{ secrets.CI_APP_PRIVATE_KEY }}
           owner: supervizio
           repositories: libprobe
-          permission-contents: read
+          permission-actions: read
           permission-statuses: write
 
-      - name: Checkout private source (ephemeral, no persisted creds)
+      - name: Plan runner
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
-          repository: ${{ env.SOURCE_REPO }}
-          ref: ${{ env.SOURCE_SHA }}
-          token: ${{ steps.app.outputs.token }}
           persist-credentials: false
-      - name: Rust target + musl toolchain
+          sparse-checkout-cone-mode: false
+          sparse-checkout: |
+            /.github/scripts/libprobe-e2e-plan.sh
+      - name: Download metrics_report (binaries and a plan, no source)
+        env:
+          GH_TOKEN: ${{ steps.app.outputs.token }}
+          BUNDLE: e2e-tests-${{ matrix.bundle }}
         run: |
           set -euo pipefail
-          rustup target add ${{ matrix.target }}
-          if [ "${{ matrix.musl }}" = "true" ]; then
-            sudo apt-get update -qq && sudo apt-get install -y musl-tools
-          fi
-      - name: Build metrics_report for ${{ matrix.distro }}
-        env:
-          CC_x86_64_unknown_linux_musl: musl-gcc
-          RUSTFLAGS: ${{ matrix.musl && '-C target-feature=+crt-static' || '' }}
-        run: cargo build --release -p probe-platform --bin metrics_report --target ${{ matrix.target }}
+          gh run download "$SOURCE_RUN_ID" -R "$SOURCE_REPO" -n "$BUNDLE" -D bundle
+          sh "$PLAN" check bundle
       - name: Run metrics_report inside ${{ matrix.image }}
         run: |
           set -euo pipefail
-          bin="target/${{ matrix.target }}/release/metrics_report"
+          bin="bundle/bin/metrics_report"
           out="report-container-${{ matrix.distro }}.json"
           if [ "${{ matrix.distro }}" = "scratch" ]; then
             cp "$bin" mr
@@ -531,11 +541,12 @@ jobs:
           echo "$(wc -c <"$out") bytes"; head -c 200 "$out"
       - name: Upload container report
         if: ${{ always() }}
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: report-container-${{ matrix.distro }}
           path: report-container-${{ matrix.distro }}.json
           if-no-files-found: warn
+          retention-days: 1
 
   # --- Collect: fuse every per-(os,arch) report into one `metrics-reports`
   # artifact the dispatcher downloads to regenerate the coverage plaquette.
@@ -558,11 +569,12 @@ jobs:
           n=$(find reports -name '*.json' 2>/dev/null | wc -l)
           echo "report count: ${n}"
       - name: Bundle metrics-reports
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: metrics-reports
           path: reports/
           if-no-files-found: warn
+          retention-days: 1
 
   # --- Report: set the final source commit status ------------------------------
   # Needs exactly the gating legs: the native matrix, and the three BSD amd64
@@ -600,7 +612,6 @@ jobs:
           private-key: ${{ secrets.CI_APP_PRIVATE_KEY }}
           owner: supervizio
           repositories: libprobe
-          permission-contents: read
           permission-statuses: write
 
       - name: Aggregate + set final commit status

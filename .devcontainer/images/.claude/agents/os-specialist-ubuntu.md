@@ -122,10 +122,10 @@ network:
     eth0:
       dhcp4: true
     eth1:
-      addresses: [10.0.0.10/24]
+      addresses: [<host-ip>/24]
       routes:
         - to: default
-          via: 10.0.0.1
+          via: <gateway-ip>
       nameservers:
         addresses: [1.1.1.1, 8.8.8.8]
 ```
@@ -137,7 +137,7 @@ network:
 ufw status verbose
 ufw enable
 ufw allow 22/tcp
-ufw allow from 10.0.0.0/24 to any port 3306
+ufw allow from <private-cidr> to any port 3306
 ufw deny 23/tcp
 ufw delete allow 22/tcp
 

@@ -27,6 +27,10 @@ on:
       - ".github/workflows/validate-release-doorbell.yml"
       - ".github/workflows/libprobe-solarish.yml"
       - ".github/solarish-leg/**"
+      # check_run_retention.py (test_run_retention.py) reads every workflow
+      # and action: no upload outlives a day, no product bytes in a cache.
+      - ".github/workflows/**"
+      - ".github/actions/**"
   push:
     branches: [main]
     paths:
@@ -39,6 +43,10 @@ on:
       - ".github/workflows/validate-release-doorbell.yml"
       - ".github/workflows/libprobe-solarish.yml"
       - ".github/solarish-leg/**"
+      # check_run_retention.py (test_run_retention.py) reads every workflow
+      # and action: no upload outlives a day, no product bytes in a cache.
+      - ".github/workflows/**"
+      - ".github/actions/**"
   workflow_dispatch:
 
 permissions:
