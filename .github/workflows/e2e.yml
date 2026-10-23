@@ -56,7 +56,7 @@ on:
 # candidate from the private package granted to this repository. A merge-lane
 # run never uses it, but a permission cannot depend on the mode. What it
 # exposes there is the candidates of agent and libprobe to code of agent's
-# own pull requests, which already runs here with a checkout of agent.
+# own pull requests, whose scripts already run here (packaging-inputs-e2e).
 permissions:
   contents: read
   packages: read
@@ -148,10 +148,9 @@ jobs:
           # send no such field, behave exactly as before.
           #
           # ALLOWLISTED, and that is load-bearing. This value steers both the
-          # private `actions/checkout` and the cross-repo artifact download, and
-          # the jobs that consume it then EXECUTE scripts out of that checkout --
-          # setup/install.sh as root in a guest, and setup/fetch-libprobe.sh with
-          # LIBPROBE_REPO_TOKEN in its step env. Left unconstrained it would turn
+          # cross-repo downloads of the binaries and of packaging-inputs-e2e, and
+          # the jobs that consume it then EXECUTE scripts out of that artifact --
+          # setup/install.sh as root in a guest. Left unconstrained it would turn
           # "can dispatch a test run" into "can run arbitrary code next to a
           # private-repo credential". Checked once here rather than trusted at
           # each of the ten use sites.
@@ -310,17 +309,23 @@ jobs:
             "https://api.github.com/repos/${{ needs.resolve.outputs.source_repo }}/statuses/${{ needs.resolve.outputs.sha }}" \
             -d '{"state":"pending","context":"e2e/docker/${{ matrix.name }}","description":"Running...","target_url":"${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"}'
 
-      - name: Checkout agent code
+      - name: Download agent's packaging inputs
         if: inputs.mode != 'release'
-        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        uses: actions/download-artifact@70fc10c6e5e1ce46ad2ea6f2b72d43f7d47b13c3 # v8.0.0
         with:
+          name: packaging-inputs-e2e
+          path: .packaging-inputs
           repository: ${{ needs.resolve.outputs.source_repo }}
-          ref: ${{ needs.resolve.outputs.ref }}
-          token: ${{ steps.app.outputs.token }}
-          # The workspace is synced wholesale into guests and read by later
-          # steps; a persisted credential would travel with it as a base64
-          # AUTHORIZATION header that Actions log-masking does not cover.
-          persist-credentials: false
+          run-id: ${{ needs.resolve.outputs.run_id }}
+          github-token: ${{ steps.app.outputs.token }}
+
+      - name: Unpack agent's packaging inputs
+        if: inputs.mode != 'release'
+        shell: bash
+        run: |
+          set -euo pipefail
+          tar -xf .packaging-inputs/packaging-inputs.tar -C .
+          rm -rf .packaging-inputs
 
       # Release mode (validate-release.yml): no checkout of the private tree
       # and no cross-repo download. The kit of the tagged commit and this
@@ -357,8 +362,8 @@ jobs:
           path: bin
           repository: ${{ needs.resolve.outputs.source_repo }}
           run-id: ${{ needs.resolve.outputs.run_id }}
-          # Needs actions:read on the agent repo, on top of the contents:read
-          # this token already carries for the checkout above.
+          # Needs actions:read on the agent repo, like the packaging-inputs
+          # download above.
           github-token: ${{ steps.app.outputs.token }}
 
       - name: Verify the binary arrived
@@ -479,7 +484,7 @@ jobs:
 
       - name: Upload probe capabilities
         if: always()
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: probe-cap-docker-${{ matrix.name }}
           path: probe-cap-docker-${{ matrix.name }}.json
@@ -571,17 +576,23 @@ jobs:
             "https://api.github.com/repos/${{ needs.resolve.outputs.source_repo }}/statuses/${{ needs.resolve.outputs.sha }}" \
             -d '{"state":"pending","context":"e2e/docker-arm64/${{ matrix.name }}","description":"Running...","target_url":"${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"}'
 
-      - name: Checkout agent code
+      - name: Download agent's packaging inputs
         if: inputs.mode != 'release'
-        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        uses: actions/download-artifact@70fc10c6e5e1ce46ad2ea6f2b72d43f7d47b13c3 # v8.0.0
         with:
+          name: packaging-inputs-e2e
+          path: .packaging-inputs
           repository: ${{ needs.resolve.outputs.source_repo }}
-          ref: ${{ needs.resolve.outputs.ref }}
-          token: ${{ steps.app.outputs.token }}
-          # The workspace is synced wholesale into guests and read by later
-          # steps; a persisted credential would travel with it as a base64
-          # AUTHORIZATION header that Actions log-masking does not cover.
-          persist-credentials: false
+          run-id: ${{ needs.resolve.outputs.run_id }}
+          github-token: ${{ steps.app.outputs.token }}
+
+      - name: Unpack agent's packaging inputs
+        if: inputs.mode != 'release'
+        shell: bash
+        run: |
+          set -euo pipefail
+          tar -xf .packaging-inputs/packaging-inputs.tar -C .
+          rm -rf .packaging-inputs
 
       # Release mode (validate-release.yml): no checkout of the private tree
       # and no cross-repo download. The kit of the tagged commit and this
@@ -776,14 +787,23 @@ jobs:
             "https://api.github.com/repos/${{ needs.resolve.outputs.source_repo }}/statuses/${{ needs.resolve.outputs.sha }}" \
             -d '{"state":"pending","context":"e2e/macos-x86_64","description":"Running...","target_url":"${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"}'
 
-      - name: Checkout agent code
+      - name: Download agent's packaging inputs
         if: inputs.mode != 'release'
-        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        uses: actions/download-artifact@70fc10c6e5e1ce46ad2ea6f2b72d43f7d47b13c3 # v8.0.0
         with:
+          name: packaging-inputs-e2e
+          path: .packaging-inputs
           repository: ${{ needs.resolve.outputs.source_repo }}
-          ref: ${{ needs.resolve.outputs.ref }}
-          token: ${{ steps.app.outputs.token }}
-          persist-credentials: false
+          run-id: ${{ needs.resolve.outputs.run_id }}
+          github-token: ${{ steps.app.outputs.token }}
+
+      - name: Unpack agent's packaging inputs
+        if: inputs.mode != 'release'
+        shell: bash
+        run: |
+          set -euo pipefail
+          tar -xf .packaging-inputs/packaging-inputs.tar -C .
+          rm -rf .packaging-inputs
 
       # Release mode (validate-release.yml): no checkout of the private tree
       # and no cross-repo download. The kit of the tagged commit and this
@@ -848,7 +868,7 @@ jobs:
       - name: Upload probe capabilities
         if: always()
         continue-on-error: true
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: probe-cap-darwin-amd64
           path: probe-cap-darwin-amd64.json
@@ -915,17 +935,23 @@ jobs:
             "https://api.github.com/repos/${{ needs.resolve.outputs.source_repo }}/statuses/${{ needs.resolve.outputs.sha }}" \
             -d '{"state":"pending","context":"e2e/macos-arm64","description":"Running...","target_url":"${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"}'
 
-      - name: Checkout agent code
+      - name: Download agent's packaging inputs
         if: inputs.mode != 'release'
-        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        uses: actions/download-artifact@70fc10c6e5e1ce46ad2ea6f2b72d43f7d47b13c3 # v8.0.0
         with:
+          name: packaging-inputs-e2e
+          path: .packaging-inputs
           repository: ${{ needs.resolve.outputs.source_repo }}
-          ref: ${{ needs.resolve.outputs.ref }}
-          token: ${{ steps.app.outputs.token }}
-          # The workspace is synced wholesale into guests and read by later
-          # steps; a persisted credential would travel with it as a base64
-          # AUTHORIZATION header that Actions log-masking does not cover.
-          persist-credentials: false
+          run-id: ${{ needs.resolve.outputs.run_id }}
+          github-token: ${{ steps.app.outputs.token }}
+
+      - name: Unpack agent's packaging inputs
+        if: inputs.mode != 'release'
+        shell: bash
+        run: |
+          set -euo pipefail
+          tar -xf .packaging-inputs/packaging-inputs.tar -C .
+          rm -rf .packaging-inputs
 
       # Release mode (validate-release.yml): no checkout of the private tree
       # and no cross-repo download. The kit of the tagged commit and this
@@ -1036,7 +1062,7 @@ jobs:
 
       - name: Upload probe capabilities
         if: always()
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: probe-cap-darwin-arm64
           path: probe-cap-darwin-arm64.json
@@ -1131,15 +1157,24 @@ jobs:
             "https://api.github.com/repos/${{ needs.resolve.outputs.source_repo }}/statuses/${{ needs.resolve.outputs.sha }}" \
             -d '{"state":"pending","context":"e2e/windows/amd64","description":"Running...","target_url":"${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"}'
 
-      - name: Checkout agent code
+      - name: Download agent's packaging inputs
         if: inputs.mode != 'release'
-        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        uses: actions/download-artifact@70fc10c6e5e1ce46ad2ea6f2b72d43f7d47b13c3 # v8.0.0
         with:
+          name: packaging-inputs-e2e
+          path: .packaging-inputs
           repository: ${{ needs.resolve.outputs.source_repo }}
-          ref: ${{ needs.resolve.outputs.ref }}
-          token: ${{ steps.app.outputs.token }}
-          path: agent
-          persist-credentials: false
+          run-id: ${{ needs.resolve.outputs.run_id }}
+          github-token: ${{ steps.app.outputs.token }}
+
+      - name: Unpack agent's packaging inputs
+        if: inputs.mode != 'release'
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p agent
+          tar -xf .packaging-inputs/packaging-inputs.tar -C agent
+          rm -rf .packaging-inputs
 
       # Release mode (validate-release.yml): no checkout of the private tree
       # and no cross-repo download. The kit of the tagged commit and this
@@ -1293,15 +1328,24 @@ jobs:
             "https://api.github.com/repos/${{ needs.resolve.outputs.source_repo }}/statuses/${{ needs.resolve.outputs.sha }}" \
             -d '{"state":"pending","context":"e2e/windows/arm64","description":"Running...","target_url":"${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"}'
 
-      - name: Checkout agent code
+      - name: Download agent's packaging inputs
         if: inputs.mode != 'release'
-        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        uses: actions/download-artifact@70fc10c6e5e1ce46ad2ea6f2b72d43f7d47b13c3 # v8.0.0
         with:
+          name: packaging-inputs-e2e
+          path: .packaging-inputs
           repository: ${{ needs.resolve.outputs.source_repo }}
-          ref: ${{ needs.resolve.outputs.ref }}
-          token: ${{ steps.app.outputs.token }}
-          path: agent
-          persist-credentials: false
+          run-id: ${{ needs.resolve.outputs.run_id }}
+          github-token: ${{ steps.app.outputs.token }}
+
+      - name: Unpack agent's packaging inputs
+        if: inputs.mode != 'release'
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p agent
+          tar -xf .packaging-inputs/packaging-inputs.tar -C agent
+          rm -rf .packaging-inputs
 
       # Release mode (validate-release.yml): no checkout of the private tree
       # and no cross-repo download. The kit of the tagged commit and this
@@ -1451,14 +1495,23 @@ jobs:
             "https://api.github.com/repos/${{ needs.resolve.outputs.source_repo }}/statuses/${{ needs.resolve.outputs.sha }}" \
             -d '{"state":"pending","context":"e2e/vm/artix-dinit","description":"Running...","target_url":"${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"}'
 
-      - name: Checkout agent code
+      - name: Download agent's packaging inputs
         if: inputs.mode != 'release'
-        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        uses: actions/download-artifact@70fc10c6e5e1ce46ad2ea6f2b72d43f7d47b13c3 # v8.0.0
         with:
+          name: packaging-inputs-e2e
+          path: .packaging-inputs
           repository: ${{ needs.resolve.outputs.source_repo }}
-          ref: ${{ needs.resolve.outputs.ref }}
-          token: ${{ steps.app.outputs.token }}
-          persist-credentials: false
+          run-id: ${{ needs.resolve.outputs.run_id }}
+          github-token: ${{ steps.app.outputs.token }}
+
+      - name: Unpack agent's packaging inputs
+        if: inputs.mode != 'release'
+        shell: bash
+        run: |
+          set -euo pipefail
+          tar -xf .packaging-inputs/packaging-inputs.tar -C .
+          rm -rf .packaging-inputs
 
       # Release mode (validate-release.yml): no checkout of the private tree
       # and no cross-repo download. The kit of the tagged commit and this
@@ -1610,14 +1663,23 @@ jobs:
             "https://api.github.com/repos/${{ needs.resolve.outputs.source_repo }}/statuses/${{ needs.resolve.outputs.sha }}" \
             -d '{"state":"pending","context":"e2e/vm/debian-sysvinit","description":"Running...","target_url":"${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"}'
 
-      - name: Checkout agent code
+      - name: Download agent's packaging inputs
         if: inputs.mode != 'release'
-        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        uses: actions/download-artifact@70fc10c6e5e1ce46ad2ea6f2b72d43f7d47b13c3 # v8.0.0
         with:
+          name: packaging-inputs-e2e
+          path: .packaging-inputs
           repository: ${{ needs.resolve.outputs.source_repo }}
-          ref: ${{ needs.resolve.outputs.ref }}
-          token: ${{ steps.app.outputs.token }}
-          persist-credentials: false
+          run-id: ${{ needs.resolve.outputs.run_id }}
+          github-token: ${{ steps.app.outputs.token }}
+
+      - name: Unpack agent's packaging inputs
+        if: inputs.mode != 'release'
+        shell: bash
+        run: |
+          set -euo pipefail
+          tar -xf .packaging-inputs/packaging-inputs.tar -C .
+          rm -rf .packaging-inputs
 
       # Release mode (validate-release.yml): no checkout of the private tree
       # and no cross-repo download. The kit of the tagged commit and this
@@ -1776,14 +1838,23 @@ jobs:
             "https://api.github.com/repos/${{ needs.resolve.outputs.source_repo }}/statuses/${{ needs.resolve.outputs.sha }}" \
             -d '{"state":"pending","context":"e2e/vm/alpine-openrc","description":"Running...","target_url":"${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"}'
 
-      - name: Checkout agent code
+      - name: Download agent's packaging inputs
         if: inputs.mode != 'release'
-        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        uses: actions/download-artifact@70fc10c6e5e1ce46ad2ea6f2b72d43f7d47b13c3 # v8.0.0
         with:
+          name: packaging-inputs-e2e
+          path: .packaging-inputs
           repository: ${{ needs.resolve.outputs.source_repo }}
-          ref: ${{ needs.resolve.outputs.ref }}
-          token: ${{ steps.app.outputs.token }}
-          persist-credentials: false
+          run-id: ${{ needs.resolve.outputs.run_id }}
+          github-token: ${{ steps.app.outputs.token }}
+
+      - name: Unpack agent's packaging inputs
+        if: inputs.mode != 'release'
+        shell: bash
+        run: |
+          set -euo pipefail
+          tar -xf .packaging-inputs/packaging-inputs.tar -C .
+          rm -rf .packaging-inputs
 
       # Release mode (validate-release.yml): no checkout of the private tree
       # and no cross-repo download. The kit of the tagged commit and this
@@ -1962,14 +2033,23 @@ jobs:
             "https://api.github.com/repos/${{ needs.resolve.outputs.source_repo }}/statuses/${{ needs.resolve.outputs.sha }}" \
             -d '{"state":"pending","context":"e2e/vm/debian-systemd","description":"Running...","target_url":"${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"}'
 
-      - name: Checkout agent code
+      - name: Download agent's packaging inputs
         if: inputs.mode != 'release'
-        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        uses: actions/download-artifact@70fc10c6e5e1ce46ad2ea6f2b72d43f7d47b13c3 # v8.0.0
         with:
+          name: packaging-inputs-e2e
+          path: .packaging-inputs
           repository: ${{ needs.resolve.outputs.source_repo }}
-          ref: ${{ needs.resolve.outputs.ref }}
-          token: ${{ steps.app.outputs.token }}
-          persist-credentials: false
+          run-id: ${{ needs.resolve.outputs.run_id }}
+          github-token: ${{ steps.app.outputs.token }}
+
+      - name: Unpack agent's packaging inputs
+        if: inputs.mode != 'release'
+        shell: bash
+        run: |
+          set -euo pipefail
+          tar -xf .packaging-inputs/packaging-inputs.tar -C .
+          rm -rf .packaging-inputs
 
       # Release mode (validate-release.yml): no checkout of the private tree
       # and no cross-repo download. The kit of the tagged commit and this
@@ -2147,15 +2227,24 @@ jobs:
         with:
           persist-credentials: false
 
-      - name: Checkout agent code
+      - name: Download agent's packaging inputs
         if: inputs.mode != 'release'
-        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        uses: actions/download-artifact@70fc10c6e5e1ce46ad2ea6f2b72d43f7d47b13c3 # v8.0.0
         with:
+          name: packaging-inputs-e2e
+          path: .packaging-inputs
           repository: ${{ needs.resolve.outputs.source_repo }}
-          ref: ${{ needs.resolve.outputs.ref }}
-          token: ${{ steps.app.outputs.token }}
-          path: agent
-          persist-credentials: false
+          run-id: ${{ needs.resolve.outputs.run_id }}
+          github-token: ${{ steps.app.outputs.token }}
+
+      - name: Unpack agent's packaging inputs
+        if: inputs.mode != 'release'
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p agent
+          tar -xf .packaging-inputs/packaging-inputs.tar -C agent
+          rm -rf .packaging-inputs
 
       # Release mode (validate-release.yml): no checkout of the private tree
       # and no cross-repo download. The kit of the tagged commit and this
@@ -2357,15 +2446,24 @@ jobs:
         with:
           persist-credentials: false
 
-      - name: Checkout agent code
+      - name: Download agent's packaging inputs
         if: inputs.mode != 'release'
-        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        uses: actions/download-artifact@70fc10c6e5e1ce46ad2ea6f2b72d43f7d47b13c3 # v8.0.0
         with:
+          name: packaging-inputs-e2e
+          path: .packaging-inputs
           repository: ${{ needs.resolve.outputs.source_repo }}
-          ref: ${{ needs.resolve.outputs.ref }}
-          token: ${{ steps.app.outputs.token }}
-          path: agent
-          persist-credentials: false
+          run-id: ${{ needs.resolve.outputs.run_id }}
+          github-token: ${{ steps.app.outputs.token }}
+
+      - name: Unpack agent's packaging inputs
+        if: inputs.mode != 'release'
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p agent
+          tar -xf .packaging-inputs/packaging-inputs.tar -C agent
+          rm -rf .packaging-inputs
 
       # Release mode (validate-release.yml): no checkout of the private tree
       # and no cross-repo download. The kit of the tagged commit and this
@@ -2564,15 +2662,24 @@ jobs:
         with:
           persist-credentials: false
 
-      - name: Checkout agent code
+      - name: Download agent's packaging inputs
         if: inputs.mode != 'release'
-        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        uses: actions/download-artifact@70fc10c6e5e1ce46ad2ea6f2b72d43f7d47b13c3 # v8.0.0
         with:
+          name: packaging-inputs-e2e
+          path: .packaging-inputs
           repository: ${{ needs.resolve.outputs.source_repo }}
-          ref: ${{ needs.resolve.outputs.ref }}
-          token: ${{ steps.app.outputs.token }}
-          path: agent
-          persist-credentials: false
+          run-id: ${{ needs.resolve.outputs.run_id }}
+          github-token: ${{ steps.app.outputs.token }}
+
+      - name: Unpack agent's packaging inputs
+        if: inputs.mode != 'release'
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p agent
+          tar -xf .packaging-inputs/packaging-inputs.tar -C agent
+          rm -rf .packaging-inputs
 
       # Release mode (validate-release.yml): no checkout of the private tree
       # and no cross-repo download. The kit of the tagged commit and this
@@ -2750,14 +2857,23 @@ jobs:
             "https://api.github.com/repos/${{ needs.resolve.outputs.source_repo }}/statuses/${{ needs.resolve.outputs.sha }}" \
             -d '{"state":"pending","context":"e2e/vm/alpine-runit","description":"Running...","target_url":"${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"}'
 
-      - name: Checkout agent code
+      - name: Download agent's packaging inputs
         if: inputs.mode != 'release'
-        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        uses: actions/download-artifact@70fc10c6e5e1ce46ad2ea6f2b72d43f7d47b13c3 # v8.0.0
         with:
+          name: packaging-inputs-e2e
+          path: .packaging-inputs
           repository: ${{ needs.resolve.outputs.source_repo }}
-          ref: ${{ needs.resolve.outputs.ref }}
-          token: ${{ steps.app.outputs.token }}
-          persist-credentials: false
+          run-id: ${{ needs.resolve.outputs.run_id }}
+          github-token: ${{ steps.app.outputs.token }}
+
+      - name: Unpack agent's packaging inputs
+        if: inputs.mode != 'release'
+        shell: bash
+        run: |
+          set -euo pipefail
+          tar -xf .packaging-inputs/packaging-inputs.tar -C .
+          rm -rf .packaging-inputs
 
       # Release mode (validate-release.yml): no checkout of the private tree
       # and no cross-repo download. The kit of the tagged commit and this
@@ -2955,14 +3071,23 @@ jobs:
             "https://api.github.com/repos/${{ needs.resolve.outputs.source_repo }}/statuses/${{ needs.resolve.outputs.sha }}" \
             -d '{"state":"pending","context":"e2e/vm/alpine-s6","description":"Running...","target_url":"${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"}'
 
-      - name: Checkout agent code
+      - name: Download agent's packaging inputs
         if: inputs.mode != 'release'
-        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        uses: actions/download-artifact@70fc10c6e5e1ce46ad2ea6f2b72d43f7d47b13c3 # v8.0.0
         with:
+          name: packaging-inputs-e2e
+          path: .packaging-inputs
           repository: ${{ needs.resolve.outputs.source_repo }}
-          ref: ${{ needs.resolve.outputs.ref }}
-          token: ${{ steps.app.outputs.token }}
-          persist-credentials: false
+          run-id: ${{ needs.resolve.outputs.run_id }}
+          github-token: ${{ steps.app.outputs.token }}
+
+      - name: Unpack agent's packaging inputs
+        if: inputs.mode != 'release'
+        shell: bash
+        run: |
+          set -euo pipefail
+          tar -xf .packaging-inputs/packaging-inputs.tar -C .
+          rm -rf .packaging-inputs
 
       # Release mode (validate-release.yml): no checkout of the private tree
       # and no cross-repo download. The kit of the tagged commit and this
@@ -3172,14 +3297,23 @@ jobs:
             "https://api.github.com/repos/${{ needs.resolve.outputs.source_repo }}/statuses/${{ needs.resolve.outputs.sha }}" \
             -d '{"state":"pending","context":"e2e/vm/void-xbps","description":"Running...","target_url":"${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"}'
 
-      - name: Checkout agent code
+      - name: Download agent's packaging inputs
         if: inputs.mode != 'release'
-        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        uses: actions/download-artifact@70fc10c6e5e1ce46ad2ea6f2b72d43f7d47b13c3 # v8.0.0
         with:
+          name: packaging-inputs-e2e
+          path: .packaging-inputs
           repository: ${{ needs.resolve.outputs.source_repo }}
-          ref: ${{ needs.resolve.outputs.ref }}
-          token: ${{ steps.app.outputs.token }}
-          persist-credentials: false
+          run-id: ${{ needs.resolve.outputs.run_id }}
+          github-token: ${{ steps.app.outputs.token }}
+
+      - name: Unpack agent's packaging inputs
+        if: inputs.mode != 'release'
+        shell: bash
+        run: |
+          set -euo pipefail
+          tar -xf .packaging-inputs/packaging-inputs.tar -C .
+          rm -rf .packaging-inputs
 
       # Release mode (validate-release.yml): no checkout of the private tree
       # and no cross-repo download. The kit of the tagged commit and this
@@ -3410,14 +3544,23 @@ jobs:
             "https://api.github.com/repos/${{ needs.resolve.outputs.source_repo }}/statuses/${{ needs.resolve.outputs.sha }}" \
             -d "$(jq -nc --arg c "$CONTEXT" --arg u "$TARGET" '{state:"pending", context:$c, description:"Running...", target_url:$u}')"
 
-      - name: Checkout agent code
+      - name: Download agent's packaging inputs
         if: inputs.mode != 'release'
-        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        uses: actions/download-artifact@70fc10c6e5e1ce46ad2ea6f2b72d43f7d47b13c3 # v8.0.0
         with:
+          name: packaging-inputs-e2e
+          path: .packaging-inputs
           repository: ${{ needs.resolve.outputs.source_repo }}
-          ref: ${{ needs.resolve.outputs.ref }}
-          token: ${{ steps.app.outputs.token }}
-          persist-credentials: false
+          run-id: ${{ needs.resolve.outputs.run_id }}
+          github-token: ${{ steps.app.outputs.token }}
+
+      - name: Unpack agent's packaging inputs
+        if: inputs.mode != 'release'
+        shell: bash
+        run: |
+          set -euo pipefail
+          tar -xf .packaging-inputs/packaging-inputs.tar -C .
+          rm -rf .packaging-inputs
 
       # Release mode (validate-release.yml): no checkout of the private tree
       # and no cross-repo download. The kit of the tagged commit and both
@@ -3712,14 +3855,23 @@ jobs:
             "https://api.github.com/repos/${{ needs.resolve.outputs.source_repo }}/statuses/${{ needs.resolve.outputs.sha }}" \
             -d "$(jq -nc --arg c "$CONTEXT" --arg u "$TARGET" '{state:"pending", context:$c, description:"Running...", target_url:$u}')"
 
-      - name: Checkout agent code
+      - name: Download agent's packaging inputs
         if: inputs.mode != 'release'
-        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        uses: actions/download-artifact@70fc10c6e5e1ce46ad2ea6f2b72d43f7d47b13c3 # v8.0.0
         with:
+          name: packaging-inputs-e2e
+          path: .packaging-inputs
           repository: ${{ needs.resolve.outputs.source_repo }}
-          ref: ${{ needs.resolve.outputs.ref }}
-          token: ${{ steps.app.outputs.token }}
-          persist-credentials: false
+          run-id: ${{ needs.resolve.outputs.run_id }}
+          github-token: ${{ steps.app.outputs.token }}
+
+      - name: Unpack agent's packaging inputs
+        if: inputs.mode != 'release'
+        shell: bash
+        run: |
+          set -euo pipefail
+          tar -xf .packaging-inputs/packaging-inputs.tar -C .
+          rm -rf .packaging-inputs
 
       - name: Check out the release lane
         if: inputs.mode == 'release'
@@ -4044,13 +4196,21 @@ jobs:
           permission-actions: read
           permission-statuses: write
 
-      - name: Checkout agent code
-        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: Download agent's packaging inputs
+        uses: actions/download-artifact@70fc10c6e5e1ce46ad2ea6f2b72d43f7d47b13c3 # v8.0.0
         with:
+          name: packaging-inputs-e2e
+          path: .packaging-inputs
           repository: ${{ needs.resolve.outputs.source_repo }}
-          ref: ${{ needs.resolve.outputs.ref }}
-          token: ${{ steps.app.outputs.token }}
-          persist-credentials: false
+          run-id: ${{ needs.resolve.outputs.run_id }}
+          github-token: ${{ steps.app.outputs.token }}
+
+      - name: Unpack agent's packaging inputs
+        shell: bash
+        run: |
+          set -euo pipefail
+          tar -xf .packaging-inputs/packaging-inputs.tar -C .
+          rm -rf .packaging-inputs
 
       - name: Download the arm64 glibc binary from the agent run (cross-repo)
         uses: actions/download-artifact@70fc10c6e5e1ce46ad2ea6f2b72d43f7d47b13c3 # v8.0.0
@@ -4154,7 +4314,7 @@ jobs:
           ls -l pkgs
 
       - name: Upload the arm64 packages for this run's legs
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: supervizio-arm64-packages
           path: pkgs/supervizio-arm64.*
@@ -4381,14 +4541,23 @@ jobs:
             "https://api.github.com/repos/${{ needs.resolve.outputs.source_repo }}/statuses/${{ needs.resolve.outputs.sha }}" \
             -d '{"state":"pending","context":"e2e/linux-arm64/${{ matrix.name }}","description":"Running...","target_url":"${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"}'
 
-      - name: Checkout agent code
+      - name: Download agent's packaging inputs
         if: inputs.mode != 'release'
-        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        uses: actions/download-artifact@70fc10c6e5e1ce46ad2ea6f2b72d43f7d47b13c3 # v8.0.0
         with:
+          name: packaging-inputs-e2e
+          path: .packaging-inputs
           repository: ${{ needs.resolve.outputs.source_repo }}
-          ref: ${{ needs.resolve.outputs.ref }}
-          token: ${{ steps.app.outputs.token }}
-          persist-credentials: false
+          run-id: ${{ needs.resolve.outputs.run_id }}
+          github-token: ${{ steps.app.outputs.token }}
+
+      - name: Unpack agent's packaging inputs
+        if: inputs.mode != 'release'
+        shell: bash
+        run: |
+          set -euo pipefail
+          tar -xf .packaging-inputs/packaging-inputs.tar -C .
+          rm -rf .packaging-inputs
 
       # Release mode (validate-release.yml): no checkout of the private tree
       # and no cross-repo download. The kit of the tagged commit and this
@@ -4873,14 +5042,23 @@ jobs:
             "https://api.github.com/repos/${{ needs.resolve.outputs.source_repo }}/statuses/${{ needs.resolve.outputs.sha }}" \
             -d '{"state":"pending","context":"e2e/linux-exotic/${{ matrix.name }}","description":"Running...","target_url":"${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"}'
 
-      - name: Checkout agent code
+      - name: Download agent's packaging inputs
         if: inputs.mode != 'release'
-        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        uses: actions/download-artifact@70fc10c6e5e1ce46ad2ea6f2b72d43f7d47b13c3 # v8.0.0
         with:
+          name: packaging-inputs-e2e
+          path: .packaging-inputs
           repository: ${{ needs.resolve.outputs.source_repo }}
-          ref: ${{ needs.resolve.outputs.ref }}
-          token: ${{ steps.app.outputs.token }}
-          persist-credentials: false
+          run-id: ${{ needs.resolve.outputs.run_id }}
+          github-token: ${{ steps.app.outputs.token }}
+
+      - name: Unpack agent's packaging inputs
+        if: inputs.mode != 'release'
+        shell: bash
+        run: |
+          set -euo pipefail
+          tar -xf .packaging-inputs/packaging-inputs.tar -C .
+          rm -rf .packaging-inputs
 
       # Release mode (validate-release.yml): no checkout of the private tree
       # and no cross-repo download. The kit of the tagged commit and this
@@ -5197,14 +5375,23 @@ jobs:
             "https://api.github.com/repos/${{ needs.resolve.outputs.source_repo }}/statuses/${{ needs.resolve.outputs.sha }}" \
             -d '{"state":"pending","context":"e2e/bsd/freebsd-amd64","description":"Running...","target_url":"${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"}'
 
-      - name: Checkout agent code
+      - name: Download agent's packaging inputs
         if: inputs.mode != 'release'
-        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        uses: actions/download-artifact@70fc10c6e5e1ce46ad2ea6f2b72d43f7d47b13c3 # v8.0.0
         with:
+          name: packaging-inputs-e2e
+          path: .packaging-inputs
           repository: ${{ needs.resolve.outputs.source_repo }}
-          ref: ${{ needs.resolve.outputs.ref }}
-          token: ${{ steps.app.outputs.token }}
-          persist-credentials: false
+          run-id: ${{ needs.resolve.outputs.run_id }}
+          github-token: ${{ steps.app.outputs.token }}
+
+      - name: Unpack agent's packaging inputs
+        if: inputs.mode != 'release'
+        shell: bash
+        run: |
+          set -euo pipefail
+          tar -xf .packaging-inputs/packaging-inputs.tar -C .
+          rm -rf .packaging-inputs
 
       # Release mode (validate-release.yml): no checkout of the private tree
       # and no cross-repo download. The kit of the tagged commit and this
@@ -5363,13 +5550,21 @@ jobs:
             "https://api.github.com/repos/${{ needs.resolve.outputs.source_repo }}/statuses/${{ needs.resolve.outputs.sha }}" \
             -d '{"state":"pending","context":"e2e/bsd/freebsd-14-amd64","description":"Running...","target_url":"${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"}'
 
-      - name: Checkout agent code
-        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: Download agent's packaging inputs
+        uses: actions/download-artifact@70fc10c6e5e1ce46ad2ea6f2b72d43f7d47b13c3 # v8.0.0
         with:
+          name: packaging-inputs-e2e
+          path: .packaging-inputs
           repository: ${{ needs.resolve.outputs.source_repo }}
-          ref: ${{ needs.resolve.outputs.ref }}
-          token: ${{ steps.app.outputs.token }}
-          persist-credentials: false
+          run-id: ${{ needs.resolve.outputs.run_id }}
+          github-token: ${{ steps.app.outputs.token }}
+
+      - name: Unpack agent's packaging inputs
+        shell: bash
+        run: |
+          set -euo pipefail
+          tar -xf .packaging-inputs/packaging-inputs.tar -C .
+          rm -rf .packaging-inputs
 
       # The bench pulled this from zot; the hosted runner takes the same bytes
       # from the GitHub artifact agent's CI mirrors. Downloaded on the HOST and
@@ -5487,14 +5682,23 @@ jobs:
             "https://api.github.com/repos/${{ needs.resolve.outputs.source_repo }}/statuses/${{ needs.resolve.outputs.sha }}" \
             -d '{"state":"pending","context":"e2e/bsd/netbsd-amd64","description":"Running...","target_url":"${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"}'
 
-      - name: Checkout agent code
+      - name: Download agent's packaging inputs
         if: inputs.mode != 'release'
-        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        uses: actions/download-artifact@70fc10c6e5e1ce46ad2ea6f2b72d43f7d47b13c3 # v8.0.0
         with:
+          name: packaging-inputs-e2e
+          path: .packaging-inputs
           repository: ${{ needs.resolve.outputs.source_repo }}
-          ref: ${{ needs.resolve.outputs.ref }}
-          token: ${{ steps.app.outputs.token }}
-          persist-credentials: false
+          run-id: ${{ needs.resolve.outputs.run_id }}
+          github-token: ${{ steps.app.outputs.token }}
+
+      - name: Unpack agent's packaging inputs
+        if: inputs.mode != 'release'
+        shell: bash
+        run: |
+          set -euo pipefail
+          tar -xf .packaging-inputs/packaging-inputs.tar -C .
+          rm -rf .packaging-inputs
 
       # Release mode (validate-release.yml): no checkout of the private tree
       # and no cross-repo download. The kit of the tagged commit and this
@@ -5673,16 +5877,23 @@ jobs:
             "https://api.github.com/repos/${{ needs.resolve.outputs.source_repo }}/statuses/${{ needs.resolve.outputs.sha }}" \
             -d '{"state":"pending","context":"e2e/bsd/openbsd-amd64/${{ matrix.release }}","description":"Running...","target_url":"${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"}'
 
-      - name: Checkout agent code
+      - name: Download agent's packaging inputs
         if: inputs.mode != 'release'
-        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        uses: actions/download-artifact@70fc10c6e5e1ce46ad2ea6f2b72d43f7d47b13c3 # v8.0.0
         with:
+          name: packaging-inputs-e2e
+          path: .packaging-inputs
           repository: ${{ needs.resolve.outputs.source_repo }}
-          ref: ${{ needs.resolve.outputs.ref }}
-          token: ${{ steps.app.outputs.token }}
-          # The workspace is synced wholesale into the guest; a persisted
-          # credential would travel with it.
-          persist-credentials: false
+          run-id: ${{ needs.resolve.outputs.run_id }}
+          github-token: ${{ steps.app.outputs.token }}
+
+      - name: Unpack agent's packaging inputs
+        if: inputs.mode != 'release'
+        shell: bash
+        run: |
+          set -euo pipefail
+          tar -xf .packaging-inputs/packaging-inputs.tar -C .
+          rm -rf .packaging-inputs
 
       # Release mode (validate-release.yml): no checkout of the private tree
       # and no cross-repo download. The kit of the tagged commit and this
@@ -6027,14 +6238,23 @@ jobs:
             "https://api.github.com/repos/${{ needs.resolve.outputs.source_repo }}/statuses/${{ needs.resolve.outputs.sha }}" \
             -d '{"state":"pending","context":"e2e/bsd/freebsd-arm64","description":"Running...","target_url":"${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"}'
 
-      - name: Checkout agent code
+      - name: Download agent's packaging inputs
         if: inputs.mode != 'release'
-        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        uses: actions/download-artifact@70fc10c6e5e1ce46ad2ea6f2b72d43f7d47b13c3 # v8.0.0
         with:
+          name: packaging-inputs-e2e
+          path: .packaging-inputs
           repository: ${{ needs.resolve.outputs.source_repo }}
-          ref: ${{ needs.resolve.outputs.ref }}
-          token: ${{ steps.app.outputs.token }}
-          persist-credentials: false
+          run-id: ${{ needs.resolve.outputs.run_id }}
+          github-token: ${{ steps.app.outputs.token }}
+
+      - name: Unpack agent's packaging inputs
+        if: inputs.mode != 'release'
+        shell: bash
+        run: |
+          set -euo pipefail
+          tar -xf .packaging-inputs/packaging-inputs.tar -C .
+          rm -rf .packaging-inputs
 
       # Release mode (validate-release.yml): no checkout of the private tree
       # and no cross-repo download. The kit of the tagged commit and this
@@ -6210,14 +6430,23 @@ jobs:
             "https://api.github.com/repos/${{ needs.resolve.outputs.source_repo }}/statuses/${{ needs.resolve.outputs.sha }}" \
             -d '{"state":"pending","context":"e2e/bsd/netbsd-arm64","description":"Running...","target_url":"${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"}'
 
-      - name: Checkout agent code
+      - name: Download agent's packaging inputs
         if: inputs.mode != 'release'
-        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        uses: actions/download-artifact@70fc10c6e5e1ce46ad2ea6f2b72d43f7d47b13c3 # v8.0.0
         with:
+          name: packaging-inputs-e2e
+          path: .packaging-inputs
           repository: ${{ needs.resolve.outputs.source_repo }}
-          ref: ${{ needs.resolve.outputs.ref }}
-          token: ${{ steps.app.outputs.token }}
-          persist-credentials: false
+          run-id: ${{ needs.resolve.outputs.run_id }}
+          github-token: ${{ steps.app.outputs.token }}
+
+      - name: Unpack agent's packaging inputs
+        if: inputs.mode != 'release'
+        shell: bash
+        run: |
+          set -euo pipefail
+          tar -xf .packaging-inputs/packaging-inputs.tar -C .
+          rm -rf .packaging-inputs
 
       # Release mode (validate-release.yml): no checkout of the private tree
       # and no cross-repo download. The kit of the tagged commit and this
@@ -6453,16 +6682,23 @@ jobs:
             "https://api.github.com/repos/${{ needs.resolve.outputs.source_repo }}/statuses/${{ needs.resolve.outputs.sha }}" \
             -d '{"state":"pending","context":"e2e/bsd/openbsd-arm64/${{ matrix.release }}","description":"Running...","target_url":"${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"}'
 
-      - name: Checkout agent code
+      - name: Download agent's packaging inputs
         if: inputs.mode != 'release'
-        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        uses: actions/download-artifact@70fc10c6e5e1ce46ad2ea6f2b72d43f7d47b13c3 # v8.0.0
         with:
+          name: packaging-inputs-e2e
+          path: .packaging-inputs
           repository: ${{ needs.resolve.outputs.source_repo }}
-          ref: ${{ needs.resolve.outputs.ref }}
-          token: ${{ steps.app.outputs.token }}
-          # The workspace is synced wholesale into the guest; a persisted
-          # credential would travel with it.
-          persist-credentials: false
+          run-id: ${{ needs.resolve.outputs.run_id }}
+          github-token: ${{ steps.app.outputs.token }}
+
+      - name: Unpack agent's packaging inputs
+        if: inputs.mode != 'release'
+        shell: bash
+        run: |
+          set -euo pipefail
+          tar -xf .packaging-inputs/packaging-inputs.tar -C .
+          rm -rf .packaging-inputs
 
       # Release mode (validate-release.yml): no checkout of the private tree
       # and no cross-repo download. The kit of the tagged commit and this
@@ -6738,23 +6974,26 @@ jobs:
             "https://api.github.com/repos/${{ needs.resolve.outputs.source_repo }}/statuses/${{ needs.resolve.outputs.sha }}" \
             -d '{"state":"pending","context":"e2e/illumos/omnios-amd64","description":"Running...","target_url":"${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"}'
 
-      # Merge lane: only the agent tree the release kit carries (e2e/, setup/,
-      # go.work, .dockerignore), never its sources -- the guest needs the
-      # scripts, and the same four paths are what release mode extracts.
-      - name: Checkout agent's scripts
+      # Merge lane: agent's packaging-inputs-e2e artifact (the scripts the
+      # guest runs, listed file by file in agent), never its sources; release
+      # mode extracts the release's kit instead.
+      - name: Download agent's packaging inputs
         if: inputs.mode != 'release'
-        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        uses: actions/download-artifact@70fc10c6e5e1ce46ad2ea6f2b72d43f7d47b13c3 # v8.0.0
         with:
+          name: packaging-inputs-e2e
+          path: .packaging-inputs
           repository: ${{ needs.resolve.outputs.source_repo }}
-          ref: ${{ needs.resolve.outputs.ref }}
-          token: ${{ steps.app.outputs.token }}
-          persist-credentials: false
-          sparse-checkout-cone-mode: false
-          sparse-checkout: |
-            /e2e/
-            /setup/
-            /go.work
-            /.dockerignore
+          run-id: ${{ needs.resolve.outputs.run_id }}
+          github-token: ${{ steps.app.outputs.token }}
+
+      - name: Unpack agent's packaging inputs
+        if: inputs.mode != 'release'
+        shell: bash
+        run: |
+          set -euo pipefail
+          tar -xf .packaging-inputs/packaging-inputs.tar -C .
+          rm -rf .packaging-inputs
 
       - name: Check out the release lane
         if: inputs.mode == 'release'
@@ -6880,23 +7119,26 @@ jobs:
             "https://api.github.com/repos/${{ needs.resolve.outputs.source_repo }}/statuses/${{ needs.resolve.outputs.sha }}" \
             -d '{"state":"pending","context":"e2e/solaris/amd64","description":"Running...","target_url":"${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"}'
 
-      # Merge lane: only the agent tree the release kit carries (e2e/, setup/,
-      # go.work, .dockerignore), never its sources -- the guest needs the
-      # scripts, and the same four paths are what release mode extracts.
-      - name: Checkout agent's scripts
+      # Merge lane: agent's packaging-inputs-e2e artifact (the scripts the
+      # guest runs, listed file by file in agent), never its sources; release
+      # mode extracts the release's kit instead.
+      - name: Download agent's packaging inputs
         if: inputs.mode != 'release'
-        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        uses: actions/download-artifact@70fc10c6e5e1ce46ad2ea6f2b72d43f7d47b13c3 # v8.0.0
         with:
+          name: packaging-inputs-e2e
+          path: .packaging-inputs
           repository: ${{ needs.resolve.outputs.source_repo }}
-          ref: ${{ needs.resolve.outputs.ref }}
-          token: ${{ steps.app.outputs.token }}
-          persist-credentials: false
-          sparse-checkout-cone-mode: false
-          sparse-checkout: |
-            /e2e/
-            /setup/
-            /go.work
-            /.dockerignore
+          run-id: ${{ needs.resolve.outputs.run_id }}
+          github-token: ${{ steps.app.outputs.token }}
+
+      - name: Unpack agent's packaging inputs
+        if: inputs.mode != 'release'
+        shell: bash
+        run: |
+          set -euo pipefail
+          tar -xf .packaging-inputs/packaging-inputs.tar -C .
+          rm -rf .packaging-inputs
 
       - name: Check out the release lane
         if: inputs.mode == 'release'
