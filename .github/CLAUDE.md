@@ -18,6 +18,7 @@ GitHub-specific configurations: workflows, templates, and instructions.
 ├── keys/               # PUBLIC OpenPGP keys qemu-vm verifies upstream images with (keys/CLAUDE.md)
 ├── nixos-leg/flake.nix # the NixOS system e2e.yml's nixos-nix legs boot (supervizio's flake, overridden)
 ├── scripts/e2e_families.py # e2e.yml resolve (merge lane): which families the agent run built; the rest are not-built
+├── scripts/check_run_retention.py # one-day uploads, no product bytes in the Actions cache (root CLAUDE.md, "Product runs")
 ├── solarish-leg/in-guest.sh # what e2e.yml's illumos and Solaris legs run in their guest
 ├── instructions/       # AI instructions (gitignored)
 ├── dependabot.yml      # Dependency updates

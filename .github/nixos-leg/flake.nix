@@ -73,6 +73,11 @@
                   pkgs.jq
                   pkgs.procps
                 ];
+                # supervizio's package is unfree (its EULA): allow it alone,
+                # as its README tells a user to. Nix only asks this of an
+                # unfree package, so a release under a free licence is
+                # unaffected.
+                nixpkgs.config.allowUnfreePredicate = pkg: lib.getName pkg == "supervizio";
                 system.stateVersion = "26.05";
 
                 specialisation.supervizio.configuration.services.supervizio.enable = true;

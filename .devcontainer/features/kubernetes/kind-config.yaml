@@ -48,10 +48,8 @@ nodes:
 
 # Networking configuration
 networking:
-  # Pod subnet (default)
-  podSubnet: "10.244.0.0/16"
-  # Service subnet (default)
-  serviceSubnet: "10.96.0.0/16"
+  # Pod and service subnets: kind's defaults apply. Set podSubnet and
+  # serviceSubnet here only to override them.
   # Disable default CNI to use Calico/Cilium (uncomment if needed)
   # disableDefaultCNI: true
 
