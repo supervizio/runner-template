@@ -7205,7 +7205,7 @@ jobs:
       # A stock image, no compiler: what an administrator installs on. jq is
       # the one tool agent's validators need that it does not carry.
       - name: Install, validate and uninstall in an Oracle Solaris guest
-        uses: vmactions/solaris-vm@87d3c436511cef802cd1637f86f73b1a97715c8c # v1.4.1
+        uses: vmactions/solaris-vm@1c166978f5a2c1f87f1c9d4d8dd85ae3d1eff6f7 # v1.4.2
         env:
           SVZ_KEY: solaris-amd64
           SVZ_OS: solaris
