@@ -121,6 +121,11 @@ reviews:
   # ─── Auto Review ──────────────────────────────────────────────────────────
 
   auto_review:
+    # Sync PRs opened by kodflow-ci[bot] (post-commit enforce, runner-template) are
+    # excluded from review to save the CodeRabbit quota; the same lists live in
+    # kodflow/making.codes coderabbit/override-*.yaml.
+    ignore_usernames:
+      - "kodflow-ci[bot]"
     enabled: true
     auto_incremental_review: true
     auto_pause_after_reviewed_commits: 10
@@ -129,6 +134,10 @@ reviews:
       - "wip"
       - "DO NOT MERGE"
       - "draft"
+      - "ci(post-commit): sync the gate workflow with the central stub"
+      - "ci(runner-template): sync the stubs with kodflow/post-commit"
+      - "ci: add the mandatory post-commit gate"
+      - "ci: run every job on the self-hosted kodflow-runner"
     labels: []
     drafts: false
     base_branches:
